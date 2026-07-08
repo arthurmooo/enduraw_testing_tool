@@ -21,4 +21,8 @@ if [ -f .env ]; then
     set +a
 fi
 
-python3 main.py "$@"
+if [ -x ".venv/bin/python" ]; then
+    ".venv/bin/python" main.py "$@"
+else
+    python3 main.py "$@"
+fi

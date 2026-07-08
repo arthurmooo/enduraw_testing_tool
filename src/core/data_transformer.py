@@ -1,31 +1,28 @@
 """
-Data Transformer - Combines XML data with manual input to create MongoDB-ready output
+Transformation XML/profil vers le JSON attendu par Valentin.
+
+Le module assemble les donnees saisies localement et les mesures MetaSoft. Les
+graphes peuvent venir du parser historique (`measurements`) ou du parser
+normalise (`metasoft_analysis.points`). Les seuils restent issus du profil
+coach pour eviter tout fallback silencieux depuis des marqueurs non valides.
 """
-from typing import Dict, List, Any, Optional
 from datetime import datetime
+from typing import Dict, List, Any, Optional
 
 from core.models import (
     TestResult, Seuil, VO2Max, VMA, PatientInfo,
-    GraphCurve, Graph, ZoneSeuil, LactateMeasure
+    GraphCurve, Graph, ZoneSeuil
 )
+from core.metasoft_analysis import build_metasoft_analysis
 from config import GRAPH_COLORS, GRAPH_INTERVAL_SECONDS
 
 
 class DataTransformer:
-    """Transform and merge XML data with manual input for MongoDB export"""
+    """Assemble le profil local et les mesures XML dans le JSON d'export."""
     
     def transform(self, xml_data: Dict[str, Any], manual_input: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Transform parsed XML data and manual input into final output structure.
-        
-        Args:
-            xml_data: Parsed data from XML file
-            manual_input: User-entered manual data
-            
-        Returns:
-            Dictionary matching output_to_mongo_example.json structure
-        """
-        # Build athlete name from XML or manual input
+        """Transforme un XML parse et un profil saisi vers le payload final."""
+        # Identite export: le XML garde le nom de test si le profil est incomplet.
         filename_data = xml_data.get('filename_data', {})
         patient_data = xml_data.get('patient_data', {})
         
@@ -33,14 +30,17 @@ class DataTransformer:
         first_name = patient_data.get('Prénom', filename_data.get('first_name', ''))
         athlete_name = f"{last_name} {first_name}".strip()
         
-        # Build result
         result = TestResult()
         result.user_id = manual_input.get('email', '')
         result.athlete_name = athlete_name
-        result.test_date = filename_data.get('date', '')
+        metasoft_analysis = self._metasoft_analysis_for_export(xml_data, manual_input)
+        result.test_date = (
+            filename_data.get('date')
+            or metasoft_analysis.get('test', {}).get('date', '')
+            or self._test_date_from_metadata(xml_data.get('test_metadata', {}))
+        )
         result.test_type = "VO2max"
         
-        # Build consentements
         consentements = manual_input.get('consentements', {})
         result.consentements = {
             'risques': consentements.get('risques', False),
@@ -48,27 +48,31 @@ class DataTransformer:
             'anonyme': consentements.get('anonyme', False)
         }
         
-        # Build seuils
+        # Seuils: profil coach uniquement, jamais estimation automatique du XML.
         result.seuils = self._build_seuils(xml_data.get('summary_data', {}), manual_input)
         
-        # Build protocole
         result.protocole = self._build_protocole(xml_data, manual_input)
         
-        # Build test_lactate
         result.test_lactate = self._build_test_lactate(manual_input)
         result.observations_lactate = manual_input.get('observations_lactate', '')
         
-        # Build patient_info
         result.patient_info = self._build_patient_info(xml_data, manual_input)
         
-        # Training advice
         result.conseils_entrainements = manual_input.get('conseils_entrainements', '')
         
-        # Build graphiques from measurements
-        result.graphiques = self._build_graphiques(
-            xml_data.get('measurements', []),
-            result.seuils
-        )
+        # Source graphe prioritaire: points normalises MetaSoft, units natives.
+        # Fallback: ancienne structure `measurements` pour les exports existants.
+        metasoft_points = metasoft_analysis.get('points', [])
+        if metasoft_points:
+            result.graphiques = self._build_graphiques_from_metasoft_points(
+                metasoft_points,
+                result.seuils
+            )
+        else:
+            result.graphiques = self._build_graphiques(
+                xml_data.get('measurements', []),
+                result.seuils
+            )
         
         # Logos and partners (placeholders)
         result.logos = {
@@ -81,33 +85,81 @@ class DataTransformer:
         }
         
         return result.to_dict()
+
+    def _metasoft_analysis_for_export(
+        self,
+        xml_data: Dict[str, Any],
+        manual_input: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Recalcule l'analyse si le XML n'a pas de masse mais le profil oui."""
+        metasoft_analysis = xml_data.get('metasoft_analysis', {})
+        metasoft_parsed = xml_data.get('metasoft_parsed')
+        if not metasoft_parsed:
+            return metasoft_analysis
+
+        xml_mass = self._safe_float(
+            metasoft_parsed.get('athlete', {}).get('weight_kg')
+        )
+        manual_mass = self._safe_float(
+            manual_input.get('body_composition', {}).get('current_weight')
+        )
+        if xml_mass is None and manual_mass is not None and manual_mass > 0:
+            # Fallback source: profil local matche au XML, uniquement si masse XML absente.
+            metasoft_analysis = build_metasoft_analysis(
+                metasoft_parsed,
+                manual_mass_kg=manual_mass,
+            )
+            xml_data['metasoft_analysis'] = metasoft_analysis
+        return metasoft_analysis
+
+    def _test_date_from_metadata(self, test_metadata: Dict[str, Any]) -> str:
+        """Extrait YYYY-MM-DD depuis `Heure de debut` MetaSoft si parsable."""
+        for key, value in test_metadata.items():
+            normalized = key.lower().replace("é", "e").replace("è", "e")
+            if "debut" not in normalized and "start" not in normalized:
+                continue
+            parsed = self._parse_ddmmyyyy_date(value)
+            if parsed:
+                return parsed
+        return ''
+
+    def _parse_ddmmyyyy_date(self, value: Any) -> str:
+        """Convertit `DD/MM/YYYY ...` sans inventer de date si le format diverge."""
+        if not value:
+            return ''
+        date_token = str(value).strip().split()[0]
+        try:
+            return datetime.strptime(date_token, "%d/%m/%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return ''
     
-    def _build_seuils(self, summary_data: Dict[str, Any], manual_input: Dict[str, Any]) -> Dict[str, Any]:
-        """Build seuils section from MANUAL INPUT ONLY (not XML)"""
+    def _build_seuils(
+        self,
+        summary_data: Dict[str, Any],
+        manual_input: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Construit les seuils depuis le profil manuel uniquement."""
         seuils = {}
         
-        # Get thresholds from manual input ONLY
         stress_results = manual_input.get('stress_test_results', {})
         thresholds = stress_results.get('thresholds', {})
         sv1_data = thresholds.get('sv1', {})
         sv2_data = thresholds.get('sv2', {})
         
-        # Get VMA, FC max, VO2max from manual input (form)
+        # Source: champs valides par le coach dans le formulaire local.
         vma_value = stress_results.get('vma')
         fc_max_value = stress_results.get('max_hr')
         vo2max_value = stress_results.get('measured_vo2max')
         
-        # SV1 - From manual input ONLY
         sv1 = Seuil()
         sv1.fc = sv1_data.get('hr_bpm')
         sv1.allure = sv1_data.get('pace_km_h')
         sv1.vo2 = sv1_data.get('vo2_ml_kg_min')
         
-        # Calculate pourcentage_vma if we have VMA and allure
         if sv1.allure and vma_value:
             sv1.pourcentage_vma = int((sv1.allure / vma_value) * 100)
         
-        # Calculate percentage of FC max and VO2max for SV1
+        # Unites: FC bpm, vitesse km/h, VO2 ml/kg/min; pourcentages entiers.
         sv1_dict = sv1.to_dict()
         if sv1.fc and fc_max_value:
             sv1_dict['pourcentage_fc_max'] = int((sv1.fc / fc_max_value) * 100)
@@ -115,7 +167,6 @@ class DataTransformer:
             sv1_dict['pourcentage_vo2max'] = int((sv1.vo2 / vo2max_value) * 100)
         seuils['SV1'] = sv1_dict
         
-        # SV2 - From manual input ONLY
         sv2 = Seuil()
         sv2.fc = sv2_data.get('hr_bpm')
         sv2.allure = sv2_data.get('pace_km_h')
@@ -124,7 +175,7 @@ class DataTransformer:
         if sv2.allure and vma_value:
             sv2.pourcentage_vma = int((sv2.allure / vma_value) * 100)
         
-        # Calculate percentage of FC max and VO2max for SV2
+        # Meme contrat que SV1: pas de fallback depuis les courbes brutes.
         sv2_dict = sv2.to_dict()
         if sv2.fc and fc_max_value:
             sv2_dict['pourcentage_fc_max'] = int((sv2.fc / fc_max_value) * 100)
@@ -132,29 +183,33 @@ class DataTransformer:
             sv2_dict['pourcentage_vo2max'] = int((sv2.vo2 / vo2max_value) * 100)
         seuils['SV2'] = sv2_dict
         
-        # VO2max - From manual input ONLY
         vo2max = VO2Max()
         vo2max.valeur = vo2max_value
         vo2max.fc_max = fc_max_value
         vo2max_dict = vo2max.to_dict()
         
-        # VO2 peak (L/min) = vo2max (ml/min/kg) * weight (kg) / 1000
+        # Transformation explicite: ml/kg/min * kg / 1000 = L/min.
         weight = manual_input.get('body_composition', {}).get('current_weight')
         if vo2max_value and weight and weight > 0:
             vo2max_dict['vo2_peak_l_min'] = round(vo2max_value * weight / 1000, 2)
         
         seuils['VO2_max'] = vo2max_dict
         
-        # VMA from manual input (form)
         vma = VMA()
         vma.valeur = vma_value
         seuils['VMA'] = vma.to_dict()
         
         return seuils
     
-    def _build_protocole(self, xml_data: Dict[str, Any], manual_input: Dict[str, Any]) -> Dict[str, Any]:
-        """Build protocol section"""
-        first_speed = manual_input.get('stress_test_results', {}).get('first_stage_speed')
+    def _build_protocole(
+        self,
+        xml_data: Dict[str, Any],
+        manual_input: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Construit le protocole depuis la saisie coach uniquement."""
+        first_speed = manual_input.get('stress_test_results', {}).get(
+            'first_stage_speed'
+        )
         description = manual_input.get('protocol_description', '')
         
         return {
@@ -163,7 +218,7 @@ class DataTransformer:
         }
     
     def _build_test_lactate(self, manual_input: Dict[str, Any]) -> Dict[str, Any]:
-        """Build lactate test section"""
+        """Construit le bloc lactate depuis la saisie locale."""
         lactate_profile = manual_input.get('stress_test_results', {}).get('lactate_profile', [])
         
         mesures = []
@@ -179,9 +234,12 @@ class DataTransformer:
             "mesures": mesures
         }
     
-    def _build_patient_info(self, xml_data: Dict[str, Any], manual_input: Dict[str, Any]) -> Dict[str, Any]:
-        """Build patient info section with all manual input fields"""
-        # Get from manual input
+    def _build_patient_info(
+        self,
+        xml_data: Dict[str, Any],
+        manual_input: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Construit les infos patient; le profil prime sur le XML."""
         identity = manual_input.get('identity', {})
         body_comp = manual_input.get('body_composition', {})
         prof_life = manual_input.get('professional_life', {})
@@ -191,18 +249,23 @@ class DataTransformer:
         
         patient_info = PatientInfo()
         
-        # Identity
-        patient_info.nom = identity.get('last_name', '')
-        patient_info.prenom = identity.get('first_name', '')
+        xml_athlete = (
+            xml_data.get('metasoft_analysis', {}).get('athlete', {})
+            or xml_data.get('metasoft_parsed', {}).get('athlete', {})
+        )
+
+        # Identity: le profil manuel prime; le XML sert seulement de fallback export.
+        patient_info.nom = identity.get('last_name') or xml_athlete.get('last_name', '')
+        patient_info.prenom = identity.get('first_name') or xml_athlete.get('first_name', '')
         patient_info.date_naissance = identity.get('date_of_birth', '')
         patient_info.age = identity.get('age')
         patient_info.sport_base = identity.get('sport_practiced', '')
         patient_info.specialty = identity.get('specialty', '')
         patient_info.has_coach = identity.get('has_coach', False)
         
-        # Body composition - all from manual input only
+        # Le poids XML est un fallback export, sans ecraser le profil local.
         patient_info.taille_cm = body_comp.get('height_cm')
-        patient_info.poids_actuel = body_comp.get('current_weight')
+        patient_info.poids_actuel = body_comp.get('current_weight') or xml_athlete.get('weight_kg')
         patient_info.poids_debut = body_comp.get('weight_before_test')
         patient_info.poids_final = body_comp.get('weight_after_test')
         
@@ -271,8 +334,12 @@ class DataTransformer:
         
         return patient_info.to_dict()
     
-    def _build_graphiques(self, measurements: List[Dict[str, Any]], seuils: Dict[str, Any]) -> Dict[str, Any]:
-        """Build graph data from measurements"""
+    def _build_graphiques(
+        self,
+        measurements: List[Dict[str, Any]],
+        seuils: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Construit les graphes depuis les mesures historiques."""
         if not measurements:
             return {}
         
@@ -292,7 +359,7 @@ class DataTransformer:
                 nom="FC (bpm)",
                 couleur=GRAPH_COLORS["FC"],
                 temps_secondes=time_values,
-                valeurs=[v if v is not None else 0 for v in fc_values]
+                valeurs=fc_values
             ))
         
         # V'O2 curve
@@ -302,7 +369,7 @@ class DataTransformer:
                 nom="V'O2 (L/min)",
                 couleur=GRAPH_COLORS["V'O2"],
                 temps_secondes=time_values,
-                valeurs=[v if v is not None else 0 for v in vo2_values]
+                valeurs=vo2_values
             ))
         
         # V'CO2 curve (if available - need to parse from XML)
@@ -318,7 +385,7 @@ class DataTransformer:
                 nom="V'E (L/min)",
                 couleur=GRAPH_COLORS["V'E"],
                 temps_secondes=time_values,
-                valeurs=[v if v is not None else 0 for v in ve_values]
+                valeurs=ve_values
             ))
         
         # BF curve
@@ -328,7 +395,7 @@ class DataTransformer:
                 nom="BF (/min)",
                 couleur=GRAPH_COLORS["BF"],
                 temps_secondes=time_values,
-                valeurs=[v if v is not None else 0 for v in bf_values]
+                valeurs=bf_values
             ))
         
         # RER curve
@@ -339,7 +406,7 @@ class DataTransformer:
                 couleur=GRAPH_COLORS["RER"],
                 dash="dot",
                 temps_secondes=time_values,
-                valeurs=[v if v is not None else 0 for v in rer_values]
+                valeurs=rer_values
             ))
         
         # Build zones_seuils
@@ -352,9 +419,113 @@ class DataTransformer:
         }
         
         return result
+
+    def _build_graphiques_from_metasoft_points(
+        self,
+        points: List[Dict[str, Any]],
+        seuils: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Construit les graphes stricts depuis les points MetaSoft normalises.
+
+        Source: mesures XML natives dans `point.values`. Unite: FC bpm, VO2 et
+        VE en L/min, BF en cycles/min, RER sans unite. Transformation: moyenne
+        par intervalle pour conserver un JSON leger; aucun lissage n'est exporte.
+        """
+        aggregated = self._aggregate_metasoft_points(points, GRAPH_INTERVAL_SECONDS)
+        if not aggregated:
+            return {}
+
+        time_values = [m['t_seconds'] for m in aggregated if 't_seconds' in m]
+        graph1 = Graph(titre="FC et V'O2")
+        graph2 = Graph(titre="V'E, BF et RER")
+
+        fc_values = [m.get('fc_bpm') for m in aggregated]
+        if any(v is not None for v in fc_values):
+            graph1.courbes.append(GraphCurve(
+                nom="FC (bpm)",
+                couleur=GRAPH_COLORS["FC"],
+                temps_secondes=time_values,
+                valeurs=fc_values
+            ))
+
+        vo2_values = [m.get('vo2_l_min') for m in aggregated]
+        if any(v is not None for v in vo2_values):
+            graph1.courbes.append(GraphCurve(
+                nom="V'O2 (L/min)",
+                couleur=GRAPH_COLORS["V'O2"],
+                temps_secondes=time_values,
+                valeurs=vo2_values
+            ))
+
+        ve_values = [m.get('ve_l_min') for m in aggregated]
+        if any(v is not None for v in ve_values):
+            graph2.courbes.append(GraphCurve(
+                nom="V'E (L/min)",
+                couleur=GRAPH_COLORS["V'E"],
+                temps_secondes=time_values,
+                valeurs=ve_values
+            ))
+
+        bf_values = [m.get('bf_per_min') for m in aggregated]
+        if any(v is not None for v in bf_values):
+            graph2.courbes.append(GraphCurve(
+                nom="BF (/min)",
+                couleur=GRAPH_COLORS["BF"],
+                temps_secondes=time_values,
+                valeurs=bf_values
+            ))
+
+        rer_values = [m.get('rer') for m in aggregated]
+        if any(v is not None for v in rer_values):
+            graph2.courbes.append(GraphCurve(
+                nom="RER",
+                couleur=GRAPH_COLORS["RER"],
+                dash="dot",
+                temps_secondes=time_values,
+                valeurs=rer_values
+            ))
+
+        return {
+            "graphique_1": graph1.to_dict(),
+            "graphique_2": graph2.to_dict(),
+            "zones_seuils": [z.to_dict() for z in self._build_zones_seuils(aggregated, seuils)]
+        }
+
+    def _aggregate_metasoft_points(
+        self,
+        points: List[Dict[str, Any]],
+        interval_sec: int,
+    ) -> List[Dict[str, Any]]:
+        """Moyenne par fenetre temporelle les valeurs XML normalisees numeriques."""
+        buckets = {}
+        for point in points:
+            t_seconds = point.get('t_seconds')
+            if not isinstance(t_seconds, (int, float)):
+                continue
+            bucket = int(t_seconds // interval_sec) * interval_sec + interval_sec
+            buckets.setdefault(bucket, []).append(point)
+
+        aggregated = []
+        for bucket in sorted(buckets):
+            row = {'t_seconds': bucket}
+            keys = set().union(*(point.get('values', {}).keys() for point in buckets[bucket]))
+            for key in keys:
+                values = [
+                    point.get('values', {}).get(key)
+                    for point in buckets[bucket]
+                    if isinstance(point.get('values', {}).get(key), (int, float))
+                ]
+                if values:
+                    row[key] = round(sum(values) / len(values), 2)
+            aggregated.append(row)
+        return aggregated
     
-    def _aggregate_by_interval(self, measurements: List[Dict], interval_sec: int = 15) -> List[Dict]:
-        """Aggregate measurements into fixed time intervals"""
+    def _aggregate_by_interval(
+        self,
+        measurements: List[Dict],
+        interval_sec: int = 15,
+    ) -> List[Dict]:
+        """Moyenne les mesures historiques par fenetre temporelle."""
         if not measurements:
             return []
         
@@ -403,8 +574,12 @@ class DataTransformer:
         
         return aggregated
     
-    def _build_zones_seuils(self, aggregated: List[Dict], seuils: Dict[str, Any]) -> List[ZoneSeuil]:
-        """Build threshold zones from aggregated data and seuils"""
+    def _build_zones_seuils(
+        self,
+        aggregated: List[Dict],
+        seuils: Dict[str, Any],
+    ) -> List[ZoneSeuil]:
+        """Construit les zones seuils depuis FC bpm, ancien ou nouveau format."""
         zones = []
         
         # SV1 zone
@@ -423,13 +598,13 @@ class DataTransformer:
             if zone:
                 zones.append(zone)
         
-        # VO2max zone
+        # Zone VO2max: FC bpm, compatible format historique et normalise.
         vo2max = seuils.get('VO2_max', {})
         if vo2max.get('fc_max'):
             fc_max = vo2max['fc_max']
-            # Find when FC reaches max
             for m in aggregated:
-                if m.get('FC') and m['FC'] >= fc_max * 0.98:  # Within 2% of max
+                fc = m.get('FC') or m.get('fc_bpm')
+                if fc and fc >= fc_max * 0.98:
                     zones.append(ZoneSeuil(
                         nom="VO2_max",
                         couleur="red",
@@ -441,15 +616,21 @@ class DataTransformer:
         
         return zones
     
-    def _find_zone_by_fc(self, aggregated: List[Dict], fc_target: int, name: str, color: str) -> Optional[ZoneSeuil]:
-        """Find time zone where FC matches target (±2%)"""
+    def _find_zone_by_fc(
+        self,
+        aggregated: List[Dict],
+        fc_target: int,
+        name: str,
+        color: str,
+    ) -> Optional[ZoneSeuil]:
+        """Trouve la plage ou la FC moyenne est dans la tolerance du seuil."""
         tolerance = 0.02
         fc_min = int(fc_target * (1 - tolerance))
         fc_max = int(fc_target * (1 + tolerance))
         
         matching_times = []
         for m in aggregated:
-            fc = m.get('FC')
+            fc = m.get('FC') or m.get('fc_bpm')
             if fc and fc_min <= fc <= fc_max:
                 matching_times.append(m['t_seconds'])
         

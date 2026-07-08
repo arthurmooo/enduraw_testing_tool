@@ -165,7 +165,15 @@ class XmlListItem(ctk.CTkFrame):
 class MatchListItem(ctk.CTkFrame):
     """Item showing a profile-XML match"""
     
-    def __init__(self, master, match_info: Dict, on_export=None, on_remove=None, **kwargs):
+    def __init__(
+        self,
+        master,
+        match_info: Dict,
+        on_export=None,
+        on_remove=None,
+        on_analyze=None,
+        **kwargs,
+    ):
         super().__init__(master, **kwargs)
         self.match_info = match_info
         
@@ -191,6 +199,14 @@ class MatchListItem(ctk.CTkFrame):
         # Buttons frame
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.grid(row=0, column=1, rowspan=2, padx=5, pady=5)
+
+        # Analyze button
+        self.analyze_btn = ctk.CTkButton(
+            btn_frame, text="Analyser",
+            width=85, height=28,
+            command=lambda: on_analyze(match_info) if on_analyze else None
+        )
+        self.analyze_btn.grid(row=0, column=0, padx=2)
         
         # Export button
         exported = match_info.get('exported', False)
@@ -200,7 +216,7 @@ class MatchListItem(ctk.CTkFrame):
             fg_color="#2fa572" if exported else None,
             command=lambda: on_export(match_info) if on_export else None
         )
-        self.export_btn.grid(row=0, column=0, padx=2)
+        self.export_btn.grid(row=0, column=1, padx=2)
         
         # Remove button
         self.remove_btn = ctk.CTkButton(
@@ -208,4 +224,4 @@ class MatchListItem(ctk.CTkFrame):
             fg_color="#c0392b", hover_color="#a93226",
             command=lambda: on_remove(match_info) if on_remove else None
         )
-        self.remove_btn.grid(row=0, column=1, padx=2)
+        self.remove_btn.grid(row=0, column=2, padx=2)

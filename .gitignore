@@ -8,6 +8,11 @@ __pycache__/
 build/
 dist/
 *.spec
+*.app/
+
+# Frontend local
+local_ui/node_modules/
+local_ui/dist/
 
 # Environnements virtuels
 venv/

@@ -5,12 +5,17 @@ Tab-based UI with Sessions, Profiles, and XML Matching
 import os
 import sys
 import customtkinter as ctk
+from datetime import datetime
 from tkinter import filedialog, messagebox
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 from utils.xml_parser import TCPXmlParser
 from core.data_transformer import DataTransformer
+from core.metasoft_audit_export import (
+    build_metasoft_audit_export,
+    metasoft_audit_filename,
+)
 from utils.json_exporter import JsonExporter
 from core.session_manager import SessionManager
 from core.mongo_service import MongoService
@@ -24,6 +29,37 @@ from ui.tabbed_form import TabbedInputForm
 # Set appearance
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+
+def _save_metasoft_audit_sidecar(
+    session_manager: SessionManager,
+    xml_data: Dict[str, Any],
+    profile_data: Dict[str, Any],
+    output_filename: str,
+    profile_filename: str,
+) -> Optional[str]:
+    """Sauve le sidecar MetaSoft historique sans marqueur manuel.
+
+    Source: analyse MetaSoft deja parse/recalculee par `DataTransformer`.
+    Transformation: export audit pur, sans points bruts decimes ni warnings UI.
+    Fallback: aucun sidecar si le XML historique n'expose pas d'analyse MetaSoft.
+    """
+    analysis = xml_data.get("metasoft_analysis")
+    if not analysis:
+        return None
+
+    audit_filename = metasoft_audit_filename(output_filename)
+    sidecar = build_metasoft_audit_export(
+        analysis,
+        profile=profile_data,
+        markers={},
+        json_filename=output_filename,
+        audit_filename=audit_filename,
+        profile_filename=profile_filename,
+        generated_at=datetime.now().isoformat(timespec="seconds"),
+        app_version=APP_VERSION,
+    )
+    return session_manager.save_output(audit_filename, sidecar)
 
 
 class SessionTab(ctk.CTkFrame):
@@ -432,6 +468,23 @@ class ProfileTab(ctk.CTkFrame):
             if profile_info.get('filename') == saved_filename:
                 self.selected_item = item
                 item.set_selected(True)
+
+    def reload_profile_from_disk(self, filename: str):
+        """Reload a profile changed by the local React analysis window."""
+        if not filename:
+            return
+
+        if self.current_filename == filename:
+            data = self.session_manager.get_profile(filename)
+            if data:
+                self.form.set_data(data)
+                identity = data.get('identity') or {}
+                last_name = (identity.get('last_name') or '').strip()
+                first_name = (identity.get('first_name') or '').strip()
+                name = f"{last_name} {first_name}".strip()
+                self.form_title.configure(text=name or "Nouveau profil")
+
+        self._refresh_profile_list()
     
     def _delete_profile(self):
         if not self.current_filename:
@@ -624,7 +677,8 @@ class XmlMatchTab(ctk.CTkFrame):
         
         for match in self.session_manager.matches:
             item = MatchListItem(self.match_list, match.to_dict(),
-                               on_export=self._export_match, on_remove=self._remove_match)
+                               on_export=self._export_match, on_remove=self._remove_match,
+                               on_analyze=self._analyze_match)
             item.grid(sticky="ew", pady=2)
             self.match_items.append(item)
     
@@ -705,7 +759,20 @@ class XmlMatchTab(ctk.CTkFrame):
         profile_name = match_info.get('profile_name', '')
         self.session_manager.remove_match(profile_name)
         self.refresh()
-    
+
+    def _analyze_match(self, match_info: Dict):
+        import webbrowser
+
+        from local_api.metasoft_server import LocalMetaSoftServer
+
+        try:
+            server = LocalMetaSoftServer.ensure_started(self.session_manager)
+            url = server.url_for_match(match_info)
+            if not webbrowser.open(url):
+                messagebox.showinfo("Analyse MetaSoft", f"URL locale:\n{url}")
+        except Exception as e:
+            messagebox.showerror("Analyse MetaSoft", f"Ouverture impossible:\n{e}")
+
     def _export_match(self, match_info: Dict):
         profile_name = match_info.get('profile_name', '')
         xml_filename = match_info.get('xml_filename', '')
@@ -736,12 +803,22 @@ class XmlMatchTab(ctk.CTkFrame):
             
             # Save to session output folder
             output_path = self.session_manager.save_output(output_filename, output)
+            audit_path = _save_metasoft_audit_sidecar(
+                self.session_manager,
+                xml_data,
+                profile_data,
+                output_filename,
+                profile_name,
+            )
             
             # Mark as exported
             self.session_manager.mark_as_exported(profile_name)
             self._refresh_matches()
             
-            messagebox.showinfo("Succès", f"Exporté vers:\n{output_path}")
+            message = f"Exporté vers:\n{output_path}"
+            if audit_path:
+                message += f"\n\nAudit:\n{audit_path}"
+            messagebox.showinfo("Succès", message)
             
         except Exception as e:
             messagebox.showerror("Erreur", f"Erreur lors de l'export: {e}")
@@ -788,6 +865,13 @@ class XmlMatchTab(ctk.CTkFrame):
                 output_filename = f"{name}_{date}.json"
                 
                 self.session_manager.save_output(output_filename, output)
+                _save_metasoft_audit_sidecar(
+                    self.session_manager,
+                    xml_data,
+                    profile_data,
+                    output_filename,
+                    profile_name,
+                )
                 self.session_manager.mark_as_exported(profile_name)
                 success += 1
                 
@@ -833,6 +917,7 @@ class TCPDataProcessorSession(ctk.CTk):
         # Auto-connect if URI was saved previously
         if self.mongo_service.uri:
             self.after(500, self._auto_connect_mongo)
+        self.after(1000, self._poll_local_profile_updates)
     
     def _set_icon(self):
         try:
@@ -996,6 +1081,16 @@ class TCPDataProcessorSession(ctk.CTk):
             else:
                 btn.configure(fg_color="transparent")
         self._current_page = name
+
+    def _poll_local_profile_updates(self):
+        """Synchronise l'ecran Profils apres report depuis l'UI React locale."""
+        try:
+            from local_api.metasoft_server import LocalMetaSoftServer
+
+            for profile_name in LocalMetaSoftServer.consume_profile_updates(self.session_manager):
+                self.profile_tab.reload_profile_from_disk(profile_name)
+        finally:
+            self.after(1000, self._poll_local_profile_updates)
     
     # ------------------------------------------------------------------ #
     #  MongoDB connection bar                                             #
@@ -1303,4 +1398,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

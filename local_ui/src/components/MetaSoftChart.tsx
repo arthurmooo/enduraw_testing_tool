@@ -1,0 +1,776 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
+import Plot from "react-plotly.js";
+import { Maximize2, X } from "lucide-react";
+import { buildAnnotations, buildMarkerShapes, buildTimeBandShapes } from "../lib/chartUtils";
+import { MARKER_COLORS, MetaSoftGraphConfig, MetaSoftSeriesConfig } from "../lib/graphConfig";
+import { MARKER_NAMES, secondsToClock } from "../lib/markerUtils";
+import type {
+  DraftMarker,
+  DraftMarkers,
+  MarkerMode,
+  MetaSoftMarkerName,
+  MetaSoftPoint,
+} from "../types/metasoft";
+
+type MarkerDragPart = "start" | "center" | "end";
+type MarkerDragTarget = { marker: MetaSoftMarkerName; part: MarkerDragPart };
+type MarkerDragPreview = MarkerDragTarget & { xSeconds: number };
+
+interface Props {
+  analysis: import("../types/metasoft").MetaSoftAnalysis;
+  graph: MetaSoftGraphConfig;
+  markers: DraftMarkers;
+  phaseFilter: string;
+  smoothingSeconds: number;
+  onCursorPoint: (point: MetaSoftPoint | null) => void;
+  onPlaceMarker: (
+    marker: MetaSoftMarkerName,
+    tSeconds: number,
+    mode: MarkerMode,
+    windowStartSeconds?: number | null,
+    windowEndSeconds?: number | null,
+  ) => void;
+  onDeleteMarker: (marker: MetaSoftMarkerName) => void;
+}
+
+export function MetaSoftChart({
+  analysis,
+  graph,
+  markers,
+  phaseFilter,
+  smoothingSeconds,
+  onCursorPoint,
+  onPlaceMarker,
+  onDeleteMarker,
+}: Props) {
+  const [fullscreen, setFullscreen] = useState(false);
+  const [xRange, setXRange] = useState<[number, number] | null>(null);
+  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
+  const availableSeries = graph.series.filter((series) => isSeriesAvailable(analysis, graph, series));
+  const visibleSeries = availableSeries.filter((series) => !hiddenSeries.has(series.key));
+  const missingSeries = graph.series.filter((series) => !isSeriesAvailable(analysis, graph, series));
+  const points = useMemo(
+    () => analysis.points.filter((point) => phaseFilter === "Tout" || point.phase === phaseFilter),
+    [analysis.points, phaseFilter],
+  );
+
+  useEffect(() => setXRange(null), [analysis.file.filename, phaseFilter]);
+  useEffect(() => setHiddenSeries(new Set()), [analysis.file.filename, graph.id]);
+
+  const toggleSeries = (series: MetaSoftSeriesConfig) => {
+    setHiddenSeries((current) => {
+      const next = new Set(current);
+      if (next.has(series.key)) {
+        next.delete(series.key);
+        return next;
+      }
+      if (availableSeries.length - next.size <= 1) return next;
+      next.add(series.key);
+      return next;
+    });
+  };
+
+  if (!availableSeries.length) {
+    return (
+      <section className="chart-card chart-card-empty">
+        <div className="chart-title-row">
+          <h2>{graph.title}</h2>
+          <span className="status-warn">Absent XML</span>
+        </div>
+        <p>Aucune serie disponible pour ce graphe.</p>
+      </section>
+    );
+  }
+
+  const body = (height: number) => graph.source === "running_economy" ? (
+    <RunningEconomyChart
+      analysis={analysis}
+      graph={graph}
+      series={visibleSeries}
+      height={height}
+      xRange={xRange}
+      onXRangeChange={setXRange}
+    />
+  ) : (
+    <PointChartBody
+      analysis={analysis}
+      graph={graph}
+      series={visibleSeries}
+      points={points}
+      markers={markers}
+      height={height}
+      smoothingSeconds={smoothingSeconds}
+      xRange={xRange}
+      onXRangeChange={setXRange}
+      onCursorPoint={onCursorPoint}
+      onPlaceMarker={onPlaceMarker}
+      onDeleteMarker={onDeleteMarker}
+    />
+  );
+
+  return (
+    <section className="chart-card">
+      <div className="chart-title-row">
+        <h2>{graph.title}</h2>
+        <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
+        <button
+          type="button"
+          onClick={() => setFullscreen(true)}
+          className="icon-button push-right"
+          aria-label={`Ouvrir ${graph.title} en plein ecran`}
+          title="Plein ecran"
+        >
+          <Maximize2 size={16} />
+        </button>
+      </div>
+      {body(260)}
+      {missingSeries.length > 0 && (
+        <p className="missing-series">Absent XML : {missingSeries.map((series) => series.label).join(", ")}</p>
+      )}
+      {fullscreen && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-panel">
+            <div className="modal-header">
+              <h2>{graph.title}</h2>
+              <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
+              <button
+                type="button"
+                className="icon-button push-right"
+                onClick={() => setFullscreen(false)}
+                aria-label="Fermer le plein ecran"
+                title="Fermer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            {body(Math.min(760, Math.max(420, window.innerHeight - 170)))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SeriesToggles({
+  series,
+  hiddenSeries,
+  onToggle,
+}: {
+  series: MetaSoftSeriesConfig[];
+  hiddenSeries: Set<string>;
+  onToggle: (series: MetaSoftSeriesConfig) => void;
+}) {
+  return (
+    <div className="series-toggles">
+      {series.map((item) => (
+        <button
+          key={item.key}
+          type="button"
+          onClick={() => onToggle(item)}
+          className={hiddenSeries.has(item.key) ? "series-toggle muted" : "series-toggle"}
+          aria-pressed={!hiddenSeries.has(item.key)}
+        >
+          <span style={{ backgroundColor: item.color }} />
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RunningEconomyChart({
+  analysis,
+  graph,
+  series,
+  height,
+  xRange,
+  onXRangeChange,
+}: {
+  analysis: import("../types/metasoft").MetaSoftAnalysis;
+  graph: MetaSoftGraphConfig;
+  series: MetaSoftSeriesConfig[];
+  height: number;
+  xRange: [number, number] | null;
+  onXRangeChange: (range: [number, number] | null) => void;
+}) {
+  const rows = analysis.computed.running_economy ?? [];
+  const data = series.map((seriesItem) => ({
+    type: "scatter",
+    mode: "lines+markers",
+    name: seriesItem.label,
+    x: rows.map((row) => row.stage_index),
+    y: rows.map((row) => row.value_j_kg_m),
+    customdata: rows.map((row) => [row.speed_kmh, row.point_count]),
+    line: { color: seriesItem.color, width: 1.5 },
+    marker: { color: seriesItem.color, size: 7 },
+    hovertemplate: "Palier %{x}<br>EC %{y}<br>Vitesse %{customdata[0]} km/h<extra></extra>",
+  }));
+  return (
+    <Plot
+      data={data}
+      layout={{
+        autosize: true,
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+        margin: { l: 48, r: 18, t: 16, b: 42 },
+        font: { color: "rgba(226,232,240,0.78)", size: 10 },
+        dragmode: "zoom",
+        showlegend: false,
+        xaxis: {
+          range: xRange ?? undefined,
+          title: graph.xAxis.label,
+          gridcolor: "rgba(255,255,255,0.055)",
+          dtick: 1,
+        },
+        yaxis: {
+          title: "J/kg/m",
+          gridcolor: "rgba(255,255,255,0.055)",
+        },
+      }}
+      config={{ responsive: true, displayModeBar: false, doubleClick: "reset" }}
+      style={{ width: "100%", height }}
+      useResizeHandler
+      onRelayout={(event: Readonly<Record<string, unknown>>) => {
+        const nextRange = xRangeFromRelayout(event);
+        if (nextRange !== undefined) onXRangeChange(nextRange);
+      }}
+      onDoubleClick={() => onXRangeChange(null)}
+    />
+  );
+}
+
+function PointChartBody({
+  analysis,
+  graph,
+  series,
+  points,
+  markers,
+  height,
+  smoothingSeconds,
+  xRange,
+  onXRangeChange,
+  onCursorPoint,
+  onPlaceMarker,
+  onDeleteMarker,
+}: {
+  analysis: import("../types/metasoft").MetaSoftAnalysis;
+  graph: MetaSoftGraphConfig;
+  series: MetaSoftSeriesConfig[];
+  points: MetaSoftPoint[];
+  markers: DraftMarkers;
+  height: number;
+  smoothingSeconds: number;
+  xRange: [number, number] | null;
+  onXRangeChange: (range: [number, number] | null) => void;
+  onCursorPoint: (point: MetaSoftPoint | null) => void;
+  onPlaceMarker: (
+    marker: MetaSoftMarkerName,
+    tSeconds: number,
+    mode: MarkerMode,
+    windowStartSeconds?: number | null,
+    windowEndSeconds?: number | null,
+  ) => void;
+  onDeleteMarker: (marker: MetaSoftMarkerName) => void;
+}) {
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const clickTimerRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+  const [proposal, setProposal] = useState<{
+    left: number;
+    top: number;
+    tSeconds: number;
+    mode: MarkerMode;
+    rangeDuration: string;
+  } | null>(null);
+  const [markerHover, setMarkerHover] = useState<MarkerDragPart | null>(null);
+  const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
+  const x = useMemo(() => points.map((point) => point.t_seconds ?? 0), [points]);
+  const maxTime = Math.max(...analysis.points.map((point) => point.t_seconds ?? 0), 0);
+  const defaultRange = defaultRangeFromPoints(points, maxTime);
+  const tickVals = buildTickVals(defaultRange);
+  const effectiveRange = xRange && xRange[0] >= defaultRange[0] && xRange[1] <= defaultRange[1] ? xRange : null;
+  const visibleMarkers = dragPreview
+    ? { ...markers, [dragPreview.marker]: previewDraggedMarker(markers[dragPreview.marker], dragPreview, maxTime) }
+    : markers;
+  const plotMargins = { l: 44, r: graph.series.some((item) => item.axis === "y2") ? 42 : 16, t: 14, b: 42 };
+  const data = useMemo(() => series.map((seriesItem) => {
+    const rawY = points.map((point) => point.values[seriesItem.key as keyof MetaSoftPoint["values"]]);
+    return {
+      type: "scatter",
+      mode: "lines",
+      name: seriesItem.label,
+      x,
+      y: seriesItem.smoothable ? smoothSeries(x, rawY, smoothingSeconds) : rawY,
+      yaxis: seriesItem.axis,
+      line: { color: seriesItem.color, width: 0.8 },
+      hovertemplate: `%{y}<extra>${seriesItem.label}</extra>`,
+      connectgaps: false,
+    };
+  }), [points, series, smoothingSeconds, x]);
+  const layout = {
+    autosize: true,
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    margin: plotMargins,
+    font: { color: "rgba(226,232,240,0.78)", size: 10 },
+    hovermode: "x unified",
+    dragmode: "zoom",
+    showlegend: false,
+    shapes: [...buildTimeBandShapes(analysis), ...buildMarkerShapes(visibleMarkers)],
+    annotations: buildAnnotations(analysis, visibleMarkers),
+    xaxis: {
+      range: maxTime ? effectiveRange ?? defaultRange : undefined,
+      tickvals: tickVals,
+      ticktext: tickVals.map(secondsToClock),
+      gridcolor: "rgba(255,255,255,0.055)",
+      linecolor: "rgba(255,255,255,0.18)",
+      zerolinecolor: "rgba(255,255,255,0.08)",
+      title: { text: "Temps (h:m:s)", font: { size: 10, color: "rgba(226,232,240,0.65)" } },
+    },
+    yaxis: {
+      gridcolor: "rgba(255,255,255,0.055)",
+      linecolor: "rgba(255,255,255,0.18)",
+      zerolinecolor: "rgba(255,255,255,0.08)",
+    },
+    yaxis2: {
+      overlaying: "y",
+      side: "right",
+      gridcolor: "rgba(255,255,255,0)",
+      linecolor: "rgba(255,255,255,0.18)",
+      zerolinecolor: "rgba(255,255,255,0.08)",
+    },
+  };
+
+  useEffect(() => () => {
+    if (clickTimerRef.current !== null) window.clearTimeout(clickTimerRef.current);
+  }, []);
+
+  const clearPendingClick = () => {
+    if (clickTimerRef.current === null) return;
+    window.clearTimeout(clickTimerRef.current);
+    clickTimerRef.current = null;
+  };
+
+  const openMarkerProposal = (event: Readonly<{ event?: MouseEvent; points?: Array<{ x?: unknown }> }>) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    const mouseEvent = event.event;
+    const bounds = wrapperRef.current?.getBoundingClientRect();
+    if (!mouseEvent || !bounds || mouseEvent.detail > 1) {
+      clearPendingClick();
+      return;
+    }
+    const tSeconds = timeFromClientX(mouseEvent.clientX, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
+    if (tSeconds === null) return;
+    clearPendingClick();
+    clickTimerRef.current = window.setTimeout(() => {
+      clickTimerRef.current = null;
+      setProposal({
+        left: clamp(mouseEvent.clientX - bounds.left, 8, Math.max(8, bounds.width - 248)),
+        top: clamp(mouseEvent.clientY - bounds.top, 8, Math.max(8, bounds.height - 166)),
+        tSeconds: clamp(tSeconds, 0, maxTime),
+        mode: "point",
+        rangeDuration: "4:00",
+      });
+    }, 180);
+  };
+
+  const cancelSingleClick = () => {
+    clearPendingClick();
+    setProposal(null);
+    onXRangeChange(null);
+  };
+
+  const handleContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
+    if (!target) return;
+    event.preventDefault();
+    setProposal(null);
+    onDeleteMarker(target.marker);
+  };
+
+  const handleMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
+    const xSeconds = target ? timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins) : null;
+    if (!target || xSeconds === null) return;
+    event.preventDefault();
+    suppressClickRef.current = true;
+    clearPendingClick();
+    setProposal(null);
+    setDragPreview({ ...target, xSeconds: clamp(xSeconds, 0, maxTime) });
+  };
+
+  const handleMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (dragPreview) {
+      const xSeconds = timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
+      if (xSeconds !== null) setDragPreview({ ...dragPreview, xSeconds: clamp(xSeconds, 0, maxTime) });
+      return;
+    }
+    setMarkerHover(nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins)?.part ?? null);
+  };
+
+  const handleMouseUp = () => {
+    if (!dragPreview) return;
+    const next = draggedMarkerBounds(markers[dragPreview.marker], dragPreview.part, dragPreview.xSeconds, maxTime);
+    onPlaceMarker(dragPreview.marker, next.tSeconds, next.mode, next.windowStart, next.windowEnd);
+    setDragPreview(null);
+  };
+
+  const placeProposalMarker = (marker: MetaSoftMarkerName) => {
+    if (!proposal) return;
+    if (proposal.mode === "point") {
+      onPlaceMarker(marker, proposal.tSeconds, "point", null, null);
+      setProposal(null);
+      return;
+    }
+    const rangeSeconds = durationToSeconds(proposal.rangeDuration);
+    if (rangeSeconds === null) return;
+    const [windowStart, windowEnd] = centeredWindowBounds(proposal.tSeconds, rangeSeconds, maxTime);
+    onPlaceMarker(marker, proposal.tSeconds, "range", windowStart, windowEnd);
+    setProposal(null);
+  };
+
+  return (
+    <div
+      ref={wrapperRef}
+      className="chart-body"
+      style={{ cursor: cursorForMarkerDrag(dragPreview?.part ?? markerHover, Boolean(dragPreview)) }}
+      onContextMenu={handleContextMenu}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={() => {
+        setMarkerHover(null);
+        handleMouseUp();
+      }}
+    >
+      <Plot
+        data={data}
+        layout={layout}
+        config={{
+          responsive: true,
+          displayModeBar: false,
+          scrollZoom: false,
+          doubleClick: "reset",
+          editable: false,
+        }}
+        style={{ width: "100%", height }}
+        useResizeHandler
+        onClick={openMarkerProposal}
+        onRelayout={(event: Readonly<Record<string, unknown>>) => {
+          const nextRange = xRangeFromRelayout(event);
+          if (nextRange !== undefined) onXRangeChange(nextRange);
+        }}
+        onHover={(event: Readonly<{ points?: Array<{ x?: unknown }> }>) => onCursorPoint(nearestEventPoint(points, event))}
+        onUnhover={() => onCursorPoint(null)}
+        onDoubleClick={cancelSingleClick}
+      />
+      {proposal && (
+        <div className="marker-popover" style={{ left: proposal.left, top: proposal.top }}>
+          <div className="popover-head">
+            <div>
+              <p>Placer un seuil</p>
+              <span>{secondsToClock(proposal.tSeconds)}</span>
+            </div>
+            <button type="button" onClick={() => setProposal(null)} aria-label="Fermer">x</button>
+          </div>
+          <div className="segmented">
+            {(["point", "range"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setProposal({ ...proposal, mode })}
+                className={proposal.mode === mode ? "active" : ""}
+              >
+                {mode === "point" ? "Ligne" : "Range"}
+              </button>
+            ))}
+          </div>
+          {proposal.mode === "range" && (
+            <label className="field small-field">
+              Duree
+              <input
+                value={proposal.rangeDuration}
+                onChange={(event) => setProposal({ ...proposal, rangeDuration: event.target.value })}
+                onBlur={() => {
+                  const seconds = durationToSeconds(proposal.rangeDuration);
+                  if (seconds !== null) setProposal({ ...proposal, rangeDuration: secondsToDuration(seconds) });
+                }}
+                placeholder="4:00"
+              />
+            </label>
+          )}
+          <div className="marker-choice-grid">
+            {MARKER_NAMES.map((marker) => (
+              <button
+                key={marker}
+                type="button"
+                onClick={() => placeProposalMarker(marker)}
+                disabled={proposal.mode === "range" && durationToSeconds(proposal.rangeDuration) === null}
+                style={{ borderColor: `${MARKER_COLORS[marker]}70`, color: MARKER_COLORS[marker] }}
+              >
+                {marker === "VO2_max" ? "VO2max" : marker}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function smoothSeries(
+  x: number[],
+  y: Array<number | string | null | undefined>,
+  windowSeconds: number,
+): Array<number | string | null | undefined> {
+  if (windowSeconds <= 0) return y;
+  const radius = windowSeconds / 2;
+  let left = 0;
+  let right = 0;
+  let sum = 0;
+  let count = 0;
+  return y.map((value, index) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return value;
+    const center = x[index];
+    while (right < y.length && x[right] <= center + radius) {
+      const candidate = y[right];
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        sum += candidate;
+        count += 1;
+      }
+      right += 1;
+    }
+    while (left < y.length && x[left] < center - radius) {
+      const candidate = y[left];
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        sum -= candidate;
+        count -= 1;
+      }
+      left += 1;
+    }
+    return count ? Number((sum / count).toFixed(3)) : value;
+  });
+}
+
+function isSeriesAvailable(
+  analysis: import("../types/metasoft").MetaSoftAnalysis,
+  graph: MetaSoftGraphConfig,
+  series: MetaSoftSeriesConfig,
+): boolean {
+  if (graph.source === "running_economy") {
+    return (analysis.computed.running_economy ?? []).some((row) => row.value_j_kg_m !== null);
+  }
+  return Boolean(analysis.metrics[series.key as keyof typeof analysis.metrics]);
+}
+
+function xRangeFromRelayout(event: Readonly<Record<string, unknown>>): [number, number] | null | undefined {
+  if (event["xaxis.autorange"] === true) return null;
+  const eventRange = toRangeTuple(event["xaxis.range"]);
+  if (eventRange) return eventRange;
+  const start = toNumber(event["xaxis.range[0]"]);
+  const end = toNumber(event["xaxis.range[1]"]);
+  if (start === null || end === null || end <= start) return undefined;
+  return [start, end];
+}
+
+function previewDraggedMarker(marker: DraftMarker, drag: MarkerDragPreview, maxTime: number): DraftMarker {
+  const { tSeconds, mode, windowStart, windowEnd } = draggedMarkerBounds(marker, drag.part, drag.xSeconds, maxTime);
+  return {
+    ...marker,
+    mode,
+    t_seconds: tSeconds,
+    window_start_seconds: windowStart,
+    window_end_seconds: windowEnd,
+  };
+}
+
+function draggedMarkerBounds(
+  marker: DraftMarker,
+  part: MarkerDragPart,
+  xSeconds: number,
+  maxTime: number,
+): { tSeconds: number; mode: MarkerMode; windowStart: number | null; windowEnd: number | null } {
+  if (marker.mode === "point" || marker.window_start_seconds === null || marker.window_end_seconds === null) {
+    return { tSeconds: xSeconds, mode: "point", windowStart: null, windowEnd: null };
+  }
+  if (part === "center") {
+    const [windowStart, windowEnd] = centeredWindowBounds(
+      xSeconds,
+      marker.window_end_seconds - marker.window_start_seconds,
+      maxTime,
+    );
+    return { tSeconds: xSeconds, mode: "range", windowStart, windowEnd };
+  }
+  const upperBound = maxTime > 0 ? maxTime : Number.POSITIVE_INFINITY;
+  const minDuration = 1;
+  const maxStart = Math.max(0, marker.window_end_seconds - minDuration);
+  const minEnd = marker.window_start_seconds + minDuration;
+  const windowStart = part === "start"
+    ? clamp(xSeconds, 0, maxStart)
+    : marker.window_start_seconds;
+  const windowEnd = part === "end"
+    ? clamp(xSeconds, minEnd, Math.max(minEnd, upperBound))
+    : marker.window_end_seconds;
+  return { tSeconds: (windowStart + windowEnd) / 2, mode: "range", windowStart, windowEnd };
+}
+
+function nearestMarkerTargetFromMouse(
+  event: ReactMouseEvent<HTMLDivElement>,
+  wrapper: HTMLDivElement | null,
+  markers: DraftMarkers,
+  range: [number, number],
+  margin: { l: number; r: number },
+): MarkerDragTarget | null {
+  if (!wrapper || !range[1]) return null;
+  const bounds = wrapper.getBoundingClientRect();
+  const plotLeft = bounds.left + margin.l;
+  const plotRight = bounds.right - margin.r;
+  const plotWidth = plotRight - plotLeft;
+  if (plotWidth <= 0 || event.clientX < plotLeft || event.clientX > plotRight) return null;
+
+  const xSeconds = range[0] + ((event.clientX - plotLeft) / plotWidth) * (range[1] - range[0]);
+  const thresholdSeconds = Math.max(10, ((range[1] - range[0]) / plotWidth) * 12);
+  return MARKER_NAMES.reduce<{ target: MarkerDragTarget; distance: number } | null>((best, marker) => {
+    const item = markers[marker];
+    const candidates: Array<{ part: MarkerDragPart; seconds: number | null }> = [
+      { part: "center", seconds: item.t_seconds },
+      { part: "start", seconds: item.mode === "range" ? item.window_start_seconds : null },
+      { part: "end", seconds: item.mode === "range" ? item.window_end_seconds : null },
+    ];
+    return candidates.reduce<typeof best>((candidateBest, candidate) => {
+      if (candidate.seconds === null) return candidateBest;
+      const distance = Math.abs(candidate.seconds - xSeconds);
+      if (distance > thresholdSeconds || (candidateBest && candidateBest.distance <= distance)) return candidateBest;
+      return { target: { marker, part: candidate.part }, distance };
+    }, best);
+  }, null)?.target ?? null;
+}
+
+function cursorForMarkerDrag(part: MarkerDragPart | null, dragging: boolean): string | undefined {
+  if (part === "start" || part === "end") return "ew-resize";
+  if (part === "center") return dragging ? "grabbing" : "grab";
+  return undefined;
+}
+
+function timeFromMouse(
+  event: ReactMouseEvent<HTMLDivElement>,
+  wrapper: HTMLDivElement | null,
+  range: [number, number],
+  margin: { l: number; r: number },
+): number | null {
+  return timeFromClientX(event.clientX, wrapper, range, margin);
+}
+
+function timeFromClientX(
+  clientX: number,
+  wrapper: HTMLDivElement | null,
+  range: [number, number],
+  margin: { l: number; r: number },
+): number | null {
+  if (!wrapper) return null;
+  const bounds = wrapper.getBoundingClientRect();
+  const plotLeft = bounds.left + margin.l;
+  const plotRight = bounds.right - margin.r;
+  const plotWidth = plotRight - plotLeft;
+  if (plotWidth <= 0 || clientX < plotLeft || clientX > plotRight) return null;
+  return range[0] + ((clientX - plotLeft) / plotWidth) * (range[1] - range[0]);
+}
+
+function centeredWindowBounds(tSeconds: number, durationSeconds: number, maxTime: number): [number, number] {
+  const duration = Math.max(1, durationSeconds);
+  if (maxTime > 0 && duration >= maxTime) return [0, maxTime];
+  let start = tSeconds - duration / 2;
+  let end = tSeconds + duration / 2;
+  if (start < 0) {
+    end -= start;
+    start = 0;
+  }
+  if (maxTime > 0 && end > maxTime) {
+    start = Math.max(0, start - (end - maxTime));
+    end = maxTime;
+  }
+  return [start, end];
+}
+
+function durationToSeconds(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^\d+([.,]\d+)?$/.test(trimmed)) {
+    const parsed = Number(trimmed.replace(",", "."));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  const parts = trimmed.split(":").map((part) => Number(part));
+  if (parts.length < 2 || parts.length > 3 || parts.some((part) => !Number.isFinite(part) || part < 0)) {
+    return null;
+  }
+  const [hours, minutes, seconds] = parts.length === 3 ? parts : [0, parts[0], parts[1]];
+  const total = hours * 3600 + minutes * 60 + seconds;
+  return total > 0 ? total : null;
+}
+
+function secondsToDuration(seconds: number): string {
+  const rounded = Math.max(1, Math.round(seconds));
+  const h = Math.floor(rounded / 3600);
+  const m = Math.floor((rounded % 3600) / 60);
+  const s = rounded % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function toRangeTuple(value: unknown): [number, number] | null {
+  if (!Array.isArray(value) || value.length !== 2) return null;
+  const start = toNumber(value[0]);
+  const end = toNumber(value[1]);
+  if (start === null || end === null || end <= start) return null;
+  return [start, end];
+}
+
+function toNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function nearestEventPoint(
+  points: MetaSoftPoint[],
+  event: Readonly<{ points?: Array<{ x?: unknown }> }>,
+): MetaSoftPoint | null {
+  const x = event.points?.[0]?.x;
+  if (typeof x !== "number") return null;
+  return points.reduce<MetaSoftPoint | null>((best, point) => {
+    if (point.t_seconds === null) return best;
+    if (!best || best.t_seconds === null) return point;
+    return Math.abs(point.t_seconds - x) < Math.abs(best.t_seconds - x) ? point : best;
+  }, null);
+}
+
+function defaultRangeFromPoints(points: MetaSoftPoint[], maxTime: number): [number, number] {
+  const values = points
+    .map((point) => point.t_seconds)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (!values.length) return [0, maxTime];
+  const start = Math.min(...values);
+  const end = Math.max(...values);
+  return end > start ? [start, end] : [Math.max(0, start - 30), Math.min(maxTime, end + 30)];
+}
+
+function buildTickVals(range: [number, number]): number[] {
+  const span = range[1] - range[0];
+  if (span <= 0) return [];
+  const step = span > 5400 ? 1200 : span > 2400 ? 600 : 300;
+  const vals = [];
+  for (let value = Math.ceil(range[0] / step) * step; value <= range[1]; value += step) vals.push(value);
+  return vals;
+}

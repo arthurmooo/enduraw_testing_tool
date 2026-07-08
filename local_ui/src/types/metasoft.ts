@@ -1,0 +1,202 @@
+export type MetaSoftMetricKey =
+  | "vo2_l_min"
+  | "vo2_ml_kg_min"
+  | "vco2_l_min"
+  | "fc_bpm"
+  | "ve_l_min"
+  | "vt_l"
+  | "bf_per_min"
+  | "rer"
+  | "speed_kmh"
+  | "peto2_mmhg"
+  | "petco2_mmhg"
+  | "de_kcal_h"
+  | "decho_kcal_h"
+  | "defat_kcal_h"
+  | "depro_kcal_h"
+  | "ve_vo2"
+  | "ve_vco2";
+
+export type MetaSoftGraphId =
+  | "fc_vo2"
+  | "vo2kg_speed"
+  | "ve_bf"
+  | "rer"
+  | "ve_ratios"
+  | "pet"
+  | "de"
+  | "running_economy"
+  | "thresholds";
+
+export type MetaSoftMarkerName = "SV1" | "SV2" | "VO2_max" | "VMA";
+export type MarkerMode = "point" | "range";
+
+export interface MetaSoftMetricSpec {
+  key: MetaSoftMetricKey;
+  source_label: string;
+  unit?: string | null;
+  source: string;
+  transform: string;
+}
+
+export interface MetaSoftPoint {
+  index: number;
+  t: string;
+  t_seconds: number | null;
+  phase?: string | null;
+  marker?: string | null;
+  values: Partial<Record<MetaSoftMetricKey, number | string | null>>;
+  raw?: Record<string, number | string | null>;
+}
+
+export interface MetaSoftPhaseSegment {
+  phase: string;
+  start_seconds: number | null;
+  end_seconds: number | null;
+  point_count: number;
+}
+
+export interface MetaSoftWarmupStage {
+  stage_index: number;
+  speed_kmh: number;
+  start_seconds: number | null;
+  end_seconds: number | null;
+  point_count: number;
+  native_de?: Record<string, { value: number; unit: string; source: string }>;
+}
+
+export interface MetaSoftRunningEconomy {
+  stage_index: number;
+  speed_kmh: number;
+  speed_m_min?: number;
+  value_j_kg_m: number | null;
+  unit?: string;
+  point_count: number;
+  vco2_source?: string | null;
+  vo2_ml_min?: number;
+  vco2_ml_min?: number;
+  mass_kg?: number;
+  warning?: MetaSoftWarning;
+}
+
+export interface MetaSoftWarning {
+  code?: string;
+  message: string;
+  field?: string;
+  blocking?: boolean;
+  stage_index?: number;
+  [key: string]: unknown;
+}
+
+export interface MetaSoftAnalysis {
+  file: { filename: string; size_bytes?: number };
+  athlete: {
+    first_name?: string;
+    last_name?: string;
+    athlete_name?: string;
+    weight_kg?: number;
+  };
+  test: { date?: string; time?: string; datetime?: string; type?: string };
+  metrics: Partial<Record<MetaSoftMetricKey, MetaSoftMetricSpec>>;
+  points: MetaSoftPoint[];
+  phases: MetaSoftPhaseSegment[];
+  warmup_stages: MetaSoftWarmupStage[];
+  computed: {
+    rest_baseline?: {
+      vo2_ml_min: number;
+      vco2_ml_min: number;
+      vco2_source?: string | null;
+      point_count: number;
+      source: string;
+    } | null;
+    running_economy?: MetaSoftRunningEconomy[];
+    ventilatory_consistency?: MetaSoftWarning[];
+  };
+  warnings: MetaSoftWarning[];
+}
+
+export interface MetaSoftMarker {
+  name: MetaSoftMarkerName;
+  t_seconds: number | null;
+  window_start_seconds: number | null;
+  window_end_seconds: number | null;
+  phase?: string | null;
+  point_count: number;
+  values: {
+    fc_bpm?: number | null;
+    vo2_l_min?: number | null;
+    vo2_ml_kg_min?: number | null;
+    speed_kmh?: number | null;
+    rer?: number | null;
+    de_kcal_h?: number | null;
+    vma?: number | null;
+  };
+  warnings?: MetaSoftWarning[];
+}
+
+export interface DraftMarker extends MetaSoftMarker {
+  mode: MarkerMode;
+}
+
+export type DraftMarkers = Record<MetaSoftMarkerName, DraftMarker>;
+export type ConfirmedMarkers = Partial<Record<MetaSoftMarkerName, MetaSoftMarker>>;
+
+export interface MarkerSelectionPayload {
+  name: MetaSoftMarkerName;
+  mode: MarkerMode;
+  t_seconds?: number | null;
+  window_start_seconds?: number | null;
+  window_end_seconds?: number | null;
+}
+
+export interface LocalAnalysisPayload {
+  ok: true;
+  match: {
+    match_id: string;
+    profile_name: string;
+    xml_filename: string;
+  };
+  profile: Record<string, unknown>;
+  analysis: MetaSoftAnalysis;
+  warnings: MetaSoftWarning[];
+  source_of_truth: Record<string, string>;
+}
+
+export interface ProfileConflict {
+  path: string;
+  current: unknown;
+  incoming: unknown;
+}
+
+export interface OfficializeResponse {
+  ok: true;
+  markers: ConfirmedMarkers;
+  source?: string;
+  warnings: MetaSoftWarning[];
+}
+
+export interface ReportPreviewResponse {
+  ok: true;
+  status: "ready" | "conflict";
+  patch: Record<string, unknown>;
+  conflicts: ProfileConflict[];
+  confirmed_markers: ConfirmedMarkers;
+  warnings: MetaSoftWarning[];
+}
+
+export interface ReportResponse {
+  ok: true;
+  profile_name: string;
+  updated_paths: string[];
+  confirmed_markers: ConfirmedMarkers;
+  warnings: MetaSoftWarning[];
+}
+
+export interface ExportResponse {
+  ok: true;
+  json: { filename: string; path: string };
+  audit: { filename: string; path: string };
+  confirmed_markers: ConfirmedMarkers;
+  warnings: MetaSoftWarning[];
+  blocking_errors: MetaSoftWarning[];
+}
