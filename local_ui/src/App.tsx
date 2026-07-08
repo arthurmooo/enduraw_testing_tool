@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, FileUp, SlidersHorizontal } from "lucide-react";
 import { AnalysisExportSection } from "./components/AnalysisExportSection";
 import { CursorRail } from "./components/CursorRail";
@@ -43,6 +43,9 @@ export default function App() {
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
   const [conflicts, setConflicts] = useState<ProfileConflict[]>([]);
+  const cursorFrameRef = useRef<number | null>(null);
+  const cursorPointRef = useRef<MetaSoftPoint | null>(null);
+  const pendingCursorPointRef = useRef<MetaSoftPoint | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,9 +56,12 @@ export default function App() {
         setBusy("Chargement");
         const result = await apiGet<LocalAnalysisPayload>(`/api/matches/${boot.matchId}/analysis`, boot.token);
         if (cancelled) return;
+        const firstPoint = result.analysis.points[0] ?? null;
         setPayload(result);
         setDraftMarkers(createInitialMarkers(result.analysis));
-        setCursorPoint(result.analysis.points[0] ?? null);
+        cursorPointRef.current = firstPoint;
+        pendingCursorPointRef.current = firstPoint;
+        setCursorPoint(firstPoint);
         setPhaseFilter("Tout");
       } catch (err) {
         if (!cancelled) setError(errorMessage(err));
@@ -69,10 +75,66 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => () => {
+    if (cursorFrameRef.current !== null) window.cancelAnimationFrame(cursorFrameRef.current);
+  }, []);
+
   const phases = useMemo(
     () => Array.from(new Set((payload?.analysis.phases ?? []).map((phase) => phase.phase))).filter(Boolean),
     [payload],
   );
+
+  const flushCursorPoint = useCallback(() => {
+    cursorFrameRef.current = null;
+    const next = pendingCursorPointRef.current;
+    if (sameCursorPoint(cursorPointRef.current, next)) return;
+    cursorPointRef.current = next;
+    setCursorPoint(next);
+  }, []);
+
+  const handleCursorPoint = useCallback((point: MetaSoftPoint | null) => {
+    const current = cursorFrameRef.current !== null ? pendingCursorPointRef.current : cursorPointRef.current;
+    if (sameCursorPoint(current, point)) return;
+    pendingCursorPointRef.current = point;
+    if (cursorFrameRef.current !== null) return;
+    cursorFrameRef.current = window.requestAnimationFrame(flushCursorPoint);
+  }, [flushCursorPoint]);
+
+  const markDirty = useCallback((marker: MetaSoftMarkerName) => {
+    setDirtyMarkers((current) => new Set(current).add(marker));
+    setPreview(null);
+    setReport(null);
+    setExportResult(null);
+    setConflicts([]);
+    setError(null);
+  }, []);
+
+  const placeMarker = useCallback((
+    marker: MetaSoftMarkerName,
+    tSeconds: number,
+    mode: MarkerMode,
+    windowStartSeconds?: number | null,
+    windowEndSeconds?: number | null,
+  ) => {
+    if (!payload) return;
+    setDraftMarkers((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        [marker]: buildDraftMarker(marker, payload.analysis.points, tSeconds, mode, windowStartSeconds, windowEndSeconds),
+      };
+    });
+    markDirty(marker);
+  }, [markDirty, payload]);
+
+  const deleteMarker = useCallback((marker: MetaSoftMarkerName) => {
+    if (!payload) return;
+    setDraftMarkers((current) => current ? {
+      ...current,
+      [marker]: buildDraftMarker(marker, payload.analysis.points, null, "point"),
+    } : current);
+    markDirty(marker);
+  }, [markDirty, payload]);
 
   if (error && !payload) {
     return (
@@ -95,31 +157,6 @@ export default function App() {
   }
 
   const { analysis, match, warnings } = payload;
-
-  const placeMarker = (
-    marker: MetaSoftMarkerName,
-    tSeconds: number,
-    mode: MarkerMode,
-    windowStartSeconds?: number | null,
-    windowEndSeconds?: number | null,
-  ) => {
-    setDraftMarkers((current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        [marker]: buildDraftMarker(marker, analysis.points, tSeconds, mode, windowStartSeconds, windowEndSeconds),
-      };
-    });
-    markDirty(marker);
-  };
-
-  const deleteMarker = (marker: MetaSoftMarkerName) => {
-    setDraftMarkers((current) => current ? {
-      ...current,
-      [marker]: buildDraftMarker(marker, analysis.points, null, "point"),
-    } : current);
-    markDirty(marker);
-  };
 
   const officializeMarkers = async () => {
     await runOfficialAction("Sauvegarde", async () => {
@@ -248,7 +285,7 @@ export default function App() {
               markers={draftMarkers}
               phaseFilter={phaseFilter}
               smoothingSeconds={smoothingSeconds}
-              onCursorPoint={setCursorPoint}
+              onCursorPoint={handleCursorPoint}
               onPlaceMarker={placeMarker}
               onDeleteMarker={deleteMarker}
             />
@@ -283,15 +320,6 @@ export default function App() {
     </main>
   );
 
-  function markDirty(marker: MetaSoftMarkerName) {
-    setDirtyMarkers((current) => new Set(current).add(marker));
-    setPreview(null);
-    setReport(null);
-    setExportResult(null);
-    setConflicts([]);
-    setError(null);
-  }
-
   function acceptConfirmedMarkers(markers: ConfirmedMarkers) {
     setConfirmedMarkers(markers);
     setDirtyMarkers(new Set());
@@ -313,6 +341,10 @@ export default function App() {
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return "Action MetaSoft impossible.";
+}
+
+function sameCursorPoint(left: MetaSoftPoint | null, right: MetaSoftPoint | null): boolean {
+  return (left?.index ?? null) === (right?.index ?? null);
 }
 
 function conflictsFromDetails(details: unknown): ProfileConflict[] {

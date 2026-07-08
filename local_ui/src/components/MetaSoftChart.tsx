@@ -1,8 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import Plot from "react-plotly.js";
 import { Maximize2, X } from "lucide-react";
-import { buildAnnotations, buildMarkerShapes, buildTimeBandShapes } from "../lib/chartUtils";
+import {
+  buildMarkerAnnotations,
+  buildMarkerShapes,
+  buildStaticAnnotations,
+  buildTimeBandShapes,
+} from "../lib/chartUtils";
 import { MARKER_COLORS, MetaSoftGraphConfig, MetaSoftSeriesConfig } from "../lib/graphConfig";
 import { MARKER_NAMES, secondsToClock } from "../lib/markerUtils";
 import type {
@@ -34,7 +39,7 @@ interface Props {
   onDeleteMarker: (marker: MetaSoftMarkerName) => void;
 }
 
-export function MetaSoftChart({
+function MetaSoftChartComponent({
   analysis,
   graph,
   markers,
@@ -124,7 +129,7 @@ export function MetaSoftChart({
           <Maximize2 size={16} />
         </button>
       </div>
-      {body(260)}
+      {fullscreen ? <div className="chart-body" style={{ height: 260 }} /> : body(260)}
       {missingSeries.length > 0 && (
         <p className="missing-series">Absent XML : {missingSeries.map((series) => series.label).join(", ")}</p>
       )}
@@ -151,6 +156,8 @@ export function MetaSoftChart({
     </section>
   );
 }
+
+export const MetaSoftChart = memo(MetaSoftChartComponent);
 
 function SeriesToggles({
   series,
@@ -276,6 +283,10 @@ function PointChartBody({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const clickTimerRef = useRef<number | null>(null);
   const suppressClickRef = useRef(false);
+  const dragFrameRef = useRef<number | null>(null);
+  const dragPreviewRef = useRef<MarkerDragPreview | null>(null);
+  const pendingDragPreviewRef = useRef<MarkerDragPreview | null>(null);
+  const markerHoverRef = useRef<MarkerDragTarget | null>(null);
   const [proposal, setProposal] = useState<{
     left: number;
     top: number;
@@ -283,7 +294,7 @@ function PointChartBody({
     mode: MarkerMode;
     rangeDuration: string;
   } | null>(null);
-  const [markerHover, setMarkerHover] = useState<MarkerDragPart | null>(null);
+  const [markerHover, setMarkerHover] = useState<MarkerDragTarget | null>(null);
   const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
   const canEditTimeMarkers = graph.kind === "time";
   const chartPoints = useMemo(
@@ -299,6 +310,22 @@ function PointChartBody({
     ? { ...markers, [dragPreview.marker]: previewDraggedMarker(markers[dragPreview.marker], dragPreview, maxTime) }
     : markers;
   const plotMargins = { l: 44, r: graph.series.some((item) => item.axis === "y2") ? 42 : 16, t: 14, b: 42 };
+  const staticShapes = useMemo(
+    () => canEditTimeMarkers ? buildTimeBandShapes(analysis) : [],
+    [analysis, canEditTimeMarkers],
+  );
+  const staticAnnotations = useMemo(
+    () => canEditTimeMarkers ? buildStaticAnnotations(analysis) : [],
+    [analysis, canEditTimeMarkers],
+  );
+  const markerShapes = useMemo(
+    () => canEditTimeMarkers ? buildMarkerShapes(visibleMarkers) : [],
+    [canEditTimeMarkers, visibleMarkers],
+  );
+  const markerAnnotations = useMemo(
+    () => canEditTimeMarkers ? buildMarkerAnnotations(visibleMarkers) : [],
+    [canEditTimeMarkers, visibleMarkers],
+  );
   const data = useMemo(() => series.map((seriesItem) => {
     const rawY = chartPoints.map((point) => point.values[seriesItem.key as keyof MetaSoftPoint["values"]]);
     const shouldSmooth = graph.kind === "time" && seriesItem.smoothable;
@@ -325,8 +352,8 @@ function PointChartBody({
     hovermode: graph.kind === "time" ? "x unified" : "closest",
     dragmode: "zoom",
     showlegend: false,
-    shapes: canEditTimeMarkers ? [...buildTimeBandShapes(analysis), ...buildMarkerShapes(visibleMarkers)] : [],
-    annotations: canEditTimeMarkers ? buildAnnotations(analysis, visibleMarkers) : [],
+    shapes: canEditTimeMarkers ? [...staticShapes, ...markerShapes] : [],
+    annotations: canEditTimeMarkers ? [...staticAnnotations, ...markerAnnotations] : [],
     xaxis: {
       range: effectiveRange ?? defaultRange,
       ...(graph.kind === "time" ? {
@@ -356,12 +383,47 @@ function PointChartBody({
 
   useEffect(() => () => {
     if (clickTimerRef.current !== null) window.clearTimeout(clickTimerRef.current);
+    if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
   }, []);
+
+  useEffect(() => {
+    dragPreviewRef.current = dragPreview;
+  }, [dragPreview]);
 
   const clearPendingClick = () => {
     if (clickTimerRef.current === null) return;
     window.clearTimeout(clickTimerRef.current);
     clickTimerRef.current = null;
+  };
+
+  const updateMarkerHover = (target: MarkerDragTarget | null) => {
+    if (sameMarkerTarget(markerHoverRef.current, target)) return;
+    markerHoverRef.current = target;
+    setMarkerHover(target);
+  };
+
+  const scheduleDragPreview = (next: MarkerDragPreview) => {
+    const current = pendingDragPreviewRef.current ?? dragPreviewRef.current;
+    if (sameDragPreview(current, next)) return;
+    pendingDragPreviewRef.current = next;
+    if (dragFrameRef.current !== null) return;
+    dragFrameRef.current = window.requestAnimationFrame(() => {
+      dragFrameRef.current = null;
+      const pending = pendingDragPreviewRef.current;
+      pendingDragPreviewRef.current = null;
+      if (!pending) return;
+      setDragPreview((currentPreview) => {
+        if (sameDragPreview(currentPreview, pending)) return currentPreview;
+        dragPreviewRef.current = pending;
+        return pending;
+      });
+    });
+  };
+
+  const clearPendingDragFrame = () => {
+    if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
+    dragFrameRef.current = null;
+    pendingDragPreviewRef.current = null;
   };
 
   const openMarkerProposal = (event: Readonly<{ event?: MouseEvent; points?: Array<{ x?: unknown }> }>) => {
@@ -415,25 +477,38 @@ function PointChartBody({
     event.preventDefault();
     suppressClickRef.current = true;
     clearPendingClick();
+    clearPendingDragFrame();
     setProposal(null);
-    setDragPreview({ ...target, xSeconds: clamp(xSeconds, 0, maxTime) });
+    const nextDrag = { ...target, xSeconds: clamp(xSeconds, 0, maxTime) };
+    dragPreviewRef.current = nextDrag;
+    setDragPreview(nextDrag);
   };
 
   const handleMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
-    if (dragPreview) {
+    const currentDrag = dragPreviewRef.current;
+    if (currentDrag) {
       const xSeconds = timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
-      if (xSeconds !== null) setDragPreview({ ...dragPreview, xSeconds: clamp(xSeconds, 0, maxTime) });
+      if (xSeconds !== null) scheduleDragPreview({ ...currentDrag, xSeconds: clamp(xSeconds, 0, maxTime) });
       return;
     }
-    setMarkerHover(nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins)?.part ?? null);
+    updateMarkerHover(
+      nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins),
+    );
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (event?: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
-    if (!dragPreview) return;
-    const next = draggedMarkerBounds(markers[dragPreview.marker], dragPreview.part, dragPreview.xSeconds, maxTime);
-    onPlaceMarker(dragPreview.marker, next.tSeconds, next.mode, next.windowStart, next.windowEnd);
+    let finalDrag = pendingDragPreviewRef.current ?? dragPreviewRef.current;
+    if (!finalDrag) return;
+    const xSeconds = event
+      ? timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins)
+      : null;
+    if (xSeconds !== null) finalDrag = { ...finalDrag, xSeconds: clamp(xSeconds, 0, maxTime) };
+    clearPendingDragFrame();
+    const next = draggedMarkerBounds(markers[finalDrag.marker], finalDrag.part, finalDrag.xSeconds, maxTime);
+    onPlaceMarker(finalDrag.marker, next.tSeconds, next.mode, next.windowStart, next.windowEnd);
+    dragPreviewRef.current = null;
     setDragPreview(null);
   };
 
@@ -455,14 +530,14 @@ function PointChartBody({
     <div
       ref={wrapperRef}
       className="chart-body"
-      style={{ cursor: cursorForMarkerDrag(dragPreview?.part ?? markerHover, Boolean(dragPreview)) }}
+      style={{ cursor: cursorForMarkerDrag(dragPreview?.part ?? markerHover?.part ?? null, Boolean(dragPreview)) }}
       onContextMenu={handleContextMenu}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={() => {
-        setMarkerHover(null);
-        handleMouseUp();
+      onMouseLeave={(event) => {
+        updateMarkerHover(null);
+        handleMouseUp(event);
       }}
       onWheel={(event) => event.preventDefault()}
     >
@@ -701,6 +776,15 @@ function cursorForMarkerDrag(part: MarkerDragPart | null, dragging: boolean): st
   if (part === "start" || part === "end") return "ew-resize";
   if (part === "center") return dragging ? "grabbing" : "grab";
   return undefined;
+}
+
+function sameMarkerTarget(left: MarkerDragTarget | null, right: MarkerDragTarget | null): boolean {
+  return (left?.marker ?? null) === (right?.marker ?? null)
+    && (left?.part ?? null) === (right?.part ?? null);
+}
+
+function sameDragPreview(left: MarkerDragPreview | null, right: MarkerDragPreview | null): boolean {
+  return sameMarkerTarget(left, right) && (left?.xSeconds ?? null) === (right?.xSeconds ?? null);
 }
 
 function timeFromMouse(

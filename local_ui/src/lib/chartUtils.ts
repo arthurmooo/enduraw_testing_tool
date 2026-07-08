@@ -86,6 +86,10 @@ export function buildMarkerShapes(markers: DraftMarkers): PlotShape[] {
 }
 
 export function buildAnnotations(analysis: MetaSoftAnalysis, markers: DraftMarkers) {
+  return [...buildStaticAnnotations(analysis), ...buildMarkerAnnotations(markers)];
+}
+
+export function buildStaticAnnotations(analysis: MetaSoftAnalysis) {
   const speedLabels = speedSegmentsForAnalysis(analysis)
     .filter((stage) => (
       typeof stage.start_seconds === "number"
@@ -116,6 +120,10 @@ export function buildAnnotations(analysis: MetaSoftAnalysis, markers: DraftMarke
     bordercolor: "rgba(255,255,255,0.06)",
     borderpad: 3,
   }));
+  return [...speedLabels, ...phaseLabels];
+}
+
+export function buildMarkerAnnotations(markers: DraftMarkers) {
   const markerLabels = Object.values(markers)
     .filter((marker) => marker.t_seconds !== null)
     .map((marker) => ({
@@ -128,7 +136,7 @@ export function buildAnnotations(analysis: MetaSoftAnalysis, markers: DraftMarke
       yanchor: "bottom",
       font: { color: MARKER_COLORS[marker.name], size: 10 },
     }));
-  return [...speedLabels, ...phaseLabels, ...markerLabels];
+  return markerLabels;
 }
 
 function speedSegmentsForAnalysis(analysis: MetaSoftAnalysis): MetaSoftWarmupStage[] {

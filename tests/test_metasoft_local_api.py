@@ -198,6 +198,23 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(payload["markers"]["SV2"]["values"]["fc_bpm"], 122)
         self.assertEqual(payload["source"], "python.build_metasoft_marker")
 
+    def test_analysis_payload_is_slim_and_officialize_still_uses_python(self) -> None:
+        match_id = self._match_id()
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+
+        self.assertEqual(status, 200)
+        point = payload["analysis"]["points"][0]
+        self.assertNotIn("raw", point)
+        self.assertNotIn("value_sources", point)
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/markers/officialize",
+            {"marker_selections": [{"name": "SV1", "mode": "point", "t_seconds": 60}]},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["markers"]["SV1"]["values"]["fc_bpm"], 120)
+
     def test_officialize_rejects_point_times_outside_raw_bounds(self) -> None:
         match_id = self._match_id()
         for t_seconds in (-1, 121):

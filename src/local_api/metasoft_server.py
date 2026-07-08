@@ -55,6 +55,7 @@ class LocalMetaSoftServer:
         self.thread = None
         self._profile_update_lock = threading.Lock()
         self._profile_updates = []
+        self._match_context_cache = {}
 
     @classmethod
     def ensure_started(cls, session_manager):
@@ -62,7 +63,9 @@ class LocalMetaSoftServer:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls(session_manager)
-            cls._instance.session_manager = session_manager
+            elif cls._instance.session_manager is not session_manager:
+                cls._instance.session_manager = session_manager
+                cls._instance._clear_match_context_cache()
             if not cls._instance.is_running():
                 cls._instance.start()
             return cls._instance
@@ -119,6 +122,9 @@ class LocalMetaSoftServer:
         with self._profile_update_lock:
             if profile_name not in self._profile_updates:
                 self._profile_updates.append(profile_name)
+
+    def _clear_match_context_cache(self):
+        self._match_context_cache.clear()
 
     def consume_pending_profile_updates(self):
         """Consomme les profils modifies en attente pour une UI locale."""
@@ -202,7 +208,7 @@ class LocalMetaSoftServer:
             "ok": True,
             "match": context["match"],
             "profile": _public_profile(context["profile"]),
-            "analysis": context["analysis"],
+            "analysis": _ui_analysis_payload(context["analysis"]),
             "warnings": warnings,
             "source_of_truth": {
                 "metrics": "python.metasoft_analysis",
@@ -401,24 +407,51 @@ class LocalMetaSoftServer:
         if not xml_path:
             return _error("xml_not_found", "XML local introuvable.", status=404)
 
+        xml_file = Path(xml_path)
         try:
-            xml_data = TCPXmlParser().parse_file(xml_path)
-        except Exception as exc:
+            xml_stat = xml_file.stat()
+        except OSError as exc:
             return _error(
-                "xml_parse_failed",
-                f"Parsing XML MetaSoft impossible: {exc}",
-                status=422,
+                "xml_not_found",
+                f"XML local inaccessible: {exc}",
+                status=404,
             )
 
-        parsed = xml_data.get("metasoft_parsed", {})
-        analysis = xml_data.get("metasoft_analysis", {})
-        if _positive_number(parsed.get("athlete", {}).get("weight_kg")) is None:
-            profile_mass = _profile_mass_kg(profile)
-            if profile_mass is not None:
-                # Source masse: profil local matche, seulement si le XML n'a
-                # aucun poids exploitable. Unite: kg.
-                analysis = build_metasoft_analysis(parsed, manual_mass_kg=profile_mass)
-                xml_data["metasoft_analysis"] = analysis
+        profile_mass = _profile_mass_kg(profile)
+        cache_key = (
+            id(session),
+            getattr(session, "name", None),
+            match_id,
+            str(xml_file.resolve()),
+            xml_stat.st_mtime_ns,
+            xml_stat.st_size,
+            profile_mass,
+        )
+        cached = self._match_context_cache.get(cache_key)
+        if cached:
+            xml_data = cached["xml_data"]
+            analysis = cached["analysis"]
+        else:
+            try:
+                xml_data = TCPXmlParser().parse_file(str(xml_file))
+            except Exception as exc:
+                return _error(
+                    "xml_parse_failed",
+                    f"Parsing XML MetaSoft impossible: {exc}",
+                    status=422,
+                )
+
+            parsed = xml_data.get("metasoft_parsed", {})
+            analysis = xml_data.get("metasoft_analysis", {})
+            if _positive_number(parsed.get("athlete", {}).get("weight_kg")) is None:
+                if profile_mass is not None:
+                    # Source masse: profil local matche, seulement si le XML n'a
+                    # aucun poids exploitable. Unite: kg.
+                    analysis = build_metasoft_analysis(parsed, manual_mass_kg=profile_mass)
+                    xml_data["metasoft_analysis"] = analysis
+            # Cache memoire uniquement: cle fichier + session + masse fallback,
+            # jamais de disque, pour ne pas masquer un XML modifie.
+            self._match_context_cache = {cache_key: {"xml_data": xml_data, "analysis": analysis}}
 
         return {
             "ok": True,
@@ -690,6 +723,25 @@ def _public_profile(profile):
         "body_composition": deepcopy(profile.get("body_composition", {})),
         "stress_test_results": deepcopy(profile.get("stress_test_results", {})),
     }
+
+
+def _ui_analysis_payload(analysis):
+    """Retourne l'analyse React sans colonnes brutes point-par-point.
+
+    Source complete: `context["analysis"]`, conservee en memoire pour les
+    marqueurs Python, l'export JSON et le sidecar audit. Le payload UI ne retire
+    que `raw` et `value_sources`, inutiles au rendu React actuel.
+    """
+    ui_analysis = dict(analysis)
+    ui_analysis["points"] = [
+        {
+            key: value
+            for key, value in point.items()
+            if key not in {"raw", "value_sources"}
+        }
+        for point in analysis.get("points", [])
+    ]
+    return ui_analysis
 
 
 def _identity_warnings(xml_athlete, profile):
