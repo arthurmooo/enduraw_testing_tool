@@ -63,15 +63,15 @@ export function buildDraftMarker(
 export function serializeMarkerSelections(markers: DraftMarkers): MarkerSelectionPayload[] {
   return MARKER_NAMES.flatMap<MarkerSelectionPayload>((name) => {
     const marker = markers[name];
-    if (marker.t_seconds === null) return [];
     if (marker.mode === "point") {
+      if (marker.t_seconds === null) return [];
       return [{ name, mode: "point", t_seconds: marker.t_seconds }];
     }
     if (marker.window_start_seconds === null || marker.window_end_seconds === null) return [];
     return [{
       name,
       mode: "range",
-      t_seconds: marker.t_seconds,
+      ...(marker.t_seconds === null ? {} : { t_seconds: marker.t_seconds }),
       window_start_seconds: marker.window_start_seconds,
       window_end_seconds: marker.window_end_seconds,
     }];

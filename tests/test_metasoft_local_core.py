@@ -31,7 +31,11 @@ def _cell(value: str, index: int | None = None) -> str:
     return f'<Cell{index_attr}><Data ss:Type="String">{value}</Data></Cell>'
 
 
-def _metasoft_xml(include_weight: bool = True, test_start: str = "") -> bytes:
+def _metasoft_xml(
+    include_weight: bool = True,
+    test_start: str = "",
+    weight_value: str = "60,0 kg",
+) -> bytes:
     headers = [
         "t", "Phase", "Marqueur", "FC", "V'O2", "V'O2/FC", "RER",
         "V'E", "VT", "V'E/V'O2", "V'E/V'CO2", "PetO2", "PetCO2", "BF", "v", "DE",
@@ -48,7 +52,7 @@ def _metasoft_xml(include_weight: bool = True, test_start: str = "") -> bytes:
         [_cell("Prénom"), _cell("Noor")],
     ])
     if include_weight:
-        rows.append([_cell("Poids"), _cell("60,0 kg")])
+        rows.append([_cell("Poids"), _cell(weight_value)])
     if test_start:
         rows.extend([
             [_cell("Données test")],
@@ -207,9 +211,27 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         economy = xml_data["metasoft_analysis"]["computed"]["running_economy"][0]
         self.assertEqual(payload["test_date"], "2026-04-02")
         self.assertEqual(economy["mass_kg"], 62)
+        self.assertEqual(payload["seuils"]["VO2_max"]["vo2_peak_l_min"], 3.1)
         self.assertIsNotNone(economy["value_j_kg_m"])
         self.assertNotIn("Variable", xml_data["test_metadata"])
         self.assertNotIn("V'O2", xml_data["test_metadata"])
+
+    def test_vo2_peak_l_min_uses_xml_weight_before_profile_weight(self) -> None:
+        profile = _manual_profile()
+        profile["body_composition"]["current_weight"] = 75
+        profile["stress_test_results"]["measured_vo2max"] = 49.42
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_path = Path(tmp_dir) / "TCP__VAN DER VEEN_Noor_2026.06.10_12.38.06_.xml"
+            xml_path.write_bytes(_metasoft_xml(weight_value="78,0 kg"))
+
+            xml_data = TCPXmlParser().parse_file(str(xml_path))
+            payload = DataTransformer().transform(xml_data, profile)
+
+        self.assertEqual(xml_data["metasoft_analysis"]["athlete"]["weight_kg"], 78)
+        self.assertEqual(
+            payload["seuils"]["VO2_max"]["vo2_peak_l_min"],
+            round(49.42 * 78 / 1000, 2),
+        )
 
     def test_analysis_keeps_ec_unavailable_without_rest_or_vco2_source(self) -> None:
         parsed = parse_metasoft_xml_bytes(_metasoft_xml(), "test.xml")

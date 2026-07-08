@@ -7,6 +7,7 @@ normalise (`metasoft_analysis.points`). Les seuils restent issus du profil
 coach pour eviter tout fallback silencieux depuis des marqueurs non valides.
 """
 from datetime import datetime
+from math import isfinite
 from typing import Dict, List, Any, Optional
 
 from core.models import (
@@ -48,8 +49,12 @@ class DataTransformer:
             'anonyme': consentements.get('anonyme', False)
         }
         
-        # Seuils: profil coach uniquement, jamais estimation automatique du XML.
-        result.seuils = self._build_seuils(xml_data.get('summary_data', {}), manual_input)
+        # Seuils: valeurs coach, avec poids MetaSoft prioritaire pour convertir la VO2 XML.
+        result.seuils = self._build_seuils(
+            xml_data.get('summary_data', {}),
+            manual_input,
+            metasoft_analysis,
+        )
         
         result.protocole = self._build_protocole(xml_data, manual_input)
         
@@ -137,8 +142,9 @@ class DataTransformer:
         self,
         summary_data: Dict[str, Any],
         manual_input: Dict[str, Any],
+        metasoft_analysis: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Construit les seuils depuis le profil manuel uniquement."""
+        """Construit les seuils depuis le profil, sans reconstruire de marqueur XML."""
         seuils = {}
         
         stress_results = manual_input.get('stress_test_results', {})
@@ -188,9 +194,16 @@ class DataTransformer:
         vo2max.fc_max = fc_max_value
         vo2max_dict = vo2max.to_dict()
         
-        # Transformation explicite: ml/kg/min * kg / 1000 = L/min.
-        weight = manual_input.get('body_composition', {}).get('current_weight')
-        if vo2max_value and weight and weight > 0:
+        # Source VO2: test XML/MetaSoft en ml/kg/min; poids XML kg prioritaire,
+        # poids profil kg seulement si MetaSoft n'en fournit pas d'exploitable.
+        xml_weight = self._positive_float(
+            (metasoft_analysis or {}).get('athlete', {}).get('weight_kg')
+        )
+        profile_weight = self._positive_float(
+            manual_input.get('body_composition', {}).get('current_weight')
+        )
+        weight = xml_weight or profile_weight
+        if vo2max_value and weight is not None:
             vo2max_dict['vo2_peak_l_min'] = round(vo2max_value * weight / 1000, 2)
         
         seuils['VO2_max'] = vo2max_dict
@@ -656,6 +669,15 @@ class DataTransformer:
             return float(str(value).replace(',', '.'))
         except (ValueError, TypeError):
             return None
+
+    def _positive_float(self, value: Any) -> Optional[float]:
+        """Retourne un nombre strictement positif; bool et NaN restent invalides."""
+        if isinstance(value, bool):
+            return None
+        number = self._safe_float(value)
+        if number is None or not isfinite(number) or number <= 0:
+            return None
+        return number
     
     def _safe_int(self, value: Any) -> Optional[int]:
         """Safely convert to int"""

@@ -183,7 +183,6 @@ class MetaSoftLocalApiTest(unittest.TestCase):
                     {
                         "name": "SV2",
                         "mode": "range",
-                        "t_seconds": None,
                         "window_start_seconds": 60,
                         "window_end_seconds": 90,
                         "preview": {"fc_bpm": 999},
