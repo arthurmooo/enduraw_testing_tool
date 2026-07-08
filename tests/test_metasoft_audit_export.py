@@ -23,9 +23,11 @@ from core.metasoft_markers import build_metasoft_marker
 
 
 def _point(t_seconds: int, phase: str, speed_kmh: float, fc_bpm: int) -> dict:
+    vo2_l_min = 0.8 + speed_kmh / 8
     values = {
         "fc_bpm": fc_bpm,
-        "vo2_l_min": 0.8 + speed_kmh / 8,
+        "vo2_l_min": vo2_l_min,
+        "vco2_l_min": round(vo2_l_min * 0.9, 6),
         "vo2_ml_kg_min": 20 + speed_kmh,
         "rer": 0.9,
         "speed_kmh": speed_kmh,
@@ -35,6 +37,7 @@ def _point(t_seconds: int, phase: str, speed_kmh: float, fc_bpm: int) -> dict:
         "phase": phase,
         "marker": None,
         "values": values,
+        "value_sources": {"vco2_l_min": "derived_vo2_x_rer"},
         "smoothed_values": {"fc_bpm": 999},
     }
 
@@ -61,6 +64,12 @@ def _analysis() -> dict:
                 "unit": None,
                 "source": "xml",
                 "transform": "native",
+            },
+            "vco2_l_min": {
+                "source_label": "V'CO2",
+                "unit": "L/min",
+                "source": "derived_vo2_x_rer",
+                "transform": "V'O2 L/min * RER",
             },
             "speed_kmh": {
                 "source_label": "v",

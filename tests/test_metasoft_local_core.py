@@ -33,10 +33,13 @@ def _cell(value: str, index: int | None = None) -> str:
 
 def _metasoft_xml(include_weight: bool = True, test_start: str = "") -> bytes:
     headers = [
-        "t", "Phase", "Marqueur", "FC", "V'O2", "RER", "V'E", "V'E/V'O2",
-        "V'E/V'CO2", "BF", "v", "DE",
+        "t", "Phase", "Marqueur", "FC", "V'O2", "V'O2/FC", "RER",
+        "V'E", "VT", "V'E/V'O2", "V'E/V'CO2", "PetO2", "PetCO2", "BF", "v", "DE",
     ]
-    units = ["s", "", "", "bpm", "L/min", "", "L/min", "", "", "/min", "km/h", "kcal/h"]
+    units = [
+        "s", "", "", "bpm", "L/min", "ml", "", "L/min", "L", "", "",
+        "mmHg", "mmHg", "/min", "km/h", "kcal/h",
+    ]
     rows = []
     if test_start:
         rows.append([_cell("Données administratives")])
@@ -60,22 +63,22 @@ def _metasoft_xml(include_weight: bool = True, test_start: str = "") -> bytes:
         [_cell(value) for value in units],
     ])
     data_rows = [
-        ["0:00:00,000", "Repos", "", "80", "0,30", "0,80",
-         "8", "26,6", "33,3", "12", "0", "220"],
-        ["0:00:10,000", "Repos", "", "82", "0,32", "0,81",
-         "8,5", "26,5", "32,7", "13", "0", "230"],
-        ["0:01:00,000", "Echauffement", "", "120", "2,00", "0,90",
-         "40", "20", "22,2", "28", "10", "700"],
-        ["0:01:30,000", "Echauffement", "", "122", "2,10", "0,91",
-         "41", "19,5", "21,4", "29", "10", "710"],
-        ["0:02:00,000", "Echauffement", "", "124", "2,20", "0,92",
-         "42", "19,1", "20,7", "30", "10", "720"],
-        ["0:03:00,000", "Echauffement", "", "130", "2,40", "0,95",
-         "50", "20,8", "21,9", "31", "12", "760"],
-        ["0:03:30,000", "Echauffement", "", "132", "2,50", "0,96",
-         "51", "20,4", "21,2", "32", "12", "770"],
-        ["0:04:00,000", "Echauffement", "", "134", "2,60", "0,97",
-         "52", "20,0", "20,6", "33", "12", "780"],
+        ["0:00:00,000", "Repos", "", "80", "0,30", "3,8", "0,80",
+         "8", "0,7", "26,6", "33,3", "100", "36", "12", "0", "220"],
+        ["0:00:10,000", "Repos", "", "82", "0,32", "3,9", "0,81",
+         "8,5", "0,7", "26,5", "32,7", "101", "37", "13", "0", "230"],
+        ["0:01:00,000", "Echauffement", "", "120", "2,00", "16,7", "0,90",
+         "40", "1,4", "20", "22,2", "104", "39", "28", "10", "700"],
+        ["0:01:30,000", "Echauffement", "", "122", "2,10", "17,2", "0,91",
+         "41", "1,4", "19,5", "21,4", "105", "40", "29", "10", "710"],
+        ["0:02:00,000", "Echauffement", "", "124", "2,20", "17,7", "0,92",
+         "42", "1,4", "19,1", "20,7", "106", "41", "30", "10", "720"],
+        ["0:03:00,000", "Echauffement", "", "130", "2,40", "18,5", "0,95",
+         "50", "1,6", "20,8", "21,9", "108", "42", "31", "12", "760"],
+        ["0:03:30,000", "Echauffement", "", "132", "2,50", "18,9", "0,96",
+         "51", "1,6", "20,4", "21,2", "109", "43", "32", "12", "770"],
+        ["0:04:00,000", "Echauffement", "", "134", "2,60", "19,4", "0,97",
+         "52", "1,6", "20,0", "20,6", "110", "44", "33", "12", "780"],
     ]
     rows.extend([[_cell(value) for value in row] for row in data_rows])
     xml_rows = "\n".join(f"<Row>{''.join(row)}</Row>" for row in rows)
@@ -107,14 +110,17 @@ def _manual_profile() -> dict:
 
 
 def _point(t_seconds: int, phase: str, speed: float) -> dict:
+    vo2_l_min = 1.0 + speed / 10
     return {
         "t_seconds": t_seconds,
         "phase": phase,
         "values": {
-            "vo2_l_min": 1.0 + speed / 10,
+            "vo2_l_min": vo2_l_min,
+            "vco2_l_min": round(vo2_l_min * 0.9, 6),
             "rer": 0.9,
             "speed_kmh": speed,
         },
+        "value_sources": {"vco2_l_min": "derived_vo2_x_rer"},
     }
 
 
@@ -171,6 +177,16 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
             analysis["computed"]["running_economy"][0]["vco2_source"],
             "derived_vo2_x_rer",
         )
+        self.assertEqual(analysis["metrics"]["vo2_fc_ml"]["source_label"], "V'O2/FC")
+        self.assertEqual(analysis["metrics"]["vco2_l_min"]["source"], "derived_vo2_x_rer")
+        self.assertEqual(analysis["points"][0]["values"]["vco2_l_min"], 0.24)
+        self.assertEqual(
+            analysis["points"][0]["value_sources"]["vco2_l_min"],
+            "derived_vo2_x_rer",
+        )
+        self.assertTrue(
+            any(warning["code"] == "derived_vco2_l_min" for warning in analysis["warnings"])
+        )
         self.assertEqual(payload["patient_info"]["nom"], "VAN DER VEEN")
         self.assertEqual(payload["patient_info"]["poids_actuel"], 60)
         self.assertEqual(payload["graphiques"]["graphique_1"]["titre"], "FC et V'O2")
@@ -198,7 +214,8 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
     def test_analysis_keeps_ec_unavailable_without_rest_or_vco2_source(self) -> None:
         parsed = parse_metasoft_xml_bytes(_metasoft_xml(), "test.xml")
         for point in parsed["points"]:
-            point["values"].pop("rer", None)
+            point["values"].pop("vco2_l_min", None)
+            point.get("value_sources", {}).pop("vco2_l_min", None)
         analysis = build_metasoft_analysis(parsed)
 
         self.assertIsNone(analysis["computed"]["rest_baseline"])

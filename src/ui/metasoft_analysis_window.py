@@ -470,7 +470,7 @@ class MetaSoftAnalysisWindow(ctk.CTkToplevel):
         if _toolbar_is_active(self.toolbar):
             return
         config = next(item for item in GRAPH_CONFIGS if item["id"] == self.active_graph_id)
-        if config.get("source") != "points":
+        if config.get("source") != "points" or config.get("kind") != "time":
             self.missing_label.configure(text="Marqueurs: choisir un graphe avec axe temps.")
             return
         time_seconds = click_x_to_time_seconds(event.xdata, self._point_times())
@@ -787,11 +787,12 @@ def draw_metasoft_graph(figure, analysis, graph_config, smooth_seconds=0, marker
         _draw_running_economy(axis, render)
     else:
         _draw_point_graph(axis, analysis, render)
-        _draw_marker_overlays(axis, markers or {})
+        if render.get("kind") == "time":
+            _draw_marker_overlays(axis, markers or {})
 
     _draw_missing_text(axis, render)
     title = render["title"]
-    if smooth_seconds and render["source"] == "points":
+    if smooth_seconds and render["source"] == "points" and render.get("kind") == "time":
         title = f"{title} - lissage {smooth_seconds} s"
     axis.set_title(title, color=_text_color(), fontsize=13, fontweight="bold")
     figure.tight_layout(pad=1.8)
@@ -799,7 +800,8 @@ def draw_metasoft_graph(figure, analysis, graph_config, smooth_seconds=0, marker
 
 
 def _draw_point_graph(axis, analysis, render):
-    _draw_phase_background(axis, analysis)
+    if render.get("kind") == "time":
+        _draw_phase_background(axis, analysis)
     y2_axis = None
     plotted = []
 
@@ -813,19 +815,31 @@ def _draw_point_graph(axis, analysis, render):
                 y2_axis = axis.twinx()
                 _style_axis(y2_axis)
             target_axis = y2_axis
-        line = target_axis.plot(
-            render["x_values"],
-            values,
-            color=series["color"],
-            linewidth=1.7,
-            label=series["label"],
-            drawstyle="steps-post" if series["key"] == "speed_kmh" else "default",
-        )[0]
-        plotted.append(line)
+        if render.get("kind") == "scatter":
+            artist = target_axis.scatter(
+                render["x_values"],
+                values,
+                color=series["color"],
+                s=16,
+                alpha=0.8,
+                label=series["label"],
+            )
+        else:
+            artist = target_axis.plot(
+                render["x_values"],
+                values,
+                color=series["color"],
+                linewidth=1.7,
+                label=series["label"],
+                drawstyle="steps-post" if series["key"] == "speed_kmh" else "default",
+            )[0]
+        plotted.append(artist)
 
-    if not any(series["key"] == "speed_kmh" for series in render["series"]):
+    if render.get("kind") == "time" and not any(
+        series["key"] == "speed_kmh" for series in render["series"]
+    ):
         _draw_speed_step(axis, analysis)
-    axis.set_xlabel("Temps (s)", color=_text_color())
+    axis.set_xlabel(_axis_title(render["x_axis"]), color=_text_color())
     axis.set_ylabel(_axis_label(render["series"], "y"), color=_text_color())
     if y2_axis:
         y2_axis.set_ylabel(_axis_label(render["series"], "y2"), color=_text_color())
@@ -998,6 +1012,11 @@ def _axis_label(series_configs, axis_name):
     labels = [series["unit"] for series in series_configs if series.get("axis") == axis_name]
     labels = [label for label in labels if label]
     return " / ".join(dict.fromkeys(labels)) if labels else ""
+
+
+def _axis_title(axis_config):
+    unit = axis_config.get("unit")
+    return f"{axis_config['label']} ({unit})" if unit else axis_config["label"]
 
 
 def _capture_limits(figure):

@@ -30,45 +30,58 @@ def _series(key, label, unit, color, axis="y", smoothable=True):
 
 GRAPH_CONFIGS = (
     {
-        "id": "fc_vo2",
-        "title": "FC + V'O2",
+        "id": "ve_time",
+        "title": "V'E",
+        "kind": "time",
+        "source": "points",
+        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
+        "series": (_series("ve_l_min", "V'E", "L/min", "#10a8ff"),),
+    },
+    {
+        "id": "hr_vo2_fc_time",
+        "title": "HR, V'O2/HR",
+        "kind": "time",
         "source": "points",
         "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
         "series": (
-            _series("fc_bpm", "FC (bpm)", "bpm", "#ff5b22"),
-            _series("vo2_l_min", "V'O2 (L/min)", "L/min", "#10a8ff", "y2"),
+            _series("fc_bpm", "HR", "bpm", "#ff5b22"),
+            _series("vo2_fc_ml", "V'O2/HR", "ml", "#10a8ff", "y2"),
         ),
     },
     {
-        "id": "vo2kg_speed",
-        "title": "V'O2/kg + vitesse",
+        "id": "vo2_vco2_time",
+        "title": "V'O2, V'CO2",
+        "kind": "time",
         "source": "points",
         "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
         "series": (
-            _series("vo2_ml_kg_min", "V'O2/kg", "ml/min/kg", "#10a8ff"),
-            _series("speed_kmh", "Vitesse (km/h)", "km/h", "#10d38f", "y2", False),
+            _series("vo2_l_min", "V'O2", "L/min", "#10a8ff"),
+            _series("vco2_l_min", "V'CO2", "L/min", "#16d18d"),
         ),
     },
     {
-        "id": "ve_bf",
-        "title": "V'E + BF",
+        "id": "ve_vco2_scatter",
+        "title": "V'E(V'CO2)",
+        "kind": "scatter",
         "source": "points",
-        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
+        "x_axis": {"key": "vco2_l_min", "label": "V'CO2", "unit": "L/min"},
+        "series": (_series("ve_l_min", "V'E", "L/min", "#10a8ff", "y", False),),
+    },
+    {
+        "id": "vco2_hr_scatter",
+        "title": "V'CO2, HR",
+        "kind": "scatter",
+        "source": "points",
+        "x_axis": {"key": "vo2_l_min", "label": "V'O2", "unit": "L/min"},
         "series": (
-            _series("ve_l_min", "V'E (L/min)", "L/min", "#10a8ff"),
-            _series("bf_per_min", "BF (br/min)", "/min", "#ff5b22", "y2"),
+            _series("vco2_l_min", "V'CO2", "L/min", "#16d18d", "y", False),
+            _series("fc_bpm", "HR", "bpm", "#ff5b22", "y2", False),
         ),
     },
     {
-        "id": "rer",
-        "title": "RER",
-        "source": "points",
-        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
-        "series": (_series("rer", "RER", "sans unite", "#16e0c2"),),
-    },
-    {
-        "id": "ve_ratios",
-        "title": "V'E/V'O2 + V'E/V'CO2",
+        "id": "ve_ratios_time",
+        "title": "V'E/V'O2, V'E/V'CO2",
+        "kind": "time",
         "source": "points",
         "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
         "series": (
@@ -77,44 +90,40 @@ GRAPH_CONFIGS = (
         ),
     },
     {
-        "id": "pet",
-        "title": "PetO2 + PetCO2",
+        "id": "vt_ve_scatter",
+        "title": "VT(V'E)",
+        "kind": "scatter",
         "source": "points",
-        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
-        "series": (
-            _series("peto2_mmhg", "PetO2", "mmHg", "#10a8ff"),
-            _series("petco2_mmhg", "PetCO2", "mmHg", "#ff6b00"),
-        ),
+        "x_axis": {"key": "ve_l_min", "label": "V'E", "unit": "L/min"},
+        "series": (_series("vt_l", "VT", "L", "#a855f7", "y", False),),
     },
     {
-        "id": "de",
-        "title": "DE / DECHO / DEFAT / DEPRO",
+        "id": "rer_time",
+        "title": "RER",
+        "kind": "time",
+        "source": "points",
+        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
+        "series": (_series("rer", "RER", "sans unite", "#16e0c2"),),
+    },
+    {
+        "id": "pet_time",
+        "title": "PETO2, PETCO2",
+        "kind": "time",
         "source": "points",
         "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
         "series": (
-            _series("de_kcal_h", "DE", "kcal/h", "#0f8fff"),
-            _series("decho_kcal_h", "DECHO", "kcal/h", "#ff5b22"),
-            _series("defat_kcal_h", "DEFAT", "kcal/h", "#16d18d"),
-            _series("depro_kcal_h", "DEPRO", "kcal/h", "#a855f7"),
+            _series("peto2_mmhg", "PETO2", "mmHg", "#10a8ff"),
+            _series("petco2_mmhg", "PETCO2", "mmHg", "#ff6b00"),
         ),
     },
     {
         "id": "running_economy",
         "title": "Economie de course",
+        "kind": "bar",
         "source": "running_economy",
         "x_axis": {"key": "stage_index", "label": "Palier"},
         "series": (
             _series("value_j_kg_m", "EC (J/kg/m)", "J/kg/m", "#16e0c2", "y", False),
-        ),
-    },
-    {
-        "id": "thresholds",
-        "title": "Synthese seuils",
-        "source": "points",
-        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
-        "series": (
-            _series("fc_bpm", "FC (bpm)", "bpm", "#ff5b22"),
-            _series("vo2_l_min", "V'O2 (L/min)", "L/min", "#10a8ff", "y2"),
         ),
     },
 )
@@ -177,14 +186,19 @@ def get_point_series_availability(points, graph_config):
     config = _resolve_graph_config(graph_config)
     available_keys = set()
     for point in points or []:
+        x_key = config.get("x_axis", {}).get("key")
+        if x_key == "t_seconds" and _number_or_none(point.get("t_seconds")) is not None:
+            available_keys.add("t_seconds")
         for key, value in point.get("values", {}).items():
             if _number_or_none(value) is not None:
                 available_keys.add(key)
 
     available = []
     missing = []
+    x_key = config.get("x_axis", {}).get("key")
+    x_available = x_key == "t_seconds" or x_key in available_keys
     for series_config in config["series"]:
-        target = available if series_config["key"] in available_keys else missing
+        target = available if x_available and series_config["key"] in available_keys else missing
         target.append(series_config)
     return {"available": available, "missing": missing}
 
@@ -218,9 +232,9 @@ def clamp_time_range(start_seconds, end_seconds, times):
 def _build_point_render_data(analysis, config, smooth_window_seconds):
     points = [
         point for point in analysis.get("points", [])
-        if _number_or_none(point.get("t_seconds")) is not None
+        if _point_x_value(point, config) is not None
     ]
-    times = [float(point["t_seconds"]) for point in points]
+    x_values = [_point_x_value(point, config) for point in points]
     availability = get_point_series_availability(points, config)
     render_series = []
 
@@ -229,9 +243,13 @@ def _build_point_render_data(analysis, config, smooth_window_seconds):
             _number_or_none(point.get("values", {}).get(series_config["key"]))
             for point in points
         ]
-        should_smooth = series_config["smoothable"] and smooth_window_seconds > 0
+        should_smooth = (
+            config.get("kind") == "time"
+            and series_config["smoothable"]
+            and smooth_window_seconds > 0
+        )
         render_values = (
-            smooth_series_by_time(times, raw_values, smooth_window_seconds)
+            smooth_series_by_time(x_values, raw_values, smooth_window_seconds)
             if should_smooth else list(raw_values)
         )
         render_series.append({
@@ -245,8 +263,9 @@ def _build_point_render_data(analysis, config, smooth_window_seconds):
         "id": config["id"],
         "title": config["title"],
         "source": config["source"],
+        "kind": config.get("kind", "time"),
         "x_axis": config["x_axis"],
-        "x_values": times,
+        "x_values": x_values,
         "series": render_series,
         "missing_series": availability["missing"],
     }
@@ -277,6 +296,7 @@ def _build_running_economy_render_data(analysis, config):
         "id": config["id"],
         "title": config["title"],
         "source": config["source"],
+        "kind": config.get("kind", "bar"),
         "x_axis": config["x_axis"],
         "x_values": x_values,
         "series": render_series,
@@ -289,6 +309,13 @@ def _resolve_graph_config(graph_config):
     if isinstance(graph_config, str):
         return GRAPH_CONFIGS_BY_ID[graph_config]
     return graph_config
+
+
+def _point_x_value(point, config):
+    key = config.get("x_axis", {}).get("key")
+    if key == "t_seconds":
+        return _number_or_none(point.get("t_seconds"))
+    return _number_or_none(point.get("values", {}).get(key))
 
 
 def _valid_times(times):

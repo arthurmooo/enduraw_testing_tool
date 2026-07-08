@@ -1,6 +1,7 @@
 export type MetaSoftMetricKey =
   | "vo2_l_min"
   | "vo2_ml_kg_min"
+  | "vo2_fc_ml"
   | "vco2_l_min"
   | "fc_bpm"
   | "ve_l_min"
@@ -18,15 +19,16 @@ export type MetaSoftMetricKey =
   | "ve_vco2";
 
 export type MetaSoftGraphId =
-  | "fc_vo2"
-  | "vo2kg_speed"
-  | "ve_bf"
-  | "rer"
-  | "ve_ratios"
-  | "pet"
-  | "de"
-  | "running_economy"
-  | "thresholds";
+  | "ve_time"
+  | "hr_vo2_fc_time"
+  | "vo2_vco2_time"
+  | "ve_vco2_scatter"
+  | "vco2_hr_scatter"
+  | "ve_ratios_time"
+  | "vt_ve_scatter"
+  | "rer_time"
+  | "pet_time"
+  | "running_economy";
 
 export type MetaSoftMarkerName = "SV1" | "SV2" | "VO2_max" | "VMA";
 export type MarkerMode = "point" | "range";
@@ -46,6 +48,7 @@ export interface MetaSoftPoint {
   phase?: string | null;
   marker?: string | null;
   values: Partial<Record<MetaSoftMetricKey, number | string | null>>;
+  value_sources?: Partial<Record<MetaSoftMetricKey, string>>;
   raw?: Record<string, number | string | null>;
 }
 

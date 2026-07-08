@@ -6,7 +6,8 @@ contrats pour rester compatible avec l'app existante:
   l'export Valentin consomme deja;
 - un payload normalise `metasoft_parsed`, source des graphes interactifs et des
   calculs MetaSoft. Les valeurs absentes restent absentes: ce parser ne
-  reconstruit aucune metrique physiologique.
+  reconstruit que `V'CO2` quand le XML ne le fournit pas, avec source et warning
+  explicites (`V'O2` L/min * RER sans unite -> `V'CO2` L/min).
 """
 import os
 import re
@@ -40,6 +41,7 @@ SS_INDEX = f"{{{SS_NS}}}Index"
 METRIC_LABELS = {
     "V'O2": "vo2_l_min",
     "V'O2/kg": "vo2_ml_kg_min",
+    "V'O2/FC": "vo2_fc_ml",
     "V'CO2": "vco2_l_min",
     "FC": "fc_bpm",
     "V'E": "ve_l_min",
@@ -302,6 +304,9 @@ def parse_metasoft_xml_root(root: ET.Element, filename: str, size_bytes: int = 0
 
     metrics = _build_metric_specs(headers, units)
     points = parse_measurement_points(headers, rows[start_index:], metrics)
+    vco2_warning = add_derived_vco2(points, metrics)
+    if vco2_warning:
+        warnings.append(vco2_warning)
     if not points:
         warnings.append({
             "code": "no_measurement_points",
@@ -375,6 +380,7 @@ def parse_measurement_points(
 
         raw = {}
         values = {}
+        value_sources = {}
         for pos, header in enumerate(headers):
             if not header:
                 continue
@@ -384,6 +390,7 @@ def parse_measurement_points(
             metric_key = METRIC_LABELS.get(header)
             if metric_key and metric_key in metrics:
                 values[metric_key] = value
+                value_sources[metric_key] = "xml"
 
         points.append({
             "index": len(points),
@@ -392,9 +399,60 @@ def parse_measurement_points(
             "phase": raw.get("Phase") or None,
             "marker": raw.get("Marqueur") or None,
             "values": values,
+            "value_sources": value_sources,
             "raw": raw,
         })
     return points
+
+
+def add_derived_vco2(points: List[dict], metrics: dict) -> Optional[dict]:
+    """Expose `V'CO2` derive uniquement si la colonne XML native est absente.
+
+    Source: `V'O2` XML en L/min et RER XML sans unite. Transformation:
+    multiplication point par point, donc la sortie reste en L/min. Fallback:
+    aucun zero et aucune extrapolation; les points incomplets gardent `None`.
+    """
+    if "vco2_l_min" in metrics:
+        return None
+
+    derived_count = 0
+    missing_inputs = 0
+    for point in points:
+        values = point.get("values", {})
+        vo2 = _number_or_none(values.get("vo2_l_min"))
+        rer = _number_or_none(values.get("rer"))
+        if vo2 is None or rer is None:
+            missing_inputs += 1
+            continue
+        values["vco2_l_min"] = round(vo2 * rer, 6)
+        point.setdefault("value_sources", {})["vco2_l_min"] = "derived_vo2_x_rer"
+        derived_count += 1
+
+    if not derived_count:
+        return {
+            "code": "missing_vco2_l_min",
+            "message": (
+                "V'CO2 absent du XML et derivation impossible: V'O2 ou RER manquant."
+            ),
+        }
+
+    metrics["vco2_l_min"] = {
+        "key": "vco2_l_min",
+        "source_label": "V'CO2",
+        "unit": "L/min",
+        "source": "derived_vo2_x_rer",
+        "transform": "V'O2 L/min * RER",
+        "fallback": "points incomplets conserves a None",
+    }
+    warning = {
+        "code": "derived_vco2_l_min",
+        "message": "V'CO2 absent du XML: valeur derivee depuis V'O2 * RER.",
+        "source": "derived_vo2_x_rer",
+        "point_count": derived_count,
+    }
+    if missing_inputs:
+        warning["missing_input_point_count"] = missing_inputs
+    return warning
 
 
 def parse_filename_metadata(filename: str) -> dict:
@@ -521,4 +579,12 @@ def _first_number(values: List[str]):
             match = re.search(r"-?\d+(?:[,.]\d+)?", converted)
             if match:
                 return float(match.group(0).replace(",", "."))
+    return None
+
+
+def _number_or_none(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
     return None

@@ -5,7 +5,9 @@ import type { MetaSoftAnalysis, MetaSoftMetricKey, MetaSoftPoint } from "../type
 const CURSOR_VALUES: Array<[MetaSoftMetricKey, string, string, string, number]> = [
   ["ve_vo2", "VE/VO2", "sans unite", "#2437d8", 1],
   ["vo2_l_min", "V'O2", "L/min", "#0057ff", 2],
+  ["vco2_l_min", "V'CO2", "L/min", "#0f8f5f", 2],
   ["vo2_ml_kg_min", "V'O2/kg", "mL/kg/min", "#008bff", 1],
+  ["vo2_fc_ml", "V'O2/FC", "mL", "#2050c8", 1],
   ["ve_l_min", "V'E", "L/min", "#c80000", 1],
   ["bf_per_min", "BF", "br/min", "#008000", 1],
   ["rer", "RER", "sans unite", "#111111", 2],

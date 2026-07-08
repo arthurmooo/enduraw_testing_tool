@@ -285,50 +285,61 @@ function PointChartBody({
   } | null>(null);
   const [markerHover, setMarkerHover] = useState<MarkerDragPart | null>(null);
   const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
-  const x = useMemo(() => points.map((point) => point.t_seconds ?? 0), [points]);
+  const canEditTimeMarkers = graph.kind === "time";
+  const chartPoints = useMemo(
+    () => points.filter((point) => pointXValue(point, graph) !== null),
+    [graph, points],
+  );
+  const x = useMemo(() => chartPoints.map((point) => pointXValue(point, graph)), [chartPoints, graph]);
   const maxTime = Math.max(...analysis.points.map((point) => point.t_seconds ?? 0), 0);
-  const defaultRange = defaultRangeFromPoints(points, maxTime);
-  const tickVals = buildTickVals(defaultRange);
+  const defaultRange = defaultRangeFromValues(x, graph.kind === "time" ? maxTime : 1);
+  const tickVals = graph.kind === "time" ? buildTickVals(defaultRange) : [];
   const effectiveRange = xRange && xRange[0] >= defaultRange[0] && xRange[1] <= defaultRange[1] ? xRange : null;
-  const visibleMarkers = dragPreview
+  const visibleMarkers = canEditTimeMarkers && dragPreview
     ? { ...markers, [dragPreview.marker]: previewDraggedMarker(markers[dragPreview.marker], dragPreview, maxTime) }
     : markers;
   const plotMargins = { l: 44, r: graph.series.some((item) => item.axis === "y2") ? 42 : 16, t: 14, b: 42 };
   const data = useMemo(() => series.map((seriesItem) => {
-    const rawY = points.map((point) => point.values[seriesItem.key as keyof MetaSoftPoint["values"]]);
+    const rawY = chartPoints.map((point) => point.values[seriesItem.key as keyof MetaSoftPoint["values"]]);
+    const shouldSmooth = graph.kind === "time" && seriesItem.smoothable;
     return {
       type: "scatter",
-      mode: "lines",
+      mode: graph.kind === "scatter" ? "markers" : "lines",
       name: seriesItem.label,
       x,
-      y: seriesItem.smoothable ? smoothSeries(x, rawY, smoothingSeconds) : rawY,
+      y: shouldSmooth ? smoothSeries(x, rawY, smoothingSeconds) : rawY,
       yaxis: seriesItem.axis,
+      customdata: chartPoints.map((point) => point.index),
       line: { color: seriesItem.color, width: 0.8 },
+      marker: { color: seriesItem.color, size: graph.kind === "scatter" ? 5 : 4 },
       hovertemplate: `%{y}<extra>${seriesItem.label}</extra>`,
       connectgaps: false,
     };
-  }), [points, series, smoothingSeconds, x]);
+  }), [chartPoints, graph.kind, series, smoothingSeconds, x]);
   const layout = {
     autosize: true,
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     margin: plotMargins,
     font: { color: "rgba(226,232,240,0.78)", size: 10 },
-    hovermode: "x unified",
+    hovermode: graph.kind === "time" ? "x unified" : "closest",
     dragmode: "zoom",
     showlegend: false,
-    shapes: [...buildTimeBandShapes(analysis), ...buildMarkerShapes(visibleMarkers)],
-    annotations: buildAnnotations(analysis, visibleMarkers),
+    shapes: canEditTimeMarkers ? [...buildTimeBandShapes(analysis), ...buildMarkerShapes(visibleMarkers)] : [],
+    annotations: canEditTimeMarkers ? buildAnnotations(analysis, visibleMarkers) : [],
     xaxis: {
-      range: maxTime ? effectiveRange ?? defaultRange : undefined,
-      tickvals: tickVals,
-      ticktext: tickVals.map(secondsToClock),
+      range: effectiveRange ?? defaultRange,
+      ...(graph.kind === "time" ? {
+        tickvals: tickVals,
+        ticktext: tickVals.map(secondsToClock),
+      } : {}),
       gridcolor: "rgba(255,255,255,0.055)",
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
-      title: { text: "Temps (h:m:s)", font: { size: 10, color: "rgba(226,232,240,0.65)" } },
+      title: { text: axisTitle(graph.xAxis), font: { size: 10, color: "rgba(226,232,240,0.65)" } },
     },
     yaxis: {
+      title: { text: axisLabel(series, "y"), font: { size: 10, color: "rgba(226,232,240,0.65)" } },
       gridcolor: "rgba(255,255,255,0.055)",
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
@@ -336,6 +347,7 @@ function PointChartBody({
     yaxis2: {
       overlaying: "y",
       side: "right",
+      title: { text: axisLabel(series, "y2"), font: { size: 10, color: "rgba(226,232,240,0.65)" } },
       gridcolor: "rgba(255,255,255,0)",
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
@@ -353,6 +365,7 @@ function PointChartBody({
   };
 
   const openMarkerProposal = (event: Readonly<{ event?: MouseEvent; points?: Array<{ x?: unknown }> }>) => {
+    if (!canEditTimeMarkers) return;
     if (suppressClickRef.current) {
       suppressClickRef.current = false;
       return;
@@ -385,6 +398,7 @@ function PointChartBody({
   };
 
   const handleContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!canEditTimeMarkers) return;
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     if (!target) return;
     event.preventDefault();
@@ -393,6 +407,7 @@ function PointChartBody({
   };
 
   const handleMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!canEditTimeMarkers) return;
     if (event.button !== 0) return;
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     const xSeconds = target ? timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins) : null;
@@ -405,6 +420,7 @@ function PointChartBody({
   };
 
   const handleMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!canEditTimeMarkers) return;
     if (dragPreview) {
       const xSeconds = timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
       if (xSeconds !== null) setDragPreview({ ...dragPreview, xSeconds: clamp(xSeconds, 0, maxTime) });
@@ -414,6 +430,7 @@ function PointChartBody({
   };
 
   const handleMouseUp = () => {
+    if (!canEditTimeMarkers) return;
     if (!dragPreview) return;
     const next = draggedMarkerBounds(markers[dragPreview.marker], dragPreview.part, dragPreview.xSeconds, maxTime);
     onPlaceMarker(dragPreview.marker, next.tSeconds, next.mode, next.windowStart, next.windowEnd);
@@ -447,6 +464,7 @@ function PointChartBody({
         setMarkerHover(null);
         handleMouseUp();
       }}
+      onWheel={(event) => event.preventDefault()}
     >
       <Plot
         data={data}
@@ -460,12 +478,14 @@ function PointChartBody({
         }}
         style={{ width: "100%", height }}
         useResizeHandler
-        onClick={openMarkerProposal}
+        onClick={canEditTimeMarkers ? openMarkerProposal : undefined}
         onRelayout={(event: Readonly<Record<string, unknown>>) => {
           const nextRange = xRangeFromRelayout(event);
           if (nextRange !== undefined) onXRangeChange(nextRange);
         }}
-        onHover={(event: Readonly<{ points?: Array<{ x?: unknown }> }>) => onCursorPoint(nearestEventPoint(points, event))}
+        onHover={(event: Readonly<{ points?: Array<{ customdata?: unknown; x?: unknown }> }>) => {
+          onCursorPoint(nearestEventPoint(chartPoints, event, graph));
+        }}
         onUnhover={() => onCursorPoint(null)}
         onDoubleClick={cancelSingleClick}
       />
@@ -524,7 +544,7 @@ function PointChartBody({
 }
 
 function smoothSeries(
-  x: number[],
+  x: Array<number | null>,
   y: Array<number | string | null | undefined>,
   windowSeconds: number,
 ): Array<number | string | null | undefined> {
@@ -537,7 +557,10 @@ function smoothSeries(
   return y.map((value, index) => {
     if (typeof value !== "number" || !Number.isFinite(value)) return value;
     const center = x[index];
-    while (right < y.length && x[right] <= center + radius) {
+    if (typeof center !== "number" || !Number.isFinite(center)) return value;
+    while (right < y.length) {
+      const rightX = x[right];
+      if (typeof rightX !== "number" || rightX > center + radius) break;
       const candidate = y[right];
       if (typeof candidate === "number" && Number.isFinite(candidate)) {
         sum += candidate;
@@ -545,7 +568,9 @@ function smoothSeries(
       }
       right += 1;
     }
-    while (left < y.length && x[left] < center - radius) {
+    while (left < y.length) {
+      const leftX = x[left];
+      if (typeof leftX !== "number" || leftX >= center - radius) break;
       const candidate = y[left];
       if (typeof candidate === "number" && Number.isFinite(candidate)) {
         sum -= candidate;
@@ -565,7 +590,28 @@ function isSeriesAvailable(
   if (graph.source === "running_economy") {
     return (analysis.computed.running_economy ?? []).some((row) => row.value_j_kg_m !== null);
   }
-  return Boolean(analysis.metrics[series.key as keyof typeof analysis.metrics]);
+  return isXAxisAvailable(analysis, graph)
+    && Boolean(analysis.metrics[series.key as keyof typeof analysis.metrics])
+    && hasNumericPointValue(analysis, series.key);
+}
+
+function isXAxisAvailable(
+  analysis: import("../types/metasoft").MetaSoftAnalysis,
+  graph: MetaSoftGraphConfig,
+): boolean {
+  if (graph.xAxis.key === "t_seconds" || graph.xAxis.key === "stage_index") return true;
+  return Boolean(analysis.metrics[graph.xAxis.key]) && hasNumericPointValue(analysis, graph.xAxis.key);
+}
+
+function hasNumericPointValue(
+  analysis: import("../types/metasoft").MetaSoftAnalysis,
+  key: MetaSoftSeriesConfig["key"] | MetaSoftGraphConfig["xAxis"]["key"],
+): boolean {
+  if (key === "t_seconds" || key === "stage_index" || key === "value_j_kg_m") return true;
+  return analysis.points.some((point) => {
+    const value = point.values[key];
+    return typeof value === "number" && Number.isFinite(value);
+  });
 }
 
 function xRangeFromRelayout(event: Readonly<Record<string, unknown>>): [number, number] | null | undefined {
@@ -745,25 +791,34 @@ function toNumber(value: unknown): number | null {
 
 function nearestEventPoint(
   points: MetaSoftPoint[],
-  event: Readonly<{ points?: Array<{ x?: unknown }> }>,
+  event: Readonly<{ points?: Array<{ customdata?: unknown; x?: unknown }> }>,
+  graph: MetaSoftGraphConfig,
 ): MetaSoftPoint | null {
+  const pointIndex = event.points?.[0]?.customdata;
+  if (typeof pointIndex === "number") {
+    return points.find((point) => point.index === pointIndex) ?? null;
+  }
   const x = event.points?.[0]?.x;
   if (typeof x !== "number") return null;
   return points.reduce<MetaSoftPoint | null>((best, point) => {
-    if (point.t_seconds === null) return best;
+    const pointX = pointXValue(point, graph);
+    if (pointX === null) return best;
     if (!best || best.t_seconds === null) return point;
-    return Math.abs(point.t_seconds - x) < Math.abs(best.t_seconds - x) ? point : best;
+    const bestX = pointXValue(best, graph);
+    if (bestX === null) return point;
+    return Math.abs(pointX - x) < Math.abs(bestX - x) ? point : best;
   }, null);
 }
 
-function defaultRangeFromPoints(points: MetaSoftPoint[], maxTime: number): [number, number] {
-  const values = points
-    .map((point) => point.t_seconds)
+function defaultRangeFromValues(values: Array<number | null>, fallbackMax: number): [number, number] {
+  const numericValues = values
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (!values.length) return [0, maxTime];
-  const start = Math.min(...values);
-  const end = Math.max(...values);
-  return end > start ? [start, end] : [Math.max(0, start - 30), Math.min(maxTime, end + 30)];
+  if (!numericValues.length) return [0, fallbackMax];
+  const start = Math.min(...numericValues);
+  const end = Math.max(...numericValues);
+  if (end > start) return [start, end];
+  const pad = Math.max(Math.abs(start) * 0.05, 1);
+  return [start - pad, end + pad];
 }
 
 function buildTickVals(range: [number, number]): number[] {
@@ -773,4 +828,23 @@ function buildTickVals(range: [number, number]): number[] {
   const vals = [];
   for (let value = Math.ceil(range[0] / step) * step; value <= range[1]; value += step) vals.push(value);
   return vals;
+}
+
+function pointXValue(point: MetaSoftPoint, graph: MetaSoftGraphConfig): number | null {
+  if (graph.xAxis.key === "t_seconds") return point.t_seconds;
+  if (graph.xAxis.key === "stage_index") return null;
+  const value = point.values[graph.xAxis.key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function axisTitle(axis: MetaSoftGraphConfig["xAxis"]): string {
+  return axis.unit ? `${axis.label} (${axis.unit})` : axis.label;
+}
+
+function axisLabel(series: MetaSoftSeriesConfig[], axis: "y" | "y2"): string {
+  const units = series
+    .filter((item) => item.axis === axis)
+    .map((item) => item.unit)
+    .filter((unit): unit is string => Boolean(unit));
+  return Array.from(new Set(units)).join(" / ");
 }

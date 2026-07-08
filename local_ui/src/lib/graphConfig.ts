@@ -12,8 +12,9 @@ export interface MetaSoftSeriesConfig {
 export interface MetaSoftGraphConfig {
   id: MetaSoftGraphId;
   title: string;
+  kind: "time" | "scatter" | "bar";
   source: "points" | "running_economy";
-  xAxis: { key: "t_seconds" | "stage_index"; label: string; unit?: string };
+  xAxis: { key: "t_seconds" | "stage_index" | MetaSoftMetricKey; label: string; unit?: string };
   series: MetaSoftSeriesConfig[];
 }
 
@@ -30,45 +31,58 @@ function series(
 
 export const GRAPH_CONFIGS: MetaSoftGraphConfig[] = [
   {
-    id: "fc_vo2",
-    title: "FC + V'O2",
+    id: "ve_time",
+    title: "V'E",
+    kind: "time",
+    source: "points",
+    xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
+    series: [series("ve_l_min", "V'E", "L/min", "#10a8ff")],
+  },
+  {
+    id: "hr_vo2_fc_time",
+    title: "HR, V'O2/HR",
+    kind: "time",
     source: "points",
     xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
     series: [
-      series("fc_bpm", "FC (bpm)", "bpm", "#ff5b22"),
-      series("vo2_l_min", "V'O2 (L/min)", "L/min", "#10a8ff", "y2"),
+      series("fc_bpm", "HR", "bpm", "#ff5b22"),
+      series("vo2_fc_ml", "V'O2/HR", "ml", "#10a8ff", "y2"),
     ],
   },
   {
-    id: "vo2kg_speed",
-    title: "V'O2/kg + vitesse",
+    id: "vo2_vco2_time",
+    title: "V'O2, V'CO2",
+    kind: "time",
     source: "points",
     xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
     series: [
-      series("vo2_ml_kg_min", "V'O2/kg", "ml/min/kg", "#10a8ff"),
-      series("speed_kmh", "Vitesse (km/h)", "km/h", "#10d38f", "y2", false),
+      series("vo2_l_min", "V'O2", "L/min", "#10a8ff"),
+      series("vco2_l_min", "V'CO2", "L/min", "#16d18d"),
     ],
   },
   {
-    id: "ve_bf",
-    title: "V'E + BF",
+    id: "ve_vco2_scatter",
+    title: "V'E(V'CO2)",
+    kind: "scatter",
     source: "points",
-    xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
+    xAxis: { key: "vco2_l_min", label: "V'CO2", unit: "L/min" },
+    series: [series("ve_l_min", "V'E", "L/min", "#10a8ff", "y", false)],
+  },
+  {
+    id: "vco2_hr_scatter",
+    title: "V'CO2, HR",
+    kind: "scatter",
+    source: "points",
+    xAxis: { key: "vo2_l_min", label: "V'O2", unit: "L/min" },
     series: [
-      series("ve_l_min", "V'E (L/min)", "L/min", "#10a8ff"),
-      series("bf_per_min", "BF (br/min)", "/min", "#ff5b22", "y2"),
+      series("vco2_l_min", "V'CO2", "L/min", "#16d18d", "y", false),
+      series("fc_bpm", "HR", "bpm", "#ff5b22", "y2", false),
     ],
   },
   {
-    id: "rer",
-    title: "RER",
-    source: "points",
-    xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
-    series: [series("rer", "RER", "sans unite", "#16e0c2")],
-  },
-  {
-    id: "ve_ratios",
-    title: "V'E/V'O2 + V'E/V'CO2",
+    id: "ve_ratios_time",
+    title: "V'E/V'O2, V'E/V'CO2",
+    kind: "time",
     source: "points",
     xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
     series: [
@@ -77,43 +91,39 @@ export const GRAPH_CONFIGS: MetaSoftGraphConfig[] = [
     ],
   },
   {
-    id: "pet",
-    title: "PetO2 + PetCO2",
+    id: "vt_ve_scatter",
+    title: "VT(V'E)",
+    kind: "scatter",
     source: "points",
-    xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
-    series: [
-      series("peto2_mmhg", "PetO2", "mmHg", "#10a8ff"),
-      series("petco2_mmhg", "PetCO2", "mmHg", "#ff6b00"),
-    ],
+    xAxis: { key: "ve_l_min", label: "V'E", unit: "L/min" },
+    series: [series("vt_l", "VT", "L", "#a855f7", "y", false)],
   },
   {
-    id: "de",
-    title: "DE / DECHO / DEFAT / DEPRO",
+    id: "rer_time",
+    title: "RER",
+    kind: "time",
+    source: "points",
+    xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
+    series: [series("rer", "RER", "sans unite", "#16e0c2")],
+  },
+  {
+    id: "pet_time",
+    title: "PETO2, PETCO2",
+    kind: "time",
     source: "points",
     xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
     series: [
-      series("de_kcal_h", "DE", "kcal/h", "#0f8fff"),
-      series("decho_kcal_h", "DECHO", "kcal/h", "#ff5b22"),
-      series("defat_kcal_h", "DEFAT", "kcal/h", "#16d18d"),
-      series("depro_kcal_h", "DEPRO", "kcal/h", "#a855f7"),
+      series("peto2_mmhg", "PETO2", "mmHg", "#10a8ff"),
+      series("petco2_mmhg", "PETCO2", "mmHg", "#ff6b00"),
     ],
   },
   {
     id: "running_economy",
     title: "Economie de course",
+    kind: "bar",
     source: "running_economy",
     xAxis: { key: "stage_index", label: "Palier" },
     series: [series("value_j_kg_m", "EC (J/kg/m)", "J/kg/m", "#16e0c2", "y", false)],
-  },
-  {
-    id: "thresholds",
-    title: "Synthese seuils",
-    source: "points",
-    xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
-    series: [
-      series("fc_bpm", "FC (bpm)", "bpm", "#ff5b22"),
-      series("vo2_l_min", "V'O2 (L/min)", "L/min", "#10a8ff", "y2"),
-    ],
   },
 ];
 

@@ -267,11 +267,10 @@ def _vo2_ml_min(point: dict) -> Optional[float]:
 def _vco2_ml_min(point: dict) -> dict:
     native = _number(point, "vco2_l_min")
     if native is not None:
-        return {"value": native * 1000, "source": "xml_native"}
-    vo2 = _number(point, "vo2_l_min")
-    rer = _number(point, "rer")
-    if vo2 is not None and rer is not None:
-        return {"value": vo2 * rer * 1000, "source": "derived_vo2_x_rer"}
+        source = point.get("value_sources", {}).get("vco2_l_min")
+        if source == "xml":
+            source = "xml_native"
+        return {"value": native * 1000, "source": source or "xml_native"}
     return {"value": None, "source": None}
 
 
