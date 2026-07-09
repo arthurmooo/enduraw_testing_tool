@@ -619,6 +619,7 @@ function PointChartBody({
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     if (!target) return;
     event.preventDefault();
+    if (!window.confirm(`Supprimer le marqueur ${markerDisplayName(target.marker)} ?`)) return;
     setProposal(null);
     onDeleteMarker(target.marker);
   }, [canEditTimeMarkers, defaultRange, effectiveRange, markers, onDeleteMarker, plotMargins]);
@@ -758,11 +759,13 @@ function PointChartBody({
                 type="button"
                 onClick={() => setProposal({ ...proposal, mode })}
                 className={proposal.mode === mode ? "active" : ""}
+                aria-pressed={proposal.mode === mode}
               >
                 {markerModeLabel(mode)}
               </button>
             ))}
           </div>
+          <p className="popover-help">{markerModeHelp(proposal.mode)}</p>
           {proposal.mode !== "point" && (
             <label className="field small-field">
               Duree
@@ -832,6 +835,16 @@ function nearestMarkerTargetFromMouse(
       return { target: { marker, part: candidate.part }, distance };
     }, best);
   }, null)?.target ?? null;
+}
+
+function markerDisplayName(marker: MetaSoftMarkerName): string {
+  return marker === "VO2_max" ? "VO2max" : marker;
+}
+
+function markerModeHelp(mode: MarkerMode): string {
+  if (mode === "point") return "Seuil place a l'instant selectionne.";
+  if (mode === "previous") return "Fenetre avant l'instant selectionne.";
+  return "Fenetre centree sur l'instant selectionne.";
 }
 
 function debugZoom(message: string, payload: Record<string, unknown>): void {

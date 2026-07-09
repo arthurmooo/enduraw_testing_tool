@@ -69,11 +69,11 @@ export function MarkerPanel({
                   <td>{formatNumber(row.values.speed_kmh, 1)}</td>
                   <td>
                     {dirty ? (
-                      <span className="status-warn">needsSave</span>
+                      <span className="status-warn">A reporter</span>
                     ) : official ? (
-                      <span className="status-ok">Python</span>
+                      <span className="status-ok">Officiel</span>
                     ) : (
-                      <span className="status-muted">preview</span>
+                      <span className="status-muted">Brouillon</span>
                     )}
                   </td>
                 </tr>
@@ -83,7 +83,7 @@ export function MarkerPanel({
         </table>
       </div>
       <p className="panel-note">
-        Reporter au profil officialise les marqueurs via Python. Un drag/click repasse le marqueur en needsSave.
+        Reporter au profil officialise les marqueurs. Un drag/click repasse le marqueur en A reporter.
       </p>
     </section>
   );

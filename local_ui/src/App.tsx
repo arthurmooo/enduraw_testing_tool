@@ -263,7 +263,7 @@ export default function App() {
         </div>
         <div className="header-badges">
           <span><FileUp size={15} />{analysis.file.filename}</span>
-          <span className="ok-badge"><CheckCircle2 size={15} />Analyse Python</span>
+          <span className="ok-badge"><CheckCircle2 size={15} />Analyse locale OK</span>
           {warnings.length > 0 && <span className="warn-badge"><AlertTriangle size={15} />{warnings.length} warnings</span>}
         </div>
       </header>

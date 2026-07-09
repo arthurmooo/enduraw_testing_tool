@@ -29,7 +29,7 @@ export function AnalysisExportSection({
         <section id="metasoft-profile-report" className="panel action-panel">
           <div className="panel-title-row">
             <h2>Report profil</h2>
-            {busy && <span className="status-muted">{busy}</span>}
+            {busy && <span className="status-muted">{busyLabel(busy)}</span>}
           </div>
           <div className="action-stack">
             <button type="button" className="primary-button" onClick={onReport} disabled={Boolean(busy)}>
@@ -65,4 +65,10 @@ export function AnalysisExportSection({
       </div>
     </section>
   );
+}
+
+function busyLabel(value: string): string {
+  if (value === "Report") return "Report en cours";
+  if (value === "Overwrite") return "Ecrasement en cours";
+  return value;
 }

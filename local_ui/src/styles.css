@@ -31,6 +31,12 @@ button:disabled {
   opacity: 0.55;
 }
 
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid rgba(16, 211, 143, 0.78);
+  outline-offset: 2px;
+}
+
 .app-shell {
   width: min(1880px, calc(100vw - 32px));
   margin: 0 auto;
@@ -328,11 +334,21 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   padding: 4px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.03);
+}
+
+.popover-help,
+.interaction-hint {
+  color: rgba(226, 232, 240, 0.58);
+  font-size: 12px;
+}
+
+.popover-help {
+  margin: 0 0 8px;
 }
 
 .field {
@@ -351,6 +367,10 @@ button:disabled {
   color: #fff;
   background: rgba(255, 255, 255, 0.04);
   outline: none;
+}
+
+.field input:focus-visible {
+  border-color: rgba(16, 211, 143, 0.56);
 }
 
 .small-field {

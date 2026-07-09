@@ -756,6 +756,214 @@ Risque:
 3. Renommer les statuts techniques.
 4. Ajouter focus visible.
 
+## Plan d'execution Lot 2 - GO candidate
+
+Scope strict: securiser les interactions existantes sans changer les gestes,
+les calculs, le payload report, ni les etats internes. Pas de nouveau workflow
+lourd, pas de dependance, pas de design system parallele.
+
+### 1. Modes seuil et artefact explicites
+
+Decision technique exacte:
+
+- Seuils: conserver les gestes existants sur `MetaSoftChart`:
+  click simple temporise pour ouvrir la popover, drag pour deplacer, clic droit
+  pour supprimer. Ajouter uniquement du texte d'aide court dans la popover:
+  mode `Ligne` = seuil a l'instant, `Range` = fenetre centree, `Precedent` =
+  fenetre avant l'instant.
+- Seuils: garder `markerModeLabel` tel quel pour ne pas toucher au contrat
+  `MarkerMode`; ajouter un sous-label visuel sous les boutons de mode ou une
+  ligne d'aide qui change avec `proposal.mode`.
+- Artefacts: conserver `excludeMode` et `handlePlotClick`. Rendre l'etat actif
+  explicite par:
+  - `aria-pressed={excludeMode}` sur le bouton `Exclure artefact`;
+  - libelle ou microcopy conditionnelle pres du bouton: actif = "Cliquez dans le
+    graphe pour placer l'artefact", inactif = pas de texte additionnel ou texte
+    neutre court;
+  - ne pas transformer l'outil en modal ni ajouter validation supplementaire.
+
+Fichiers et fonctions/classes touches:
+
+- `local_ui/src/components/MetaSoftChart.tsx`
+  - popover `proposal`
+  - rendu `.segmented`
+  - event handlers existants inchanges: `openMarkerProposal`,
+    `placeProposalMarker`, `handleMouseDown`, `handleContextMenu`
+- `local_ui/src/components/RunningEconomyManualSection.tsx`
+  - bouton `Exclure artefact`
+  - state `excludeMode`
+- `local_ui/src/styles.css`
+  - classes existantes `.marker-popover`, `.segmented`, `.ec-actions`,
+    eventuelle classe locale d'aide si necessaire
+
+Invariant a preserver:
+
+- Les valeurs internes `point`, `range`, `previous` restent identiques.
+- Le drag des marqueurs, le click de placement et le clic droit existant restent
+  disponibles.
+- `excludeMode` continue seulement d'armer `handlePlotClick`; les calculs EC
+  restent portes par les drafts/exclusions existants.
+
+Critere d'acceptation testable:
+
+- En ouvrant la popover seuil, l'utilisateur voit clairement ce que fait chaque
+  mode sans deviner.
+- Quand `Exclure artefact` est actif, l'UI indique explicitement que le prochain
+  click dans le graphe cree un artefact.
+- Les gestures actuels fonctionnent toujours: placement seuil, drag marqueur,
+  clic droit suppression, click graphe artefact.
+
+Risque:
+
+- Faible si limite a du texte et `aria-pressed`.
+- Risque UX: trop de microcopy dans une popover deja compacte. Garder une seule
+  ligne contextuelle plutot qu'un bloc explicatif.
+
+### 2. Suppression marqueur: garde-fou minimal
+
+Decision technique exacte:
+
+- Ajouter une confirmation native dans `handleContextMenu` avant
+  `onDeleteMarker(target.marker)`.
+- Message cible: `Supprimer le marqueur SV1 ?` avec format `VO2max` pour
+  `VO2_max`.
+- Ne pas ajouter de snackbar/undo state pour ce lot: l'undo demanderait de
+  stocker l'ancien `DraftMarker`, d'ajouter une action de restauration et de
+  gerer l'expiration. C'est plus de state fragile pour un geste deja rare et
+  cache.
+- Ne pas modifier `deleteMarker` dans `App.tsx`, qui reste le point unique de
+  mutation du draft et du dirty state.
+
+Fichiers et fonctions/classes touches:
+
+- `local_ui/src/components/MetaSoftChart.tsx`
+  - `handleContextMenu`
+- Optionnel si duplication de label evitee:
+  - helper local tres court `markerDisplayName(marker)` dans le meme fichier,
+    ou expression inline deja utilisee ailleurs.
+
+Invariant a preserver:
+
+- `onDeleteMarker` appelle toujours `deleteMarker`.
+- `deleteMarker` continue de remettre le marqueur a `t_seconds: null` via
+  `buildDraftMarker(..., null, "point")` et de marquer dirty.
+- Aucun changement de serialization, report ou payload.
+
+Critere d'acceptation testable:
+
+- Clic droit sur un marqueur affiche une confirmation.
+- `Annuler` ne change pas le tableau Marqueurs.
+- `OK` supprime le marqueur comme aujourd'hui et le statut passe a sauvegarder.
+
+Risque:
+
+- Moyen-faible: `window.confirm` est visuellement natif et moins elegant, mais
+  c'est le garde-fou le plus court et le moins fragile.
+- Arbitrage Arthur possible: si le produit refuse le confirm navigateur, il faut
+  planifier un mini-popover de confirmation ou un undo toast, ce qui est un
+  scope plus large que Lot 2 minimal.
+
+### 3. Statuts techniques: labels utilisateurs uniquement
+
+Decision technique exacte:
+
+- Ne pas renommer les etats internes ni les valeurs metier.
+- Mapper uniquement les labels affiches:
+  - `preview` -> `Brouillon`
+  - `needsSave` -> `A reporter`
+  - `Python` -> `Officiel`
+  - `Report` -> `Report en cours`
+  - `Overwrite` -> `Ecrasement en cours`
+- Appliquer le mapping localement:
+  - `MarkerPanel` pour les statuts de marqueurs;
+  - `AnalysisExportSection` pour le badge `busy`;
+  - eventuellement header `Analyse Python` vers `Analyse locale OK` seulement si
+    le lead veut harmoniser le libelle de badge, sans changer la logique.
+- Garder les classes visuelles existantes `status-muted`, `status-warn`,
+  `status-ok`.
+
+Fichiers et fonctions/classes touches:
+
+- `local_ui/src/components/MarkerPanel.tsx`
+  - rendu de la colonne `Statut`
+  - note sous tableau
+- `local_ui/src/components/AnalysisExportSection.tsx`
+  - affichage de `busy`
+- Optionnel:
+  - `local_ui/src/App.tsx` uniquement si le badge header `Analyse Python` doit
+    etre renomme aussi
+
+Invariant a preserver:
+
+- `dirtyMarkers`, `confirmedMarkers`, `busy`, `runOfficialAction("Report")` et
+  `runOfficialAction("Overwrite")` restent inchanges.
+- Aucun changement de payload ou de detection de conflit.
+- Les couleurs de statut restent coherentes: brouillon neutre, a reporter warn,
+  officiel ok.
+
+Critere d'acceptation testable:
+
+- Le tableau marqueurs n'affiche plus `preview`, `needsSave` ni `Python`.
+- Pendant un report, le badge n'affiche plus `Report` ou `Overwrite` brut.
+- Aucun test fonctionnel de report ne change de payload.
+
+Risque:
+
+- Faible. Risque principal: choisir un label qui implique une persistance
+  excessive. `A reporter` est preferable a `Non sauvegarde` car la sauvegarde
+  reelle passe par le report profil.
+
+### 4. Focus visible clavier
+
+Decision technique exacte:
+
+- Ajouter un style CSS `:focus-visible` commun pour les controles interactifs:
+  boutons, inputs, toggles et boutons de table.
+- Ne pas supprimer le `outline: none` existant sur `.field input`; le compenser
+  avec une regle plus specifique `.field input:focus-visible`.
+- Utiliser les couleurs existantes Enduraw:
+  `outline: 2px solid rgba(16, 211, 143, 0.78)` et
+  `outline-offset: 2px`.
+- Ne pas introduire de composant focus, hook clavier ou dependance.
+
+Fichiers et fonctions/classes touches:
+
+- `local_ui/src/styles.css`
+  - regle globale `button:focus-visible, input:focus-visible`
+  - regles ciblees si necessaire pour `.table-icon-button`,
+    `.series-toggle`, `.nav-toggle`, `.marker-choice-grid button`,
+    `.segmented button`
+
+Invariant a preserver:
+
+- Les styles hover/active existants restent identiques.
+- Les inputs range gardent leur rendu actuel.
+- Aucun changement de navigation clavier fonctionnelle hors affichage du focus.
+
+Critere d'acceptation testable:
+
+- En tab clavier, le focus est visible sur nav, filtres, toggles series, boutons
+  popover, boutons EC, table EC et report.
+- Le focus ne deforme pas les boutons et ne provoque pas d'overflow.
+- Le focus reste visible sur fond sombre et sur panels.
+
+Risque:
+
+- Faible. Risque a surveiller: outline coupe par containers avec overflow,
+  notamment dans `.table-wrap` ou `.stage-strip`; `outline-offset: 2px` limite
+  le probleme sans changer les layouts.
+
+### Checks a prevoir apres GO implementation
+
+- `npm --prefix local_ui run build`.
+- `git diff --check`.
+- Verification Safari manuelle:
+  - popover seuil et changement des trois modes;
+  - clic droit suppression marqueur: annuler puis confirmer;
+  - mode artefact actif/inactif;
+  - libelles de statuts marqueurs et report;
+  - navigation clavier Tab/Shift+Tab sur controles visibles.
+
 ### Lot 3 - Rehierarchiser la lecture
 
 1. Passer d'une grille de tous les graphes a une lecture principale.

@@ -209,6 +209,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
               <button
                 type="button"
                 className={excludeMode ? "secondary-button active-action" : "secondary-button"}
+                aria-pressed={excludeMode}
                 onClick={() => {
                   setExcludeMode((current) => !current);
                   setActiveExclusionIndex(null);
@@ -217,6 +218,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
                 <Scissors size={15} />
                 Exclure artefact
               </button>
+              {excludeMode && <span className="interaction-hint">Cliquez dans le graphe pour placer l'artefact.</span>}
             </div>
           </div>
           {selectedStage && selectedDraft && (
