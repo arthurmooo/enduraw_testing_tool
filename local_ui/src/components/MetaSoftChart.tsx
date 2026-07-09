@@ -5,6 +5,7 @@ import { Maximize2, X } from "lucide-react";
 import {
   buildMarkerAnnotations,
   buildMarkerShapes,
+  buildSpeedStepLineShapes,
   buildStaticAnnotations,
   buildTimeBandShapes,
 } from "../lib/chartUtils";
@@ -412,12 +413,12 @@ function PointChartBody({
     [graph.series],
   );
   const staticShapes = useMemo(
-    () => canEditTimeMarkers ? buildTimeBandShapes(analysis, showSpeedBands) : [],
-    [analysis, canEditTimeMarkers, showSpeedBands],
+    () => canEditTimeMarkers ? buildTimeBandShapes(analysis) : [],
+    [analysis, canEditTimeMarkers],
   );
   const staticAnnotations = useMemo(
-    () => canEditTimeMarkers ? buildStaticAnnotations(analysis, showSpeedBands) : [],
-    [analysis, canEditTimeMarkers, showSpeedBands],
+    () => canEditTimeMarkers ? buildStaticAnnotations(analysis) : [],
+    [analysis, canEditTimeMarkers],
   );
   const markerShapes = useMemo(
     () => canEditTimeMarkers ? buildMarkerShapes(visibleMarkers) : [],
@@ -435,13 +436,25 @@ function PointChartBody({
     () => cursorSourceGraphId === graph.id ? [] : buildCursorAnnotations(graph, series, cursorPoint),
     [cursorPoint, cursorSourceGraphId, graph, series],
   );
+  const speedLineShapes = useMemo(
+    () => graph.kind === "time" && showSpeedBands ? buildSpeedStepLineShapes(analysis) : [],
+    [analysis, graph.kind, showSpeedBands],
+  );
   const shapes = useMemo(
-    () => canEditTimeMarkers ? [...staticShapes, ...markerShapes, ...cursorShapes] : [],
-    [canEditTimeMarkers, cursorShapes, markerShapes, staticShapes],
+    () => canEditTimeMarkers ? [...staticShapes, ...speedLineShapes, ...markerShapes, ...cursorShapes] : [],
+    [canEditTimeMarkers, cursorShapes, markerShapes, speedLineShapes, staticShapes],
   );
   const annotations = useMemo(
     () => canEditTimeMarkers ? [...staticAnnotations, ...markerAnnotations, ...cursorAnnotations] : [],
     [canEditTimeMarkers, cursorAnnotations, markerAnnotations, staticAnnotations],
+  );
+  const speedHoverText = useMemo(
+    () => chartPoints.map((point) => (
+      typeof point.values.speed_kmh === "number"
+        ? `${point.values.speed_kmh.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} km/h`
+        : "n/a"
+    )),
+    [chartPoints],
   );
   const data = useMemo(() => series.map((seriesItem) => {
     const rawY = chartPoints.map((point) => point.values[seriesItem.key as keyof MetaSoftPoint["values"]]);
@@ -454,12 +467,13 @@ function PointChartBody({
       y: shouldSmooth ? smoothSeries(x, rawY, smoothingSeconds) : rawY,
       yaxis: seriesItem.axis,
       customdata: chartPoints.map((point) => point.index),
+      text: speedHoverText,
       line: { color: seriesItem.color, width: 0.8 },
       marker: { color: seriesItem.color, size: graph.kind === "scatter" ? 5 : 4 },
-      hovertemplate: `%{y}<extra>${seriesItem.label}</extra>`,
+      hovertemplate: `${seriesItem.unit === "bpm" ? "%{y:.0f}" : "%{y}"}<br>Vitesse %{text}<extra>${seriesItem.label}</extra>`,
       connectgaps: false,
     };
-  }), [chartPoints, graph.kind, series, smoothingSeconds, x]);
+  }), [chartPoints, graph.kind, series, smoothingSeconds, speedHoverText, x]);
   const layout = useMemo(() => ({
     autosize: true,
     paper_bgcolor: "rgba(0,0,0,0)",

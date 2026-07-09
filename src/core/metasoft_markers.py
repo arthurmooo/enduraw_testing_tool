@@ -59,7 +59,7 @@ def metasoft_marker_to_stress_patch(marker: dict) -> dict:
 
     if name in ("sv1", "sv2"):
         threshold = _without_none({
-            "hr_bpm": values.get("fc_bpm"),
+            "hr_bpm": _round_bpm(values.get("fc_bpm")),
             "pace_km_h": values.get("speed_kmh"),
             "vo2_ml_kg_min": values.get("vo2_ml_kg_min"),
         })
@@ -67,7 +67,7 @@ def metasoft_marker_to_stress_patch(marker: dict) -> dict:
             stress["thresholds"] = {name: threshold}
     elif name == "vo2_max":
         stress.update(_without_none({
-            "max_hr": values.get("fc_bpm"),
+            "max_hr": _round_bpm(values.get("fc_bpm")),
             "measured_vo2max": values.get("vo2_ml_kg_min"),
         }))
     elif name == "vma":
@@ -294,3 +294,8 @@ def _number(value) -> Optional[float]:
         return None
     number = float(value)
     return number if isfinite(number) else None
+
+
+def _round_bpm(value) -> Optional[int]:
+    number = _number(value)
+    return int(number + 0.5) if number is not None else None

@@ -83,18 +83,18 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
                 "stress_test_results": {
                     "thresholds": {
                         "sv1": {
-                            "hr_bpm": 142,
+                            "hr_bpm": 142.6,
                             "pace_km_h": 11,
                             "vo2_ml_kg_min": 34.1,
                         },
                         "sv2": {
-                            "hr_bpm": 152,
+                            "hr_bpm": 151.4,
                             "pace_km_h": 13,
                             "vo2_ml_kg_min": 42.9,
                         },
                     },
                     "measured_vo2max": 44.8,
-                    "max_hr": 164,
+                    "max_hr": 164.5,
                     "vma": 14.7,
                 },
             },
@@ -121,7 +121,9 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
         )
         for forbidden_key in ("markers", "metasoft", "audit", "running_economy"):
             self.assertNotIn(forbidden_key, output)
-        self.assertEqual(output["seuils"]["SV1"]["fc"], 142)
+        self.assertEqual(output["seuils"]["SV1"]["fc"], 143)
+        self.assertEqual(output["seuils"]["SV2"]["fc"], 151)
+        self.assertEqual(output["seuils"]["VO2_max"]["fc_max"], 165)
         self.assertEqual(output["seuils"]["SV2"]["allure"], 13)
 
     def test_valentin_json_includes_manual_running_economy_when_provided(self) -> None:

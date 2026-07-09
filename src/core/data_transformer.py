@@ -161,11 +161,11 @@ class DataTransformer:
         
         # Source: champs valides par le coach dans le formulaire local.
         vma_value = stress_results.get('vma')
-        fc_max_value = stress_results.get('max_hr')
+        fc_max_value = self._round_bpm(stress_results.get('max_hr'))
         vo2max_value = stress_results.get('measured_vo2max')
         
         sv1 = Seuil()
-        sv1.fc = sv1_data.get('hr_bpm')
+        sv1.fc = self._round_bpm(sv1_data.get('hr_bpm'))
         sv1.allure = sv1_data.get('pace_km_h')
         sv1.vo2 = sv1_data.get('vo2_ml_kg_min')
         
@@ -181,7 +181,7 @@ class DataTransformer:
         seuils['SV1'] = sv1_dict
         
         sv2 = Seuil()
-        sv2.fc = sv2_data.get('hr_bpm')
+        sv2.fc = self._round_bpm(sv2_data.get('hr_bpm'))
         sv2.allure = sv2_data.get('pace_km_h')
         sv2.vo2 = sv2_data.get('vo2_ml_kg_min')
         
@@ -296,8 +296,8 @@ class DataTransformer:
         # Equipment & Tracking
         patient_info.marque_montre = equipment.get('watch_brand', '')
         patient_info.vo2_montre = equipment.get('watch_estimated_vo2')
-        patient_info.fc_repos = equipment.get('min_hr_before')
-        patient_info.fcmax_ever = equipment.get('max_hr_ever')
+        patient_info.fc_repos = self._round_bpm(equipment.get('min_hr_before'))
+        patient_info.fcmax_ever = self._round_bpm(equipment.get('max_hr_ever'))
         patient_info.volume_cap = self._parse_volume(equipment.get('average_weekly_volume', ''))
         
         # Watch predictions
@@ -373,7 +373,7 @@ class DataTransformer:
         graph1 = Graph(titre="Heart Rate, V'O2 and V'CO2 Evolution")
         
         # FC curve
-        fc_values = [m.get('FC') for m in aggregated]
+        fc_values = [self._round_bpm(m.get('FC')) for m in aggregated]
         if any(v is not None for v in fc_values):
             graph1.courbes.append(GraphCurve(
                 nom="FC (bpm)",
@@ -459,7 +459,7 @@ class DataTransformer:
         graph1 = Graph(titre="FC et V'O2")
         graph2 = Graph(titre="V'E, BF et RER")
 
-        fc_values = [m.get('fc_bpm') for m in aggregated]
+        fc_values = [self._round_bpm(m.get('fc_bpm')) for m in aggregated]
         if any(v is not None for v in fc_values):
             graph1.courbes.append(GraphCurve(
                 nom="FC (bpm)",
@@ -685,6 +685,15 @@ class DataTransformer:
         if number is None or not isfinite(number) or number <= 0:
             return None
         return number
+
+    def _round_bpm(self, value: Any) -> Optional[int]:
+        """Arrondit uniquement les valeurs exportees en bpm, sans toucher aux sources."""
+        if isinstance(value, bool):
+            return None
+        number = self._safe_float(value)
+        if number is None or not isfinite(number):
+            return None
+        return int(number + 0.5)
     
     def _safe_int(self, value: Any) -> Optional[int]:
         """Safely convert to int"""

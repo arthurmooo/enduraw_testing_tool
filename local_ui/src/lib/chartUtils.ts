@@ -20,7 +20,7 @@ const PHASE_COLORS: Record<string, string> = {
   Rétablissement: "rgba(0, 190, 145, 0.16)",
 };
 
-export function buildTimeBandShapes(analysis: MetaSoftAnalysis, showSpeedBands = true): PlotShape[] {
+export function buildTimeBandShapes(analysis: MetaSoftAnalysis): PlotShape[] {
   const phaseBands = analysis.phases.filter(hasBounds).map((phase) => ({
     type: "rect",
     xref: "x",
@@ -35,7 +35,7 @@ export function buildTimeBandShapes(analysis: MetaSoftAnalysis, showSpeedBands =
     editable: false,
   }));
 
-  const speedBands = showSpeedBands ? speedSegmentsForAnalysis(analysis).map((stage, index) => ({
+  const speedBands = speedSegmentsForAnalysis(analysis).map((stage, index) => ({
     type: "rect",
     xref: "x",
     yref: "paper",
@@ -47,7 +47,7 @@ export function buildTimeBandShapes(analysis: MetaSoftAnalysis, showSpeedBands =
     line: { color: "rgba(255,255,255,0.07)", width: 1 },
     layer: "below",
     editable: false,
-  })) : [];
+  }));
 
   return [...speedBands, ...phaseBands];
 }
@@ -89,8 +89,8 @@ export function buildAnnotations(analysis: MetaSoftAnalysis, markers: DraftMarke
   return [...buildStaticAnnotations(analysis), ...buildMarkerAnnotations(markers)];
 }
 
-export function buildStaticAnnotations(analysis: MetaSoftAnalysis, showSpeedBands = true) {
-  const speedLabels = showSpeedBands ? speedSegmentsForAnalysis(analysis)
+export function buildStaticAnnotations(analysis: MetaSoftAnalysis) {
+  const speedLabels = speedSegmentsForAnalysis(analysis)
     .filter((stage) => (
       typeof stage.start_seconds === "number"
       && typeof stage.end_seconds === "number"
@@ -107,7 +107,7 @@ export function buildStaticAnnotations(analysis: MetaSoftAnalysis, showSpeedBand
       bgcolor: "rgba(2, 12, 25, 0.30)",
       bordercolor: "rgba(255,255,255,0.05)",
       borderpad: 2,
-    })) : [];
+    }));
   const phaseLabels = analysis.phases.filter(hasBounds).map((phase) => ({
     x: ((phase.start_seconds ?? 0) + (phase.end_seconds ?? 0)) / 2,
     y: 0.04,
@@ -139,9 +139,45 @@ export function buildMarkerAnnotations(markers: DraftMarkers) {
   return markerLabels;
 }
 
-function speedSegmentsForAnalysis(analysis: MetaSoftAnalysis): MetaSoftWarmupStage[] {
+export function speedSegmentsForAnalysis(analysis: MetaSoftAnalysis): MetaSoftWarmupStage[] {
   const allSpeedSegments = speedSegmentsFromPoints(analysis.points);
   return allSpeedSegments.length ? allSpeedSegments : analysis.warmup_stages.filter(hasBounds);
+}
+
+export function buildSpeedStepLinePoints(analysis: MetaSoftAnalysis): { x: number[]; y: number[] } {
+  const x: number[] = [];
+  const y: number[] = [];
+  for (const segment of speedSegmentsForAnalysis(analysis).filter(hasBounds)) {
+    const start = segment.start_seconds as number;
+    const end = segment.end_seconds as number;
+    if (x.length > 0 && x[x.length - 1] !== start) {
+      x.push(start);
+      y.push(y[y.length - 1]);
+    }
+    x.push(start, end);
+    y.push(segment.speed_kmh, segment.speed_kmh);
+  }
+  return { x, y };
+}
+
+export function buildSpeedStepLineShapes(analysis: MetaSoftAnalysis): PlotShape[] {
+  const points = buildSpeedStepLinePoints(analysis);
+  if (!points.x.length) return [];
+  const min = Math.min(...points.y);
+  const max = Math.max(...points.y);
+  const yPaper = (speed: number) => {
+    if (min === max) return 0.5;
+    return 0.16 + ((speed - min) / (max - min)) * 0.68;
+  };
+  return [{
+    type: "path",
+    xref: "x",
+    yref: "paper",
+    path: points.x.map((x, index) => `${index === 0 ? "M" : "L"} ${x},${yPaper(points.y[index])}`).join(" "),
+    line: { color: "rgba(255, 43, 214, 0.36)", width: 0.7 },
+    layer: "below",
+    editable: false,
+  }];
 }
 
 function formatSpeed(value: number): string {

@@ -529,12 +529,12 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
 
     def test_marker_mapping_uses_ml_kg_vo2_and_speed_for_vma(self) -> None:
         sv1_marker = build_metasoft_marker(
-            [_marker_point(10, 150, 3.0, 45, 14)],
+            [_marker_point(10, 150.6, 3.0, 45, 14)],
             "SV1",
             t_seconds=10,
         )
         vo2_marker = build_metasoft_marker(
-            [_marker_point(10, 180, 4.2, 62, 18)],
+            [_marker_point(10, 180.4, 4.2, 62, 18)],
             "VO2max",
             t_seconds=10,
         )
@@ -550,7 +550,7 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
 
         self.assertEqual(
             sv1_patch["patch"]["stress_test_results"]["thresholds"]["sv1"],
-            {"hr_bpm": 150, "pace_km_h": 14, "vo2_ml_kg_min": 45},
+            {"hr_bpm": 151, "pace_km_h": 14, "vo2_ml_kg_min": 45},
         )
         self.assertEqual(vo2_patch["status"], "ok")
         self.assertEqual(
@@ -615,14 +615,15 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         transformer = DataTransformer()
         old_graphs = transformer._build_graphiques(
             [
-                {"t_seconds": 1, "FC": 100, "V'O2": 2.0},
+                {"t_seconds": 1, "FC": 100.6, "V'O2": 2.25},
                 {"t_seconds": 16, "FC": None, "V'O2": None},
             ],
             {},
         )
         new_graphs = transformer._build_graphiques_from_metasoft_points(
             [
-                {"t_seconds": 1, "values": {"fc_bpm": 100, "vo2_l_min": 2.0}},
+                {"t_seconds": 1, "values": {"fc_bpm": 100.4, "vo2_l_min": 2.25}},
+                {"t_seconds": 2, "values": {"fc_bpm": 100.8, "vo2_l_min": 2.75}},
                 {"t_seconds": 16, "values": {"fc_bpm": None, "vo2_l_min": None}},
             ],
             {},
@@ -631,8 +632,9 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         old_fc = old_graphs["graphique_1"]["courbes"][0]["valeurs"]
         new_fc = new_graphs["graphique_1"]["courbes"][0]["valeurs"]
 
-        self.assertEqual(old_fc, [100, None])
-        self.assertEqual(new_fc, [100, None])
+        self.assertEqual(old_fc, [101, None])
+        self.assertEqual(new_fc, [101, None])
+        self.assertEqual(new_graphs["graphique_1"]["courbes"][1]["valeurs"], [2.5, None])
 
 
 if __name__ == "__main__":

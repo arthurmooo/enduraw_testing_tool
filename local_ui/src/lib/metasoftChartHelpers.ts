@@ -81,10 +81,14 @@ export function buildCursorAnnotations(
     .map((item) => {
       const value = point.values[item.key as keyof MetaSoftPoint["values"]];
       return typeof value === "number" && Number.isFinite(value)
-        ? `${item.label} ${formatChartValue(value)}${item.unit ? ` ${item.unit}` : ""}`
+        ? `${item.label} ${formatChartValue(value, item)}${item.unit ? ` ${item.unit}` : ""}`
         : null;
     })
     .filter((value): value is string => value !== null);
+  const speed = point.values.speed_kmh;
+  if (typeof speed === "number" && Number.isFinite(speed)) {
+    rows.push(`Vitesse ${speed.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} km/h`);
+  }
   return [{
     x: tSeconds,
     y: 0.98,
@@ -325,8 +329,8 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function formatChartValue(value: number): string {
-  return value.toLocaleString("fr-FR", { maximumFractionDigits: 2 });
+function formatChartValue(value: number, series: MetaSoftSeriesConfig): string {
+  return value.toLocaleString("fr-FR", { maximumFractionDigits: series.unit === "bpm" ? 0 : 2 });
 }
 
 function isXAxisAvailable(

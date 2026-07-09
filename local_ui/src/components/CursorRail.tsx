@@ -3,6 +3,7 @@ import { formatNumber, secondsToClock } from "../lib/markerUtils";
 import type { MetaSoftAnalysis, MetaSoftMetricKey, MetaSoftPoint } from "../types/metasoft";
 
 const CURSOR_VALUES: Array<[MetaSoftMetricKey, string, string, string, number]> = [
+  ["fc_bpm", "HR", "bpm", "#ff5b22", 0],
   ["ve_vo2", "VE/VO2", "sans unite", "#2437d8", 1],
   ["vo2_l_min", "V'O2", "L/min", "#0057ff", 2],
   ["vco2_l_min", "V'CO2", "L/min", "#0f8f5f", 2],
