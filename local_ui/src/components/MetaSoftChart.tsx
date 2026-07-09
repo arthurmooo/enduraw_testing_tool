@@ -51,6 +51,7 @@ function MetaSoftChartComponent({
 }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
   const [xRange, setXRange] = useState<[number, number] | null>(null);
+  const [plotRevision, setPlotRevision] = useState(0);
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
   const availableSeries = graph.series.filter((series) => isSeriesAvailable(analysis, graph, series));
   const visibleSeries = availableSeries.filter((series) => !hiddenSeries.has(series.key));
@@ -60,8 +61,16 @@ function MetaSoftChartComponent({
     [analysis.points, phaseFilter],
   );
 
-  useEffect(() => setXRange(null), [analysis.file.filename, phaseFilter]);
+  useEffect(() => {
+    setXRange(null);
+    setPlotRevision((revision) => revision + 1);
+  }, [analysis.file.filename, phaseFilter]);
   useEffect(() => setHiddenSeries(new Set()), [analysis.file.filename, graph.id]);
+
+  const handleXRangeChange = (range: [number, number] | null) => {
+    setXRange(range);
+    if (range === null) setPlotRevision((revision) => revision + 1);
+  };
 
   const toggleSeries = (series: MetaSoftSeriesConfig) => {
     setHiddenSeries((current) => {
@@ -94,8 +103,9 @@ function MetaSoftChartComponent({
       graph={graph}
       series={visibleSeries}
       height={height}
+      plotRevision={plotRevision}
       xRange={xRange}
-      onXRangeChange={setXRange}
+      onXRangeChange={handleXRangeChange}
     />
   ) : (
     <PointChartBody
@@ -105,9 +115,10 @@ function MetaSoftChartComponent({
       points={points}
       markers={markers}
       height={height}
+      plotRevision={plotRevision}
       smoothingSeconds={smoothingSeconds}
       xRange={xRange}
-      onXRangeChange={setXRange}
+      onXRangeChange={handleXRangeChange}
       onCursorPoint={onCursorPoint}
       onPlaceMarker={onPlaceMarker}
       onDeleteMarker={onDeleteMarker}
@@ -191,6 +202,7 @@ function RunningEconomyChart({
   graph,
   series,
   height,
+  plotRevision,
   xRange,
   onXRangeChange,
 }: {
@@ -198,6 +210,7 @@ function RunningEconomyChart({
   graph: MetaSoftGraphConfig;
   series: MetaSoftSeriesConfig[];
   height: number;
+  plotRevision: number;
   xRange: [number, number] | null;
   onXRangeChange: (range: [number, number] | null) => void;
 }) {
@@ -236,6 +249,7 @@ function RunningEconomyChart({
         },
       }}
       config={{ responsive: true, displayModeBar: false, doubleClick: "reset" }}
+      revision={plotRevision}
       style={{ width: "100%", height }}
       useResizeHandler
       onRelayout={(event: Readonly<Record<string, unknown>>) => {
@@ -254,6 +268,7 @@ function PointChartBody({
   points,
   markers,
   height,
+  plotRevision,
   smoothingSeconds,
   xRange,
   onXRangeChange,
@@ -267,6 +282,7 @@ function PointChartBody({
   points: MetaSoftPoint[];
   markers: DraftMarkers;
   height: number;
+  plotRevision: number;
   smoothingSeconds: number;
   xRange: [number, number] | null;
   onXRangeChange: (range: [number, number] | null) => void;
@@ -551,6 +567,7 @@ function PointChartBody({
           doubleClick: "reset",
           editable: false,
         }}
+        revision={plotRevision}
         style={{ width: "100%", height }}
         useResizeHandler
         onClick={canEditTimeMarkers ? openMarkerProposal : undefined}
