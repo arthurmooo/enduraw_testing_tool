@@ -47,6 +47,8 @@ import type {
 } from "../types/metasoft";
 
 const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
+const MARKER_POPOVER_WIDTH = 420;
+const MARKER_POPOVER_HEIGHT = 240;
 
 interface Props {
   analysis: import("../types/metasoft").MetaSoftAnalysis;
@@ -58,7 +60,6 @@ interface Props {
   timeXRange: [number, number] | null;
   timeZoomResetRevision: number;
   cursorPoint: MetaSoftPoint | null;
-  cursorSourceGraphId: string | null;
   fullscreen: boolean;
   onFullscreenChange: (open: boolean) => void;
   onTimeXRangeChange?: (graphId: string, range: [number, number] | null) => void;
@@ -83,7 +84,6 @@ function MetaSoftChartComponent({
   timeXRange,
   timeZoomResetRevision,
   cursorPoint,
-  cursorSourceGraphId,
   fullscreen,
   onFullscreenChange,
   onTimeXRangeChange,
@@ -184,7 +184,6 @@ function MetaSoftChartComponent({
       onXRangeChange={handleXRangeChange}
       showSpeedBands={showSpeedBands}
       cursorPoint={cursorPoint}
-      cursorSourceGraphId={cursorSourceGraphId}
       onCursorPoint={onCursorPoint}
       onPlaceMarker={onPlaceMarker}
       onDeleteMarker={onDeleteMarker}
@@ -341,7 +340,6 @@ function PointChartBody({
   onXRangeChange,
   showSpeedBands,
   cursorPoint,
-  cursorSourceGraphId,
   onCursorPoint,
   onPlaceMarker,
   onDeleteMarker,
@@ -359,7 +357,6 @@ function PointChartBody({
   onXRangeChange: (range: [number, number] | null) => void;
   showSpeedBands: boolean;
   cursorPoint: MetaSoftPoint | null;
-  cursorSourceGraphId: string | null;
   onCursorPoint: (graphId: string, point: MetaSoftPoint | null) => void;
   onPlaceMarker: (
     marker: MetaSoftMarkerName,
@@ -433,8 +430,8 @@ function PointChartBody({
     [cursorPoint, graph],
   );
   const cursorAnnotations = useMemo(
-    () => cursorSourceGraphId === graph.id ? [] : buildCursorAnnotations(graph, series, cursorPoint),
-    [cursorPoint, cursorSourceGraphId, graph, series],
+    () => buildCursorAnnotations(graph, series, cursorPoint),
+    [cursorPoint, graph, series],
   );
   const speedLineShapes = useMemo(
     () => graph.kind === "time" && showSpeedBands ? buildSpeedStepLineShapes(analysis) : [],
@@ -470,7 +467,10 @@ function PointChartBody({
       text: speedHoverText,
       line: { color: seriesItem.color, width: 0.8 },
       marker: { color: seriesItem.color, size: graph.kind === "scatter" ? 5 : 4 },
-      hovertemplate: `${seriesItem.unit === "bpm" ? "%{y:.0f}" : "%{y}"}<br>Vitesse %{text}<extra>${seriesItem.label}</extra>`,
+      hoverinfo: graph.kind === "time" ? "none" : undefined,
+      hovertemplate: graph.kind === "time"
+        ? undefined
+        : `${seriesItem.unit === "bpm" ? "%{y:.0f}" : "%{y}"}<br>Vitesse %{text}<extra>${seriesItem.label}</extra>`,
       connectgaps: false,
     };
   }), [chartPoints, graph.kind, series, smoothingSeconds, speedHoverText, x]);
@@ -600,8 +600,8 @@ function PointChartBody({
     clickTimerRef.current = window.setTimeout(() => {
       clickTimerRef.current = null;
       setProposal({
-        left: clamp(mouseEvent.clientX - bounds.left, 8, Math.max(8, bounds.width - 248)),
-        top: clamp(mouseEvent.clientY - bounds.top, 8, Math.max(8, bounds.height - 166)),
+        left: clamp(mouseEvent.clientX - bounds.left, 8, Math.max(8, bounds.width - MARKER_POPOVER_WIDTH - 8)),
+        top: clamp(mouseEvent.clientY - bounds.top, 8, Math.max(8, bounds.height - MARKER_POPOVER_HEIGHT - 8)),
         tSeconds: clamp(tSeconds, 0, maxTime),
         mode: "point",
         rangeDuration: "4:00",
@@ -747,7 +747,9 @@ function PointChartBody({
               <p>Placer un seuil</p>
               <span>{secondsToClock(proposal.tSeconds)}</span>
             </div>
-            <button type="button" onClick={() => setProposal(null)} aria-label="Fermer">x</button>
+            <button type="button" onClick={() => setProposal(null)} aria-label="Fermer">
+              <X size={16} />
+            </button>
           </div>
           <div className="segmented">
             {(["point", "range", "previous"] as const).map((mode) => (

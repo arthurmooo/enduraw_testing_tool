@@ -318,6 +318,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
                     }));
                     setActiveExclusionIndex(null);
                   }}
+                  onDone={() => setActiveExclusionIndex(null)}
                 />
               )}
               {selectedRow?.warning && <p className="error-text">{selectedRow.warning}</p>}
@@ -488,6 +489,11 @@ const ManualEconomyPlot = memo(function ManualEconomyPlot({
     margin: { l: 44, r: 44, t: 12, b: 38 },
     font: { color: "rgba(226,232,240,0.78)", size: 10 },
     hovermode: "x unified",
+    hoverlabel: {
+      bgcolor: "rgba(6,20,36,0.94)",
+      bordercolor: "rgba(248,250,252,0.22)",
+      font: { color: "#f8fafc", size: 11 },
+    },
     showlegend: true,
     legend: { orientation: "h", x: 0, y: 1.12, font: { size: 10 } },
     shapes,
@@ -527,6 +533,7 @@ function ArtifactSliders({
   max,
   onChange,
   onDelete,
+  onDone,
 }: {
   exclusion: { start_seconds: number; end_seconds: number };
   index: number;
@@ -534,15 +541,21 @@ function ArtifactSliders({
   max: number;
   onChange: (index: number, next: { start_seconds: number; end_seconds: number }) => void;
   onDelete: (index: number) => void;
+  onDone: () => void;
 }) {
   return (
     <div className="artifact-editor">
       <div className="panel-title-row">
         <strong>Artefact {index + 1}</strong>
-        <button type="button" className="table-icon-button" onClick={() => onDelete(index)}>
-          <Trash2 size={13} />
-          Supprimer
-        </button>
+        <div className="artifact-editor-actions">
+          <button type="button" className="table-icon-button" onClick={onDone}>
+            Terminer
+          </button>
+          <button type="button" className="table-icon-button" onClick={() => onDelete(index)}>
+            <Trash2 size={13} />
+            Supprimer
+          </button>
+        </div>
       </div>
       <div className="bounds-grid artifact-bounds">
         <label className="field">
@@ -595,7 +608,9 @@ function trace(
     name,
     x,
     y,
+    customdata: x.map((time) => (typeof time === "number" && Number.isFinite(time) ? secondsToClock(time) : "")),
     line: { color, width: dash === "solid" ? 1.6 : 1, dash },
+    hovertemplate: `<b>${name}</b><br>%{customdata}<br>%{y:.3f}<extra></extra>`,
     connectgaps: false,
   };
 }

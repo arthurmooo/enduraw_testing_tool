@@ -22,7 +22,6 @@ import type {
 const NAV_ITEMS = [
   { label: "Lecture", targetId: "metasoft-reading" },
   { label: "Marqueurs", targetId: "metasoft-markers" },
-  { label: "Analyse", targetId: "metasoft-analysis-export" },
   { label: "EC", targetId: "metasoft-running-economy" },
   { label: "Report", targetId: "metasoft-profile-report" },
 ];
@@ -42,7 +41,6 @@ export default function App() {
   const [timeZoomResetRevision, setTimeZoomResetRevision] = useState(0);
   const [fullscreenGraphId, setFullscreenGraphId] = useState<string | null>(null);
   const [cursorPoint, setCursorPoint] = useState<MetaSoftPoint | null>(null);
-  const [cursorSourceGraphId, setCursorSourceGraphId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ReportResponse | null>(null);
@@ -56,7 +54,6 @@ export default function App() {
   const cursorFrameRef = useRef<number | null>(null);
   const cursorPointRef = useRef<MetaSoftPoint | null>(null);
   const pendingCursorPointRef = useRef<MetaSoftPoint | null>(null);
-  const cursorSourceGraphIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,8 +70,6 @@ export default function App() {
         cursorPointRef.current = firstPoint;
         pendingCursorPointRef.current = firstPoint;
         setCursorPoint(firstPoint);
-        cursorSourceGraphIdRef.current = null;
-        setCursorSourceGraphId(null);
         setPhaseFilter("Tout");
         timeXRangeRef.current = null;
         blockedResetRangeRef.current = null;
@@ -114,20 +109,13 @@ export default function App() {
     setCursorPoint(next);
   }, []);
 
-  const updateCursorSourceGraphId = useCallback((graphId: string | null) => {
-    if (cursorSourceGraphIdRef.current === graphId) return;
-    cursorSourceGraphIdRef.current = graphId;
-    setCursorSourceGraphId(graphId);
-  }, []);
-
-  const handleCursorPoint = useCallback((graphId: string, point: MetaSoftPoint | null) => {
-    updateCursorSourceGraphId(point ? graphId : null);
+  const handleCursorPoint = useCallback((_graphId: string, point: MetaSoftPoint | null) => {
     const current = cursorFrameRef.current !== null ? pendingCursorPointRef.current : cursorPointRef.current;
     if (sameCursorPoint(current, point)) return;
     pendingCursorPointRef.current = point;
     if (cursorFrameRef.current !== null) return;
     cursorFrameRef.current = window.requestAnimationFrame(flushCursorPoint);
-  }, [flushCursorPoint, updateCursorSourceGraphId]);
+  }, [flushCursorPoint]);
 
   const handleTimeXRangeChange = useCallback((graphId: string, range: [number, number] | null) => {
     const now = window.performance.now();
@@ -341,7 +329,6 @@ export default function App() {
               timeXRange={graph.kind === "time" ? timeXRange : null}
               timeZoomResetRevision={graph.kind === "time" ? timeZoomResetRevision : 0}
               cursorPoint={graph.kind === "time" ? cursorPoint : null}
-              cursorSourceGraphId={graph.kind === "time" ? cursorSourceGraphId : null}
               fullscreen={fullscreenGraphId === graph.id}
               onFullscreenChange={(open) => setFullscreenGraphId(open ? graph.id : null)}
               onTimeXRangeChange={graph.kind === "time" ? handleTimeXRangeChange : undefined}

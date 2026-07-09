@@ -278,7 +278,7 @@ button:disabled {
 .marker-popover {
   position: absolute;
   z-index: 10;
-  width: 240px;
+  width: min(420px, calc(100vw - 32px));
   padding: 10px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
@@ -288,6 +288,7 @@ button:disabled {
 
 .popover-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
@@ -307,14 +308,25 @@ button:disabled {
 }
 
 .popover-head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  min-height: 30px;
+  border-radius: 6px;
   border: 0;
   color: rgba(226, 232, 240, 0.58);
   background: transparent;
 }
 
+.popover-head button:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .segmented {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 8px;
   padding: 4px;
@@ -347,17 +359,20 @@ button:disabled {
 
 .marker-choice-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(72px, 1fr));
   gap: 5px;
 }
 
 .marker-choice-grid button {
+  min-width: 0;
   min-height: 32px;
   border: 1px solid;
   border-radius: 6px;
+  padding: 0 8px;
   background: rgba(255, 255, 255, 0.035);
   font-size: 12px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .modal-backdrop {
@@ -669,6 +684,13 @@ td {
 
 .artifact-editor .panel-title-row {
   margin-bottom: 8px;
+}
+
+.artifact-editor-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .artifact-bounds input[type="range"] {
