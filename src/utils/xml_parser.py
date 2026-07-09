@@ -409,47 +409,65 @@ def add_derived_vco2(points: List[dict], metrics: dict) -> Optional[dict]:
     """Expose `V'CO2` derive uniquement si la colonne XML native est absente.
 
     Source: `V'O2` XML en L/min et RER XML sans unite. Transformation:
-    multiplication point par point, donc la sortie reste en L/min. Fallback:
-    aucun zero et aucune extrapolation; les points incomplets gardent `None`.
+    multiplication point par point, donc la sortie reste en L/min. Fallback
+    secondaire: `V'E / (V'E/V'CO2)` si `V'O2 * RER` est indisponible. Aucun
+    zero et aucune extrapolation; les points incomplets gardent `None`.
     """
     if "vco2_l_min" in metrics:
         return None
 
     derived_count = 0
+    derived_from_ratio_count = 0
     missing_inputs = 0
     for point in points:
         values = point.get("values", {})
         vo2 = _number_or_none(values.get("vo2_l_min"))
         rer = _number_or_none(values.get("rer"))
+        if vo2 is not None and rer is not None:
+            values["vco2_l_min"] = round(vo2 * rer, 6)
+            point.setdefault("value_sources", {})["vco2_l_min"] = "derived_vo2_x_rer"
+            derived_count += 1
+            continue
+
+        ve = _number_or_none(values.get("ve_l_min"))
+        ve_vco2 = _number_or_none(values.get("ve_vco2"))
+        if ve is not None and ve_vco2 and ve_vco2 > 0:
+            values["vco2_l_min"] = round(ve / ve_vco2, 6)
+            point.setdefault("value_sources", {})["vco2_l_min"] = "derived_ve_div_ve_vco2"
+            derived_count += 1
+            derived_from_ratio_count += 1
+            continue
+
         if vo2 is None or rer is None:
             missing_inputs += 1
-            continue
-        values["vco2_l_min"] = round(vo2 * rer, 6)
-        point.setdefault("value_sources", {})["vco2_l_min"] = "derived_vo2_x_rer"
-        derived_count += 1
 
     if not derived_count:
         return {
             "code": "missing_vco2_l_min",
             "message": (
-                "V'CO2 absent du XML et derivation impossible: V'O2 ou RER manquant."
+                "V'CO2 absent du XML et derivation impossible: entrees insuffisantes."
             ),
         }
 
+    source = "derived_ve_div_ve_vco2" if derived_count == derived_from_ratio_count else "derived_mixed"
+    if derived_from_ratio_count == 0:
+        source = "derived_vo2_x_rer"
     metrics["vco2_l_min"] = {
         "key": "vco2_l_min",
         "source_label": "V'CO2",
         "unit": "L/min",
-        "source": "derived_vo2_x_rer",
-        "transform": "V'O2 L/min * RER",
+        "source": source,
+        "transform": "V'O2 L/min * RER; fallback V'E / (V'E/V'CO2)",
         "fallback": "points incomplets conserves a None",
     }
     warning = {
         "code": "derived_vco2_l_min",
-        "message": "V'CO2 absent du XML: valeur derivee depuis V'O2 * RER.",
-        "source": "derived_vo2_x_rer",
+        "message": "V'CO2 absent du XML: valeur derivee depuis V'O2 * RER ou V'E/(V'E/V'CO2).",
+        "source": source,
         "point_count": derived_count,
     }
+    if derived_from_ratio_count:
+        warning["derived_from_ve_ratio_point_count"] = derived_from_ratio_count
     if missing_inputs:
         warning["missing_input_point_count"] = missing_inputs
     return warning

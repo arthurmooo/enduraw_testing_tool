@@ -4,6 +4,7 @@ import { AnalysisExportSection } from "./components/AnalysisExportSection";
 import { CursorRail } from "./components/CursorRail";
 import { MarkerPanel } from "./components/MarkerPanel";
 import { MetaSoftChart } from "./components/MetaSoftChart";
+import { RunningEconomyManualSection, type RunningEconomyManualHandle } from "./components/RunningEconomyManualSection";
 import { GRAPH_CONFIGS } from "./lib/graphConfig";
 import { ApiError, apiGet, apiPost, getBootstrap } from "./lib/localApi";
 import { buildDraftMarker, createInitialMarkers, serializeMarkerSelections } from "./lib/markerUtils";
@@ -15,7 +16,6 @@ import type {
   MetaSoftMarkerName,
   MetaSoftPoint,
   ProfileConflict,
-  ReportPreviewResponse,
   ReportResponse,
 } from "./types/metasoft";
 
@@ -23,9 +23,11 @@ const NAV_ITEMS = [
   { label: "Lecture", targetId: "metasoft-reading" },
   { label: "Marqueurs", targetId: "metasoft-markers" },
   { label: "Analyse", targetId: "metasoft-analysis-export" },
+  { label: "EC", targetId: "metasoft-running-economy" },
   { label: "Report", targetId: "metasoft-profile-report" },
 ];
 const READING_GRAPH_CONFIGS = GRAPH_CONFIGS.filter((graph) => graph.source === "points");
+const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
 
 export default function App() {
   const [bootstrap, setBootstrap] = useState<{ matchId: string; token: string } | null>(null);
@@ -35,15 +37,26 @@ export default function App() {
   const [dirtyMarkers, setDirtyMarkers] = useState<Set<MetaSoftMarkerName>>(new Set());
   const [phaseFilter, setPhaseFilter] = useState("Tout");
   const [smoothingSeconds, setSmoothingSeconds] = useState(20);
+  const [showSpeedBands, setShowSpeedBands] = useState(true);
+  const [timeXRange, setTimeXRange] = useState<[number, number] | null>(null);
+  const [timeZoomResetRevision, setTimeZoomResetRevision] = useState(0);
+  const [fullscreenGraphId, setFullscreenGraphId] = useState<string | null>(null);
   const [cursorPoint, setCursorPoint] = useState<MetaSoftPoint | null>(null);
+  const [cursorSourceGraphId, setCursorSourceGraphId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<ReportPreviewResponse | null>(null);
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [conflicts, setConflicts] = useState<ProfileConflict[]>([]);
+  const manualEconomyRef = useRef<RunningEconomyManualHandle | null>(null);
+  const ignoreTimeRelayoutUntilRef = useRef(0);
+  const timeXRangeRef = useRef<[number, number] | null>(null);
+  const blockedResetRangeRef = useRef<[number, number] | null>(null);
+  const lastZoomSourceGraphIdRef = useRef<string | null>(null);
+  const blockedResetGraphIdRef = useRef<string | null>(null);
   const cursorFrameRef = useRef<number | null>(null);
   const cursorPointRef = useRef<MetaSoftPoint | null>(null);
   const pendingCursorPointRef = useRef<MetaSoftPoint | null>(null);
+  const cursorSourceGraphIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +73,15 @@ export default function App() {
         cursorPointRef.current = firstPoint;
         pendingCursorPointRef.current = firstPoint;
         setCursorPoint(firstPoint);
+        cursorSourceGraphIdRef.current = null;
+        setCursorSourceGraphId(null);
         setPhaseFilter("Tout");
+        timeXRangeRef.current = null;
+        blockedResetRangeRef.current = null;
+        lastZoomSourceGraphIdRef.current = null;
+        blockedResetGraphIdRef.current = null;
+        setFullscreenGraphId(null);
+        setTimeXRange(null);
       } catch (err) {
         if (!cancelled) setError(errorMessage(err));
       } finally {
@@ -81,7 +102,10 @@ export default function App() {
     () => Array.from(new Set((payload?.analysis.phases ?? []).map((phase) => phase.phase))).filter(Boolean),
     [payload],
   );
-
+  const timeRangeKey = useMemo(() => {
+    if (!timeXRange) return `full-${timeZoomResetRevision}`;
+    return `range-${timeXRange[0].toFixed(3)}-${timeXRange[1].toFixed(3)}`;
+  }, [timeXRange, timeZoomResetRevision]);
   const flushCursorPoint = useCallback(() => {
     cursorFrameRef.current = null;
     const next = pendingCursorPointRef.current;
@@ -90,17 +114,66 @@ export default function App() {
     setCursorPoint(next);
   }, []);
 
-  const handleCursorPoint = useCallback((point: MetaSoftPoint | null) => {
+  const updateCursorSourceGraphId = useCallback((graphId: string | null) => {
+    if (cursorSourceGraphIdRef.current === graphId) return;
+    cursorSourceGraphIdRef.current = graphId;
+    setCursorSourceGraphId(graphId);
+  }, []);
+
+  const handleCursorPoint = useCallback((graphId: string, point: MetaSoftPoint | null) => {
+    updateCursorSourceGraphId(point ? graphId : null);
     const current = cursorFrameRef.current !== null ? pendingCursorPointRef.current : cursorPointRef.current;
     if (sameCursorPoint(current, point)) return;
     pendingCursorPointRef.current = point;
     if (cursorFrameRef.current !== null) return;
     cursorFrameRef.current = window.requestAnimationFrame(flushCursorPoint);
-  }, [flushCursorPoint]);
+  }, [flushCursorPoint, updateCursorSourceGraphId]);
+
+  const handleTimeXRangeChange = useCallback((graphId: string, range: [number, number] | null) => {
+    const now = window.performance.now();
+    if (range === null) {
+      if (timeXRangeRef.current === null) {
+        debugZoom("ignore reset without active range", { graphId, range });
+        return;
+      }
+      // ponytail: keep one reset pass to avoid reusing a stale per-plot relayout range.
+      ignoreTimeRelayoutUntilRef.current = now + 500;
+      blockedResetRangeRef.current = timeXRangeRef.current;
+      blockedResetGraphIdRef.current = lastZoomSourceGraphIdRef.current;
+      debugZoom("accept reset", {
+        graphId,
+        blockedGraphId: blockedResetGraphIdRef.current,
+        blockedRange: blockedResetRangeRef.current,
+      });
+      timeXRangeRef.current = null;
+      lastZoomSourceGraphIdRef.current = null;
+      setTimeZoomResetRevision((revision) => revision + 1);
+      setTimeXRange(null);
+      return;
+    }
+    if (now < ignoreTimeRelayoutUntilRef.current) {
+      debugZoom("ignore range during reset window", { graphId, range, blockedRange: blockedResetRangeRef.current });
+      return;
+    }
+    if (sameRange(range, blockedResetRangeRef.current)) {
+      debugZoom("ignore stale reset range", {
+        graphId,
+        range,
+        blockedGraphId: blockedResetGraphIdRef.current,
+        blockedRange: blockedResetRangeRef.current,
+      });
+      return;
+    }
+    blockedResetRangeRef.current = null;
+    blockedResetGraphIdRef.current = null;
+    lastZoomSourceGraphIdRef.current = graphId;
+    timeXRangeRef.current = range;
+    debugZoom("accept range", { graphId, range });
+    setTimeXRange(range);
+  }, []);
 
   const markDirty = useCallback((marker: MetaSoftMarkerName) => {
     setDirtyMarkers((current) => new Set(current).add(marker));
-    setPreview(null);
     setReport(null);
     setConflicts([]);
     setError(null);
@@ -154,39 +227,25 @@ export default function App() {
   }
 
   const { analysis, match, warnings } = payload;
-
-  const officializeMarkers = async () => {
-    await runOfficialAction("Sauvegarde", async () => {
-      const response = await apiPost<{ ok: true; markers: ConfirmedMarkers }>(
-        `/api/matches/${match.match_id}/markers/officialize`,
-        bootstrap?.token ?? "",
-        { marker_selections: serializeMarkerSelections(draftMarkers) },
-      );
-      acceptConfirmedMarkers(response.markers);
-    });
-  };
-
-  const previewReport = async () => {
-    await runOfficialAction("Preview", async () => {
-      const response = await apiPost<ReportPreviewResponse>(
-        `/api/matches/${match.match_id}/profile/report-preview`,
-        bootstrap?.token ?? "",
-        { marker_selections: serializeMarkerSelections(draftMarkers) },
-      );
-      setPreview(response);
-      setConflicts(response.conflicts);
-      acceptConfirmedMarkers(response.confirmed_markers);
-    });
-  };
+  const profileVo2maxMlKgMin = profileMeasuredVo2max(payload.profile);
+  const markerVo2maxMlKgMin = currentMarkerVo2maxMlKgMin(
+    draftMarkers,
+    confirmedMarkers,
+    dirtyMarkers,
+    profileVo2maxMlKgMin,
+  );
 
   const reportProfile = async (overwrite = false) => {
     await runOfficialAction(overwrite ? "Overwrite" : "Report", async () => {
       try {
+        const markerSelections = serializeMarkerSelections(draftMarkers);
+        const manualEconomyPayload = manualEconomyRef.current?.reportPayload();
         const response = await apiPost<ReportResponse>(
           `/api/matches/${match.match_id}/profile/report`,
           bootstrap?.token ?? "",
           {
-            marker_selections: serializeMarkerSelections(draftMarkers),
+            marker_selections: markerSelections,
+            ...(manualEconomyPayload ?? {}),
             ...(overwrite ? { conflict_policy: "overwrite" } : {}),
           },
         );
@@ -246,6 +305,14 @@ export default function App() {
           />
           <span>{smoothingSeconds}s</span>
         </label>
+        <button
+          type="button"
+          className={showSpeedBands ? "nav-toggle active" : "nav-toggle"}
+          onClick={() => setShowSpeedBands((current) => !current)}
+          aria-pressed={showSpeedBands}
+        >
+          Paliers vitesse
+        </button>
         <div className="phase-filter">
           {["Tout", ...phases].map((phase) => (
             <button
@@ -264,12 +331,20 @@ export default function App() {
         <div className="charts-grid">
           {READING_GRAPH_CONFIGS.map((graph) => (
             <MetaSoftChart
-              key={graph.id}
+              key={graph.kind === "time" ? `${graph.id}-${timeRangeKey}` : graph.id}
               analysis={analysis}
               graph={graph}
               markers={draftMarkers}
               phaseFilter={phaseFilter}
               smoothingSeconds={smoothingSeconds}
+              showSpeedBands={showSpeedBands}
+              timeXRange={graph.kind === "time" ? timeXRange : null}
+              timeZoomResetRevision={graph.kind === "time" ? timeZoomResetRevision : 0}
+              cursorPoint={graph.kind === "time" ? cursorPoint : null}
+              cursorSourceGraphId={graph.kind === "time" ? cursorSourceGraphId : null}
+              fullscreen={fullscreenGraphId === graph.id}
+              onFullscreenChange={(open) => setFullscreenGraphId(open ? graph.id : null)}
+              onTimeXRangeChange={graph.kind === "time" ? handleTimeXRangeChange : undefined}
               onCursorPoint={handleCursorPoint}
               onPlaceMarker={placeMarker}
               onDeleteMarker={deleteMarker}
@@ -284,19 +359,22 @@ export default function App() {
           draftMarkers={draftMarkers}
           confirmedMarkers={confirmedMarkers}
           dirtyMarkers={dirtyMarkers}
-          saving={busy === "Sauvegarde"}
-          onSave={() => void officializeMarkers()}
+          profileVo2maxMlKgMin={profileVo2maxMlKgMin}
         />
       </section>
 
-      <AnalysisExportSection
+      <RunningEconomyManualSection
+        ref={manualEconomyRef}
         analysis={analysis}
+        profileVo2maxMlKgMin={markerVo2maxMlKgMin}
+        initialManualEconomy={payload.manual_running_economy}
+      />
+
+      <AnalysisExportSection
         busy={busy}
         error={error}
-        preview={preview}
         report={report}
         conflicts={conflicts}
-        onPreview={() => void previewReport()}
         onReport={() => void reportProfile(false)}
         onReportOverwrite={() => void reportProfile(true)}
       />
@@ -326,8 +404,39 @@ function errorMessage(err: unknown): string {
   return "Action MetaSoft impossible.";
 }
 
+function profileMeasuredVo2max(profile: Record<string, unknown>): number | null {
+  const stress = profile.stress_test_results;
+  if (!stress || typeof stress !== "object") return null;
+  const value = (stress as { measured_vo2max?: unknown }).measured_vo2max;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function currentMarkerVo2maxMlKgMin(
+  draftMarkers: DraftMarkers,
+  confirmedMarkers: ConfirmedMarkers,
+  dirtyMarkers: Set<MetaSoftMarkerName>,
+  fallback: number | null,
+): number | null {
+  const marker = dirtyMarkers.has("VO2_max")
+    ? draftMarkers.VO2_max
+    : confirmedMarkers.VO2_max ?? draftMarkers.VO2_max;
+  const value = marker.values.vo2_ml_kg_min;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 function sameCursorPoint(left: MetaSoftPoint | null, right: MetaSoftPoint | null): boolean {
   return (left?.index ?? null) === (right?.index ?? null);
+}
+
+function sameRange(left: [number, number], right: [number, number] | null): boolean {
+  if (!right) return false;
+  return Math.abs(left[0] - right[0]) < 0.25 && Math.abs(left[1] - right[1]) < 0.25;
+}
+
+function debugZoom(message: string, payload: Record<string, unknown>): void {
+  if (!DEBUG_ZOOM) return;
+  // eslint-disable-next-line no-console
+  console.info(`[metasoft zoom] ${message}`, payload);
 }
 
 function conflictsFromDetails(details: unknown): ProfileConflict[] {

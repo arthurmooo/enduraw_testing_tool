@@ -17,13 +17,13 @@ SRC_DIR = ROOT_DIR / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from core.data_transformer import DataTransformer
-from core.metasoft_analysis import build_metasoft_analysis
+from core.metasoft_analysis import build_manual_running_economy, build_metasoft_analysis
 from core.metasoft_markers import (
     apply_metasoft_stress_patch,
     build_metasoft_marker,
     metasoft_marker_to_stress_patch,
 )
-from utils.xml_parser import TCPXmlParser, parse_metasoft_xml_bytes, parse_spreadsheet_rows
+from utils.xml_parser import TCPXmlParser, add_derived_vco2, parse_metasoft_xml_bytes, parse_spreadsheet_rows
 
 
 def _cell(value: str, index: int | None = None) -> str:
@@ -244,6 +244,208 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         self.assertIsNone(analysis["computed"]["running_economy"][0]["value_j_kg_m"])
         self.assertTrue(
             any(warning["code"] == "missing_rest_phase" for warning in analysis["warnings"])
+        )
+
+    def test_manual_running_economy_uses_xml_mass_and_falls_back_when_vo2kg_absent(self) -> None:
+        parsed = parse_metasoft_xml_bytes(_metasoft_xml(weight_value="60,0 kg"), "test.xml")
+        analysis = build_metasoft_analysis(parsed, manual_mass_kg=99)
+
+        manual = build_manual_running_economy(
+            analysis,
+            [{
+                "stage_index": 1,
+                "start_seconds": 60,
+                "end_seconds": 120,
+                "exclusions": [],
+            }],
+            profile_vo2max_ml_kg_min=50,
+        )
+
+        row = manual["rows"][0]
+        automatic = analysis["computed"]["running_economy"][0]
+        self.assertEqual(row["ec_j_kg_m"], automatic["value_j_kg_m"])
+        self.assertEqual(
+            row["percent_vo2max"],
+            round((row["vo2_l_min"] * 1000 / 60) / 50 * 100, 3),
+        )
+
+    def test_manual_running_economy_never_falls_back_to_profile_mass(self) -> None:
+        parsed = parse_metasoft_xml_bytes(_metasoft_xml(include_weight=False), "test.xml")
+        analysis = build_metasoft_analysis(parsed, manual_mass_kg=62)
+
+        manual = build_manual_running_economy(
+            analysis,
+            [{
+                "stage_index": 1,
+                "start_seconds": 60,
+                "end_seconds": 120,
+                "exclusions": [],
+            }],
+            profile_vo2max_ml_kg_min=50,
+        )
+
+        row = manual["rows"][0]
+        self.assertIsNone(row["ec_j_kg_m"])
+        self.assertIsNone(row["percent_vo2max"])
+        self.assertIn("missing_xml_mass_kg", {warning["code"] for warning in manual["warnings"]})
+
+    def test_manual_running_economy_total_exclusion_does_not_compute_ec(self) -> None:
+        parsed = parse_metasoft_xml_bytes(_metasoft_xml(weight_value="60,0 kg"), "test.xml")
+        analysis = build_metasoft_analysis(parsed)
+
+        manual = build_manual_running_economy(
+            analysis,
+            [{
+                "stage_index": 1,
+                "start_seconds": 60,
+                "end_seconds": 120,
+                "exclusions": [{"start_seconds": 60, "end_seconds": 120}],
+            }],
+            profile_vo2max_ml_kg_min=50,
+        )
+
+        row = manual["rows"][0]
+        self.assertIsNone(row["ec_j_kg_m"])
+        self.assertIsNone(row["vo2_l_min"])
+        self.assertIsNone(row["vco2_l_min"])
+        self.assertEqual(row["point_count"], 0)
+        self.assertIn(
+            "manual_exclusions_no_usable_vo2_vco2",
+            {warning["code"] for warning in manual["warnings"]},
+        )
+
+    def test_manual_running_economy_edge_exclusion_drops_raw_value(self) -> None:
+        parsed = parse_metasoft_xml_bytes(_metasoft_xml(weight_value="60,0 kg"), "test.xml")
+        analysis = build_metasoft_analysis(parsed)
+
+        manual = build_manual_running_economy(
+            analysis,
+            [{
+                "stage_index": 1,
+                "start_seconds": 60,
+                "end_seconds": 120,
+                "exclusions": [{"start_seconds": 60, "end_seconds": 61}],
+            }],
+            profile_vo2max_ml_kg_min=50,
+        )
+
+        row = manual["rows"][0]
+        self.assertEqual(row["point_count"], 2)
+        self.assertEqual(row["vo2_l_min"], 2.15)
+        self.assertIsNotNone(row["ec_j_kg_m"])
+
+    def test_manual_running_economy_multiple_exclusions_drop_raw_points(self) -> None:
+        parsed = {
+            "athlete": {"weight_kg": 60},
+            "points": [
+                _point(0, "Repos", 0),
+                _point(30, "Repos", 0),
+                _point(60, "Echauffement", 10),
+                _point(90, "Echauffement", 10),
+                _point(120, "Echauffement", 10),
+                _point(150, "Echauffement", 10),
+            ],
+            "warnings": [],
+        }
+        for point, vo2 in zip(parsed["points"][2:], [2.0, 99.0, 88.0, 2.9]):
+            point["values"]["vo2_l_min"] = vo2
+            point["values"]["vco2_l_min"] = vo2 * 0.9
+        analysis = build_metasoft_analysis(parsed)
+
+        manual = build_manual_running_economy(
+            analysis,
+            [{
+                "stage_index": 1,
+                "start_seconds": 60,
+                "end_seconds": 150,
+                "exclusions": [
+                    {"start_seconds": 89, "end_seconds": 91},
+                    {"start_seconds": 119, "end_seconds": 121},
+                ],
+            }],
+            profile_vo2max_ml_kg_min=50,
+        )
+
+        row = manual["rows"][0]
+        self.assertEqual(row["point_count"], 2)
+        self.assertEqual(row["vo2_l_min"], 2.45)
+        self.assertEqual(row["vco2_l_min"], 2.205)
+        self.assertEqual(row["sources"]["artefacts"], "excluded_raw_points")
+        self.assertIsNotNone(row["ec_j_kg_m"])
+
+    def test_manual_running_economy_partial_metrics_use_same_population(self) -> None:
+        parsed = {
+            "athlete": {"weight_kg": 60},
+            "points": [
+                _point(0, "Repos", 0),
+                _point(30, "Repos", 0),
+                _point(60, "Echauffement", 10),
+                _point(90, "Echauffement", 10),
+                _point(120, "Echauffement", 10),
+            ],
+            "warnings": [],
+        }
+        for point, vo2, vo2kg, de in zip(
+            parsed["points"][2:],
+            [2.0, 99.0, 3.0],
+            [30.0, 999.0, 40.0],
+            [700.0, 999.0, 800.0],
+        ):
+            point["values"]["vo2_l_min"] = vo2
+            point["values"]["vo2_ml_kg_min"] = vo2kg
+            point["values"]["de_kcal_h"] = de
+        parsed["points"][3]["values"].pop("vco2_l_min")
+        analysis = build_metasoft_analysis(parsed)
+
+        manual = build_manual_running_economy(
+            analysis,
+            [{
+                "stage_index": 1,
+                "start_seconds": 60,
+                "end_seconds": 120,
+                "exclusions": [],
+            }],
+            profile_vo2max_ml_kg_min=50,
+        )
+
+        row = manual["rows"][0]
+        self.assertEqual(row["point_count"], 2)
+        self.assertEqual(row["vo2_l_min"], 2.5)
+        self.assertEqual(row["de_kcal_h"], 750)
+        self.assertEqual(row["percent_vo2max"], 70)
+
+    def test_vco2_derives_from_ve_ratio_when_vo2_rer_is_unavailable(self) -> None:
+        points = [{
+            "values": {"ve_l_min": 44.0, "ve_vco2": 22.0},
+            "value_sources": {},
+        }]
+        metrics = {}
+
+        warning = add_derived_vco2(points, metrics)
+
+        self.assertEqual(points[0]["values"]["vco2_l_min"], 2.0)
+        self.assertEqual(points[0]["value_sources"]["vco2_l_min"], "derived_ve_div_ve_vco2")
+        self.assertEqual(metrics["vco2_l_min"]["source"], "derived_ve_div_ve_vco2")
+        self.assertEqual(warning["derived_from_ve_ratio_point_count"], 1)
+
+    def test_vco2_source_reports_mixed_sources(self) -> None:
+        parsed = {
+            "athlete": {"weight_kg": 60},
+            "points": [
+                _point(0, "Repos", 0),
+                _point(30, "Repos", 0),
+                _point(60, "Echauffement", 10),
+                _point(120, "Echauffement", 10),
+            ],
+            "warnings": [],
+        }
+        parsed["points"][2]["value_sources"]["vco2_l_min"] = "xml"
+
+        analysis = build_metasoft_analysis(parsed)
+
+        self.assertEqual(
+            analysis["computed"]["running_economy"][0]["vco2_source"],
+            "derived_mixed",
         )
 
     def test_analysis_qualifies_zero_and_low_speed_warmup_stages(self) -> None:

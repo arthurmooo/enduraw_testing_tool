@@ -1,4 +1,3 @@
-import { Save } from "lucide-react";
 import { MARKER_COLORS } from "../lib/graphConfig";
 import { formatNumber, MARKER_NAMES, secondsToClock } from "../lib/markerUtils";
 import type { ConfirmedMarkers, DraftMarkers, MetaSoftMarkerName } from "../types/metasoft";
@@ -7,23 +6,24 @@ export function MarkerPanel({
   draftMarkers,
   confirmedMarkers,
   dirtyMarkers,
-  saving,
-  onSave,
+  profileVo2maxMlKgMin,
 }: {
   draftMarkers: DraftMarkers;
   confirmedMarkers: ConfirmedMarkers;
   dirtyMarkers: Set<MetaSoftMarkerName>;
-  saving: boolean;
-  onSave: () => void;
+  profileVo2maxMlKgMin: number | null;
 }) {
+  const displayedVo2maxMlKgMin = currentVo2maxMlKgMin(
+    draftMarkers,
+    confirmedMarkers,
+    dirtyMarkers,
+    profileVo2maxMlKgMin,
+  );
+
   return (
     <section className="panel marker-panel">
       <div className="panel-title-row">
         <h2>Marqueurs</h2>
-        <button type="button" className="primary-button" onClick={onSave} disabled={saving}>
-          <Save size={16} />
-          {saving ? "Sauvegarde..." : "Sauvegarder marqueurs"}
-        </button>
       </div>
       <div className="table-wrap">
         <table>
@@ -34,7 +34,9 @@ export function MarkerPanel({
               <th>Temps</th>
               <th>Fenetre</th>
               <th>FC</th>
-              <th>VO2</th>
+              <th>VO2 (L/min)</th>
+              <th>VO2/kg</th>
+              <th>%VO2max</th>
               <th>Vitesse</th>
               <th>Statut</th>
             </tr>
@@ -62,6 +64,8 @@ export function MarkerPanel({
                   </td>
                   <td>{formatNumber(row.values.fc_bpm, 0)}</td>
                   <td>{formatNumber(row.values.vo2_l_min, 2)}</td>
+                  <td>{formatNumber(row.values.vo2_ml_kg_min, 1)}</td>
+                  <td>{formatNumber(percentVo2Max(row.values.vo2_ml_kg_min, displayedVo2maxMlKgMin), 1)}</td>
                   <td>{formatNumber(row.values.speed_kmh, 1)}</td>
                   <td>
                     {dirty ? (
@@ -79,8 +83,33 @@ export function MarkerPanel({
         </table>
       </div>
       <p className="panel-note">
-        Les valeurs Python remplacent la preview apres sauvegarde. Un drag/click repasse le marqueur en needsSave.
+        Reporter au profil officialise les marqueurs via Python. Un drag/click repasse le marqueur en needsSave.
       </p>
     </section>
   );
+}
+
+function currentVo2maxMlKgMin(
+  draftMarkers: DraftMarkers,
+  confirmedMarkers: ConfirmedMarkers,
+  dirtyMarkers: Set<MetaSoftMarkerName>,
+  profileVo2maxMlKgMin: number | null,
+): number | null {
+  const marker = dirtyMarkers.has("VO2_max")
+    ? draftMarkers.VO2_max
+    : confirmedMarkers.VO2_max ?? draftMarkers.VO2_max;
+  return marker.values.vo2_ml_kg_min ?? profileVo2maxMlKgMin;
+}
+
+function percentVo2Max(vo2: number | null | undefined, vo2Max: number | null | undefined): number | null {
+  if (
+    typeof vo2 !== "number"
+    || typeof vo2Max !== "number"
+    || !Number.isFinite(vo2)
+    || !Number.isFinite(vo2Max)
+    || vo2Max <= 0
+  ) {
+    return null;
+  }
+  return (vo2 / vo2Max) * 100;
 }

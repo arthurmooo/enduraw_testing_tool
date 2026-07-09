@@ -8,6 +8,7 @@ absente n'est reconstruite depuis une equation de confort.
 """
 from statistics import mean
 from typing import Optional
+from math import isfinite
 
 
 MIN_STABLE_SPEED_STAGE_SECONDS = 60
@@ -177,13 +178,7 @@ def compute_running_economy(
 
     vo2 = mean(vo2_values)
     vco2 = mean(item["value"] for item in vco2_valid)
-    # Formule Notion: VO2/VCO2 en ml/min, vitesse en m/min, masse en kg.
-    value = (
-        ((0.00055 * (vco2 - rest_baseline["vco2_ml_min"]))
-        + (0.004471 * (vo2 - rest_baseline["vo2_ml_min"])))
-        * 4184
-        / (mass_kg * result["speed_m_min"])
-    )
+    value = _running_economy_j_kg_m(vo2, vco2, rest_baseline, mass_kg, result["speed_m_min"])
     result.update({
         "value_j_kg_m": round(value, 3),
         "vo2_ml_min": round(vo2, 3),
@@ -192,6 +187,176 @@ def compute_running_economy(
         "vco2_source": _vco2_source(vco2_valid),
     })
     return result
+
+
+def build_manual_running_economy(
+    analysis: dict,
+    selections: list[dict],
+    profile_vo2max_ml_kg_min: Optional[float] = None,
+    vo2max_source: str = "profile.stress_test_results.measured_vo2max",
+) -> dict:
+    """Recalcule l'EC manuelle officielle depuis les selections UI.
+
+    Source officielle: points et masse XML MetaSoft deja normalises dans
+    `analysis`. Unite entree VO2/VCO2: L/min dans les points, ml/min pour la
+    formule EC. Aucun poids profil ni valeur calculee par React n'est accepte.
+    """
+    if not isinstance(selections, list):
+        raise ValueError("selections doit etre une liste.")
+    stages = {stage.get("stage_index"): stage for stage in analysis.get("warmup_stages", [])}
+    points = analysis.get("points", [])
+    rest = analysis.get("computed", {}).get("rest_baseline")
+    xml_mass = _positive_number(analysis.get("athlete", {}).get("weight_kg"))
+    vo2max = _positive_number(profile_vo2max_ml_kg_min)
+    rows = []
+    warnings = []
+
+    for selection in selections:
+        if not isinstance(selection, dict):
+            raise ValueError("selection EC invalide.")
+        row, row_warnings = _manual_running_economy_row(
+            points,
+            stages,
+            rest,
+            xml_mass,
+            vo2max,
+            vo2max_source,
+            selection,
+        )
+        rows.append(row)
+        warnings.extend(row_warnings)
+
+    return {
+        "source": "python.metasoft_analysis.manual_running_economy",
+        "rows": rows,
+        "warnings": warnings,
+    }
+
+
+def _manual_running_economy_row(
+    points: list[dict],
+    stages: dict,
+    rest_baseline: Optional[dict],
+    mass_kg: Optional[float],
+    vo2max_ml_kg_min: Optional[float],
+    vo2max_source: str,
+    selection: dict,
+) -> tuple[dict, list[dict]]:
+    stage_index = _selection_int(selection.get("stage_index"), "stage_index")
+    stage = stages.get(stage_index)
+    if not stage:
+        raise ValueError(f"Palier EC inconnu: {stage_index}.")
+
+    stage_start = _finite_number(stage.get("start_seconds"), "stage.start_seconds")
+    stage_end = _finite_number(stage.get("end_seconds"), "stage.end_seconds")
+    start = _finite_number(selection.get("start_seconds"), "start_seconds")
+    end = _finite_number(selection.get("end_seconds"), "end_seconds")
+    if start < stage_start or end > stage_end or start >= end:
+        raise ValueError("Bornes EC manuelle invalides.")
+
+    exclusions = _normalise_manual_exclusions(
+        selection.get("exclusions", []),
+        start,
+        end,
+    )
+    selected_points = _points_between(points, start, end)
+    # Les artefacts EC sont exclus du calcul officiel: aucune interpolation ni
+    # fallback brut. La population unique de row est VO2+VCO2 exploitables,
+    # pour que `point_count`, VO2/VCO2 et DE portent sur les memes points.
+    included_points = [
+        point for point in selected_points
+        if not _manual_is_excluded(point.get("t_seconds"), exclusions)
+    ]
+    usable_points = [
+        point for point in included_points
+        if _number(point, "vo2_l_min") is not None and _number(point, "vco2_l_min") is not None
+    ]
+    warnings = []
+    speed_m_min = round(stage.get("speed_kmh", 0) * 1000 / 60, 3)
+    vo2_l_min = _average_metric(usable_points, "vo2_l_min")
+    vo2_ml_kg_min = _average_metric(usable_points, "vo2_ml_kg_min")
+    vco2_l_min = _average_metric(usable_points, "vco2_l_min")
+    row = {
+        "stage_index": stage_index,
+        "speed_kmh": stage.get("speed_kmh"),
+        "speed_m_min": speed_m_min,
+        "start_seconds": round(start, 3),
+        "end_seconds": round(end, 3),
+        "exclusions": exclusions,
+        "point_count": len(usable_points),
+        "vo2_l_min": _round_optional(vo2_l_min, 3),
+        "vco2_l_min": _round_optional(vco2_l_min, 3),
+        "ec_j_kg_m": None,
+        "percent_vo2max": None,
+        "sources": {
+            "selection": "manual_stable_stage",
+            "calculation": "python.metasoft_analysis.manual_running_economy",
+            "mass": "xml_metasoft",
+            "vo2max": vo2max_source,
+            "artefacts": "excluded_raw_points",
+        },
+        "warnings": [],
+    }
+    for key in ("de_kcal_h", "decho_kcal_h", "defat_kcal_h", "depro_kcal_h"):
+        row[key] = _round_optional(_average_metric(usable_points, key), 3)
+
+    if mass_kg is None:
+        warning = _manual_warning(stage_index, "missing_xml_mass_kg")
+        warnings.append(warning)
+        row["warnings"].append(warning)
+    if rest_baseline is None:
+        warning = _manual_warning(stage_index, "missing_rest_phase")
+        warnings.append(warning)
+        row["warnings"].append(warning)
+    no_usable_vo2_vco2 = bool(selected_points) and not usable_points
+    if vo2_l_min is None or vco2_l_min is None or no_usable_vo2_vco2:
+        code = (
+            "manual_exclusions_no_usable_vo2_vco2"
+            if no_usable_vo2_vco2 else "missing_vo2_vco2"
+        )
+        warning = _manual_warning(stage_index, code)
+        warnings.append(warning)
+        row["warnings"].append(warning)
+
+    can_compute_ec = (
+        mass_kg is not None
+        and rest_baseline is not None
+        and speed_m_min > 0
+        and bool(usable_points)
+        and vo2_l_min is not None
+        and vco2_l_min is not None
+    )
+    if can_compute_ec:
+        row["ec_j_kg_m"] = round(_running_economy_j_kg_m(
+            vo2_l_min * 1000,
+            vco2_l_min * 1000,
+            rest_baseline,
+            mass_kg,
+            speed_m_min,
+        ), 3)
+    if vo2max_ml_kg_min is not None:
+        percent_vo2 = vo2_ml_kg_min
+        if percent_vo2 is None and mass_kg is not None and vo2_l_min is not None:
+            percent_vo2 = vo2_l_min * 1000 / mass_kg
+        if percent_vo2 is not None:
+            row["percent_vo2max"] = round(percent_vo2 / vo2max_ml_kg_min * 100, 3)
+    return row, warnings
+
+
+def _running_economy_j_kg_m(
+    vo2_ml_min: float,
+    vco2_ml_min: float,
+    rest_baseline: dict,
+    mass_kg: float,
+    speed_m_min: float,
+) -> float:
+    # Formule Notion: VO2/VCO2 en ml/min, vitesse en m/min, masse en kg.
+    return (
+        ((0.00055 * (vco2_ml_min - rest_baseline["vco2_ml_min"]))
+        + (0.004471 * (vo2_ml_min - rest_baseline["vo2_ml_min"])))
+        * 4184
+        / (mass_kg * speed_m_min)
+    )
 
 
 def summarize_native_de(points: list[dict]) -> dict:
@@ -276,11 +441,11 @@ def _vco2_ml_min(point: dict) -> dict:
 
 def _vco2_source(items: list[dict]) -> Optional[str]:
     sources = {item.get("source") for item in items if item.get("source")}
-    if "xml_native" in sources:
-        return "xml_native"
-    if "derived_vo2_x_rer" in sources:
-        return "derived_vo2_x_rer"
-    return None
+    if not sources:
+        return None
+    if len(sources) == 1:
+        return next(iter(sources))
+    return "derived_mixed"
 
 
 def _number(point: dict, key: str) -> Optional[float]:
@@ -292,9 +457,104 @@ def _number(point: dict, key: str) -> Optional[float]:
 
 def _first_number(*values) -> Optional[float]:
     for value in values:
-        if isinstance(value, (int, float)) and value > 0:
+        if _positive_number(value) is not None:
             return float(value)
     return None
+
+
+def _positive_number(value) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and isfinite(value) and value > 0:
+        return float(value)
+    return None
+
+
+def _finite_number(value, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+        raise ValueError(f"{field} doit etre un nombre fini.")
+    return float(value)
+
+
+def _selection_int(value, field: str) -> int:
+    number = _finite_number(value, field)
+    if number != int(number):
+        raise ValueError(f"{field} doit etre un entier.")
+    return int(number)
+
+
+def _normalise_manual_exclusions(
+    exclusions: list[dict],
+    start_seconds: float,
+    end_seconds: float,
+) -> list[dict]:
+    if not isinstance(exclusions, list):
+        raise ValueError("exclusions doit etre une liste.")
+    normalised = []
+    for exclusion in exclusions:
+        if not isinstance(exclusion, dict):
+            raise ValueError("exclusion EC invalide.")
+        start = _finite_number(exclusion.get("start_seconds"), "exclusion.start_seconds")
+        end = _finite_number(exclusion.get("end_seconds"), "exclusion.end_seconds")
+        bounded_start = max(start_seconds, min(start, end, end_seconds))
+        bounded_end = min(end_seconds, max(start, end, start_seconds))
+        if bounded_end > bounded_start:
+            normalised.append({
+                "start_seconds": round(bounded_start, 3),
+                "end_seconds": round(bounded_end, 3),
+            })
+    normalised.sort(key=lambda item: item["start_seconds"])
+    merged = []
+    for item in normalised:
+        if merged and item["start_seconds"] <= merged[-1]["end_seconds"]:
+            merged[-1]["end_seconds"] = max(merged[-1]["end_seconds"], item["end_seconds"])
+        else:
+            merged.append(item)
+    return merged
+
+
+def _manual_is_excluded(t_seconds, exclusions: list[dict]) -> bool:
+    return (
+        isinstance(t_seconds, (int, float))
+        and not isinstance(t_seconds, bool)
+        and isfinite(t_seconds)
+        and any(item["start_seconds"] <= t_seconds <= item["end_seconds"] for item in exclusions)
+    )
+
+
+def _points_between(points: list[dict], start_seconds: float, end_seconds: float) -> list[dict]:
+    return [
+        point for point in points
+        if (
+            isinstance(point.get("t_seconds"), (int, float))
+            and not isinstance(point.get("t_seconds"), bool)
+            and start_seconds <= point["t_seconds"] <= end_seconds
+        )
+    ]
+
+
+def _average_metric(points: list[dict], key: str) -> Optional[float]:
+    values = [_number(point, key) for point in points]
+    values = [value for value in values if value is not None]
+    return mean(values) if values else None
+
+
+def _round_optional(value: Optional[float], digits: int) -> Optional[float]:
+    return round(value, digits) if value is not None else None
+
+
+def _manual_warning(stage_index: int, code: str) -> dict:
+    message = "Economie de course manuelle indisponible ou partielle."
+    if code == "manual_exclusions_no_usable_vo2_vco2":
+        message = (
+            "Economie de course manuelle indisponible: exclusions sans point "
+            "VO2/VCO2 utilisable."
+        )
+    return {
+        "code": code,
+        "message": message,
+        "stage_index": stage_index,
+    }
 
 
 def _stage_duration_seconds(stage: dict) -> float:

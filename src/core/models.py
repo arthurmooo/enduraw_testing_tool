@@ -304,11 +304,12 @@ class TestResult:
     patient_info: Dict[str, Any] = field(default_factory=dict)
     conseils_entrainements: str = ""
     graphiques: Dict[str, Any] = field(default_factory=dict)
+    running_economy_manual: Optional[Dict[str, Any]] = None
     logos: Dict[str, str] = field(default_factory=dict)
     partenaires: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "user_id": self.user_id,
             "athlete_name": self.athlete_name,
             "test_date": self.test_date,
@@ -324,3 +325,6 @@ class TestResult:
             "logos": self.logos,
             "partenaires": self.partenaires
         }
+        if self.running_economy_manual:
+            result["running_economy_manual"] = self.running_economy_manual
+        return result

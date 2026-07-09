@@ -5,6 +5,7 @@ import os
 import json
 import shutil
 import uuid
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -64,6 +65,7 @@ class SessionManager:
     XML_DIR = "xml"
     OUTPUT_DIR = "output"
     MATCHES_FILE = "matches.json"
+    MANUAL_RUNNING_ECONOMY_FILE = "running_economy_manual.json"
     
     def __init__(self, base_path: str):
         """
@@ -343,6 +345,13 @@ class SessionManager:
         
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
+
+    def profile_path(self, filename: str) -> Optional[Path]:
+        """Retourne le chemin profil local courant sans verifier le contenu JSON."""
+        if not self.current_session_path:
+            return None
+        path = self.current_session_path / self.PROFILES_DIR / filename
+        return path if path.exists() else None
     
     def list_profiles(self) -> List[Dict[str, Any]]:
         """
@@ -467,6 +476,11 @@ class SessionManager:
         if filepath.exists():
             return str(filepath)
         return None
+
+    def xml_path(self, filename: str) -> Optional[Path]:
+        """Retourne le chemin XML local courant sous forme Path."""
+        path = self.get_xml_path(filename)
+        return Path(path) if path else None
     
     # ==================== MATCHING OPERATIONS ====================
     
@@ -592,3 +606,101 @@ class SessionManager:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
         return str(filepath)
+
+    def build_match_fingerprint(self, match: ProfileMatch) -> Optional[Dict[str, Any]]:
+        """Fingerprint anti-stale sans exposer de chemins disque.
+
+        Sources: session courante, fichier profil et XML importes. Les hash
+        SHA-256 protegent l'export contre un sidecar EC issu d'un ancien fichier.
+        """
+        if not self.current_session_path or not self.current_session:
+            return None
+        profile_path = self.profile_path(match.profile_name)
+        xml_path = self.xml_path(match.xml_filename)
+        if not profile_path or not xml_path:
+            return None
+        try:
+            xml_size = xml_path.stat().st_size
+        except OSError:
+            return None
+        return {
+            "session": {
+                "name": self.current_session.name,
+                "created_at": self.current_session.created_at,
+            },
+            "profile": {
+                "filename": match.profile_name,
+                "sha256": self._file_sha256(profile_path),
+            },
+            "xml": {
+                "filename": match.xml_filename,
+                "sha256": self._file_sha256(xml_path),
+                "size": xml_size,
+            },
+        }
+
+    def clear_manual_running_economy(self, match_id: str) -> None:
+        """Supprime l'EC manuelle sauvegardee pour ce match uniquement."""
+        if not self.current_session_path:
+            raise ValueError("No session loaded")
+        payload = self._load_manual_running_economy_payload()
+        payload.pop(str(match_id), None)
+        self._write_manual_running_economy_payload(payload)
+
+    def save_manual_running_economy(
+        self,
+        match_id: str,
+        data: Dict[str, Any],
+        fingerprint: Dict[str, Any],
+    ) -> None:
+        """Persiste l'EC manuelle Python avec fingerprint anti-stale."""
+        if not self.current_session_path:
+            raise ValueError("No session loaded")
+        payload = self._load_manual_running_economy_payload()
+        payload[str(match_id)] = {
+            "fingerprint": fingerprint,
+            "data": data,
+        }
+        self._write_manual_running_economy_payload(payload)
+
+    def get_manual_running_economy(
+        self,
+        match_id: str,
+        fingerprint: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Retourne l'EC manuelle seulement si le sidecar est fingerprint-compatible."""
+        item = self._load_manual_running_economy_payload().get(str(match_id))
+        if not isinstance(item, dict):
+            return None
+        stored_fingerprint = item.get("fingerprint")
+        if not stored_fingerprint or fingerprint is None:
+            return None
+        if stored_fingerprint != fingerprint:
+            return None
+        data = item.get("data")
+        return data if isinstance(data, dict) else None
+
+    def _load_manual_running_economy_payload(self) -> Dict[str, Any]:
+        if not self.current_session_path:
+            return {}
+        path = self.current_session_path / self.MANUAL_RUNNING_ECONOMY_FILE
+        if not path.exists():
+            return {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write_manual_running_economy_payload(self, payload: Dict[str, Any]) -> None:
+        path = self.current_session_path / self.MANUAL_RUNNING_ECONOMY_FILE
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    def _file_sha256(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()

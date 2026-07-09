@@ -92,7 +92,7 @@ def build_metasoft_audit_export(
             },
             "sources": {
                 "vo2": "V'O2 XML, L/min -> ml/min",
-                "vco2": "V'CO2 XML si present, sinon VO2 * RER",
+                "vco2": "V'CO2 XML si present, sinon derive; mixed si sources multiples",
                 "rest": "phase XML Repos",
                 "mass": "poids XML, sinon profil local",
                 "speed": "v XML, km/h -> m/min",

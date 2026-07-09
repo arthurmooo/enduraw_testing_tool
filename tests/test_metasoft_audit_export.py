@@ -158,7 +158,7 @@ class MetaSoftAuditExportTest(unittest.TestCase):
         self.assertEqual(sidecar["running_economy"]["units"]["value"], "J/kg/m")
         self.assertEqual(
             sidecar["running_economy"]["sources"]["vco2"],
-            "V'CO2 XML si present, sinon VO2 * RER",
+            "V'CO2 XML si present, sinon derive; mixed si sources multiples",
         )
         self.assertIsNotNone(sidecar["running_economy"]["rest_baseline"])
         self.assertEqual(sidecar["running_economy"]["stages"][0]["unit"], "J/kg/m")

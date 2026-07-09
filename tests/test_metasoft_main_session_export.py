@@ -6,6 +6,7 @@ les temps et l'EC restent ceux de l'analyse MetaSoft; aucun marqueur UI n'est
 reconstruit dans ce flux.
 """
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -37,6 +38,7 @@ except ModuleNotFoundError:
 
 from core.metasoft_analysis import build_metasoft_analysis
 from core.data_transformer import DataTransformer
+from core.session_manager import SessionManager
 from main_session import _save_metasoft_audit_sidecar
 
 
@@ -121,6 +123,85 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
             self.assertNotIn(forbidden_key, output)
         self.assertEqual(output["seuils"]["SV1"]["fc"], 142)
         self.assertEqual(output["seuils"]["SV2"]["allure"], 13)
+
+    def test_valentin_json_includes_manual_running_economy_when_provided(self) -> None:
+        manual_ec = {
+            "source": "python.metasoft_analysis.manual_running_economy",
+            "match_id": "abc123",
+            "rows": [{"stage_index": 1, "ec_j_kg_m": 4.23}],
+        }
+
+        output = DataTransformer().transform(
+            {
+                "patient_data": {"Nom": "Mo", "Prénom": "Arthur"},
+                "filename_data": {"date": "2026-07-08"},
+                "measurements": [],
+            },
+            {
+                "email": "arthur@example.test",
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+                "stress_test_results": {},
+            },
+            manual_ec,
+        )
+
+        self.assertEqual(output["running_economy_manual"], manual_ec)
+
+    def test_valentin_json_omits_manual_running_economy_when_all_stages_disabled(self) -> None:
+        manual_ec = {
+            "source": "python.metasoft_analysis.manual_running_economy",
+            "match_id": "abc123",
+            "rows": [],
+            "stage_selections": [{"stage_index": 1, "enabled": False}],
+        }
+
+        output = DataTransformer().transform(
+            {
+                "patient_data": {"Nom": "Mo", "Prénom": "Arthur"},
+                "filename_data": {"date": "2026-07-08"},
+                "measurements": [],
+            },
+            {
+                "email": "arthur@example.test",
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+                "stress_test_results": {},
+            },
+            manual_ec,
+        )
+
+        self.assertNotIn("running_economy_manual", output)
+
+    def test_valentin_json_uses_only_fingerprint_compatible_manual_ec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = SessionManager(tmp_dir)
+            manager.create_session("2026-07-08", "contas")
+            profile_name = manager.add_profile({
+                "email": "arthur@example.test",
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+            })
+            source_xml = Path(tmp_dir) / "metasoft.xml"
+            source_xml.write_text("<xml />", encoding="utf-8")
+            xml_filename = manager.import_xml(str(source_xml))
+            match = manager.create_match(profile_name, xml_filename)
+            fingerprint = manager.build_match_fingerprint(match)
+            manual_ec = {
+                "source": "python.metasoft_analysis.manual_running_economy",
+                "rows": [{"stage_index": 1, "ec_j_kg_m": 4.23}],
+            }
+            manager.save_manual_running_economy("match", manual_ec, fingerprint)
+            stale = {**fingerprint, "xml": {**fingerprint["xml"], "size": 1}}
+
+            compatible = manager.get_manual_running_economy("match", fingerprint)
+            stale_payload = manager.get_manual_running_economy("match", stale)
+            output = DataTransformer().transform(
+                {"patient_data": {}, "filename_data": {}, "measurements": []},
+                {"email": "arthur@example.test", "stress_test_results": {}},
+                stale_payload,
+            )
+
+        self.assertEqual(compatible, manual_ec)
+        self.assertIsNone(stale_payload)
+        self.assertNotIn("running_economy_manual", output)
 
     def test_historical_export_saves_sidecar_without_markers_or_ui_warnings(self) -> None:
         session_manager = _SessionManager()

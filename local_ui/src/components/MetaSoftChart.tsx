@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import Plot from "react-plotly.js";
 import { Maximize2, X } from "lucide-react";
@@ -9,18 +9,43 @@ import {
   buildTimeBandShapes,
 } from "../lib/chartUtils";
 import { MARKER_COLORS, MetaSoftGraphConfig, MetaSoftSeriesConfig } from "../lib/graphConfig";
+import {
+  axisLabel,
+  axisTitle,
+  buildCursorAnnotations,
+  buildCursorShapes,
+  buildTickVals,
+  centeredWindowBounds,
+  clamp,
+  cursorForMarkerDrag,
+  defaultRangeFromValues,
+  draggedMarkerBounds,
+  durationToSeconds,
+  isSeriesAvailable,
+  markerModeLabel,
+  nearestEventPoint,
+  pointXValue,
+  previewDraggedMarker,
+  previousWindowBounds,
+  sameDragPreview,
+  sameMarkerTarget,
+  secondsToDuration,
+  smoothSeries,
+  timeFromClientX,
+  xRangeFromRelayout,
+  type MarkerDragPart,
+  type MarkerDragPreview,
+  type MarkerDragTarget,
+} from "../lib/metasoftChartHelpers";
 import { MARKER_NAMES, secondsToClock } from "../lib/markerUtils";
 import type {
-  DraftMarker,
   DraftMarkers,
   MarkerMode,
   MetaSoftMarkerName,
   MetaSoftPoint,
 } from "../types/metasoft";
 
-type MarkerDragPart = "start" | "center" | "end";
-type MarkerDragTarget = { marker: MetaSoftMarkerName; part: MarkerDragPart };
-type MarkerDragPreview = MarkerDragTarget & { xSeconds: number };
+const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
 
 interface Props {
   analysis: import("../types/metasoft").MetaSoftAnalysis;
@@ -28,7 +53,15 @@ interface Props {
   markers: DraftMarkers;
   phaseFilter: string;
   smoothingSeconds: number;
-  onCursorPoint: (point: MetaSoftPoint | null) => void;
+  showSpeedBands: boolean;
+  timeXRange: [number, number] | null;
+  timeZoomResetRevision: number;
+  cursorPoint: MetaSoftPoint | null;
+  cursorSourceGraphId: string | null;
+  fullscreen: boolean;
+  onFullscreenChange: (open: boolean) => void;
+  onTimeXRangeChange?: (graphId: string, range: [number, number] | null) => void;
+  onCursorPoint: (graphId: string, point: MetaSoftPoint | null) => void;
   onPlaceMarker: (
     marker: MetaSoftMarkerName,
     tSeconds: number,
@@ -45,34 +78,62 @@ function MetaSoftChartComponent({
   markers,
   phaseFilter,
   smoothingSeconds,
+  showSpeedBands,
+  timeXRange,
+  timeZoomResetRevision,
+  cursorPoint,
+  cursorSourceGraphId,
+  fullscreen,
+  onFullscreenChange,
+  onTimeXRangeChange,
   onCursorPoint,
   onPlaceMarker,
   onDeleteMarker,
 }: Props) {
-  const [fullscreen, setFullscreen] = useState(false);
-  const [xRange, setXRange] = useState<[number, number] | null>(null);
+  const [localXRange, setLocalXRange] = useState<[number, number] | null>(null);
   const [plotRevision, setPlotRevision] = useState(0);
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
-  const availableSeries = graph.series.filter((series) => isSeriesAvailable(analysis, graph, series));
-  const visibleSeries = availableSeries.filter((series) => !hiddenSeries.has(series.key));
-  const missingSeries = graph.series.filter((series) => !isSeriesAvailable(analysis, graph, series));
+  const availableSeries = useMemo(
+    () => graph.series.filter((series) => isSeriesAvailable(analysis, graph, series)),
+    [analysis, graph],
+  );
+  const visibleSeries = useMemo(
+    () => availableSeries.filter((series) => !hiddenSeries.has(series.key)),
+    [availableSeries, hiddenSeries],
+  );
+  const missingSeries = useMemo(
+    () => graph.series.filter((series) => !isSeriesAvailable(analysis, graph, series)),
+    [analysis, graph],
+  );
   const points = useMemo(
     () => analysis.points.filter((point) => phaseFilter === "Tout" || point.phase === phaseFilter),
     [analysis.points, phaseFilter],
   );
 
   useEffect(() => {
-    setXRange(null);
+    setLocalXRange(null);
     setPlotRevision((revision) => revision + 1);
   }, [analysis.file.filename, phaseFilter]);
+  useEffect(() => {
+    if (graph.kind === "time" && timeZoomResetRevision > 0) setPlotRevision((revision) => revision + 1);
+  }, [graph.kind, timeZoomResetRevision]);
   useEffect(() => setHiddenSeries(new Set()), [analysis.file.filename, graph.id]);
+  useEffect(() => {
+    debugZoom("chart mounted", { graphId: graph.id, kind: graph.kind, timeZoomResetRevision, fullscreen });
+    return () => debugZoom("chart unmounted", { graphId: graph.id, kind: graph.kind, timeZoomResetRevision, fullscreen });
+  }, [fullscreen, graph.id, graph.kind, timeZoomResetRevision]);
 
-  const handleXRangeChange = (range: [number, number] | null) => {
-    setXRange(range);
+  const handleXRangeChange = useCallback((range: [number, number] | null) => {
+    if (graph.kind === "time" && onTimeXRangeChange) {
+      onTimeXRangeChange(graph.id, range);
+    } else {
+      setLocalXRange(range);
+    }
     if (range === null) setPlotRevision((revision) => revision + 1);
-  };
+  }, [graph.id, graph.kind, onTimeXRangeChange]);
+  const xRange = graph.kind === "time" ? timeXRange : localXRange;
 
-  const toggleSeries = (series: MetaSoftSeriesConfig) => {
+  const toggleSeries = useCallback((series: MetaSoftSeriesConfig) => {
     setHiddenSeries((current) => {
       const next = new Set(current);
       if (next.has(series.key)) {
@@ -83,7 +144,7 @@ function MetaSoftChartComponent({
       next.add(series.key);
       return next;
     });
-  };
+  }, [availableSeries.length]);
 
   if (!availableSeries.length) {
     return (
@@ -116,9 +177,13 @@ function MetaSoftChartComponent({
       markers={markers}
       height={height}
       plotRevision={plotRevision}
+      plotResetKey={String(timeZoomResetRevision)}
       smoothingSeconds={smoothingSeconds}
       xRange={xRange}
       onXRangeChange={handleXRangeChange}
+      showSpeedBands={showSpeedBands}
+      cursorPoint={cursorPoint}
+      cursorSourceGraphId={cursorSourceGraphId}
       onCursorPoint={onCursorPoint}
       onPlaceMarker={onPlaceMarker}
       onDeleteMarker={onDeleteMarker}
@@ -132,7 +197,7 @@ function MetaSoftChartComponent({
         <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
         <button
           type="button"
-          onClick={() => setFullscreen(true)}
+          onClick={() => onFullscreenChange(true)}
           className="icon-button push-right"
           aria-label={`Ouvrir ${graph.title} en plein ecran`}
           title="Plein ecran"
@@ -153,7 +218,7 @@ function MetaSoftChartComponent({
               <button
                 type="button"
                 className="icon-button push-right"
-                onClick={() => setFullscreen(false)}
+                onClick={() => onFullscreenChange(false)}
                 aria-label="Fermer le plein ecran"
                 title="Fermer"
               >
@@ -269,9 +334,13 @@ function PointChartBody({
   markers,
   height,
   plotRevision,
+  plotResetKey,
   smoothingSeconds,
   xRange,
   onXRangeChange,
+  showSpeedBands,
+  cursorPoint,
+  cursorSourceGraphId,
   onCursorPoint,
   onPlaceMarker,
   onDeleteMarker,
@@ -283,10 +352,14 @@ function PointChartBody({
   markers: DraftMarkers;
   height: number;
   plotRevision: number;
+  plotResetKey: string;
   smoothingSeconds: number;
   xRange: [number, number] | null;
   onXRangeChange: (range: [number, number] | null) => void;
-  onCursorPoint: (point: MetaSoftPoint | null) => void;
+  showSpeedBands: boolean;
+  cursorPoint: MetaSoftPoint | null;
+  cursorSourceGraphId: string | null;
+  onCursorPoint: (graphId: string, point: MetaSoftPoint | null) => void;
   onPlaceMarker: (
     marker: MetaSoftMarkerName,
     tSeconds: number,
@@ -298,6 +371,7 @@ function PointChartBody({
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const clickTimerRef = useRef<number | null>(null);
+  const clickBlockUntilRef = useRef(0);
   const suppressClickRef = useRef(false);
   const dragFrameRef = useRef<number | null>(null);
   const dragPreviewRef = useRef<MarkerDragPreview | null>(null);
@@ -309,6 +383,7 @@ function PointChartBody({
     tSeconds: number;
     mode: MarkerMode;
     rangeDuration: string;
+    previousDuration: string;
   } | null>(null);
   const [markerHover, setMarkerHover] = useState<MarkerDragTarget | null>(null);
   const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
@@ -318,21 +393,31 @@ function PointChartBody({
     [graph, points],
   );
   const x = useMemo(() => chartPoints.map((point) => pointXValue(point, graph)), [chartPoints, graph]);
-  const maxTime = Math.max(...analysis.points.map((point) => point.t_seconds ?? 0), 0);
-  const defaultRange = defaultRangeFromValues(x, graph.kind === "time" ? maxTime : 1);
-  const tickVals = graph.kind === "time" ? buildTickVals(defaultRange) : [];
+  const maxTime = useMemo(
+    () => Math.max(...analysis.points.map((point) => point.t_seconds ?? 0), 0),
+    [analysis.points],
+  );
+  const defaultRange = useMemo(
+    () => defaultRangeFromValues(x, graph.kind === "time" ? maxTime : 1),
+    [graph.kind, maxTime, x],
+  );
+  const tickVals = useMemo(() => graph.kind === "time" ? buildTickVals(defaultRange) : [], [defaultRange, graph.kind]);
+  const tickText = useMemo(() => tickVals.map(secondsToClock), [tickVals]);
   const effectiveRange = xRange && xRange[0] >= defaultRange[0] && xRange[1] <= defaultRange[1] ? xRange : null;
-  const visibleMarkers = canEditTimeMarkers && dragPreview
+  const visibleMarkers = useMemo(() => canEditTimeMarkers && dragPreview
     ? { ...markers, [dragPreview.marker]: previewDraggedMarker(markers[dragPreview.marker], dragPreview, maxTime) }
-    : markers;
-  const plotMargins = { l: 44, r: graph.series.some((item) => item.axis === "y2") ? 42 : 16, t: 14, b: 42 };
+    : markers, [canEditTimeMarkers, dragPreview, markers, maxTime]);
+  const plotMargins = useMemo(
+    () => ({ l: 44, r: graph.series.some((item) => item.axis === "y2") ? 42 : 16, t: 14, b: 42 }),
+    [graph.series],
+  );
   const staticShapes = useMemo(
-    () => canEditTimeMarkers ? buildTimeBandShapes(analysis) : [],
-    [analysis, canEditTimeMarkers],
+    () => canEditTimeMarkers ? buildTimeBandShapes(analysis, showSpeedBands) : [],
+    [analysis, canEditTimeMarkers, showSpeedBands],
   );
   const staticAnnotations = useMemo(
-    () => canEditTimeMarkers ? buildStaticAnnotations(analysis) : [],
-    [analysis, canEditTimeMarkers],
+    () => canEditTimeMarkers ? buildStaticAnnotations(analysis, showSpeedBands) : [],
+    [analysis, canEditTimeMarkers, showSpeedBands],
   );
   const markerShapes = useMemo(
     () => canEditTimeMarkers ? buildMarkerShapes(visibleMarkers) : [],
@@ -341,6 +426,22 @@ function PointChartBody({
   const markerAnnotations = useMemo(
     () => canEditTimeMarkers ? buildMarkerAnnotations(visibleMarkers) : [],
     [canEditTimeMarkers, visibleMarkers],
+  );
+  const cursorShapes = useMemo(
+    () => buildCursorShapes(graph, cursorPoint),
+    [cursorPoint, graph],
+  );
+  const cursorAnnotations = useMemo(
+    () => cursorSourceGraphId === graph.id ? [] : buildCursorAnnotations(graph, series, cursorPoint),
+    [cursorPoint, cursorSourceGraphId, graph, series],
+  );
+  const shapes = useMemo(
+    () => canEditTimeMarkers ? [...staticShapes, ...markerShapes, ...cursorShapes] : [],
+    [canEditTimeMarkers, cursorShapes, markerShapes, staticShapes],
+  );
+  const annotations = useMemo(
+    () => canEditTimeMarkers ? [...staticAnnotations, ...markerAnnotations, ...cursorAnnotations] : [],
+    [canEditTimeMarkers, cursorAnnotations, markerAnnotations, staticAnnotations],
   );
   const data = useMemo(() => series.map((seriesItem) => {
     const rawY = chartPoints.map((point) => point.values[seriesItem.key as keyof MetaSoftPoint["values"]]);
@@ -359,7 +460,7 @@ function PointChartBody({
       connectgaps: false,
     };
   }), [chartPoints, graph.kind, series, smoothingSeconds, x]);
-  const layout = {
+  const layout = useMemo(() => ({
     autosize: true,
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
@@ -368,13 +469,13 @@ function PointChartBody({
     hovermode: graph.kind === "time" ? "x unified" : "closest",
     dragmode: "zoom",
     showlegend: false,
-    shapes: canEditTimeMarkers ? [...staticShapes, ...markerShapes] : [],
-    annotations: canEditTimeMarkers ? [...staticAnnotations, ...markerAnnotations] : [],
+    shapes,
+    annotations,
     xaxis: {
       range: effectiveRange ?? defaultRange,
       ...(graph.kind === "time" ? {
         tickvals: tickVals,
-        ticktext: tickVals.map(secondsToClock),
+        ticktext: tickText,
       } : {}),
       gridcolor: "rgba(255,255,255,0.055)",
       linecolor: "rgba(255,255,255,0.18)",
@@ -395,7 +496,14 @@ function PointChartBody({
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
     },
-  };
+  }), [annotations, defaultRange, effectiveRange, graph.kind, graph.xAxis, plotMargins, series, shapes, tickText, tickVals]);
+  const config = useMemo(() => ({
+    responsive: true,
+    displayModeBar: false,
+    scrollZoom: false,
+    doubleClick: "reset",
+    editable: false,
+  }), []);
 
   useEffect(() => () => {
     if (clickTimerRef.current !== null) window.clearTimeout(clickTimerRef.current);
@@ -406,19 +514,36 @@ function PointChartBody({
     dragPreviewRef.current = dragPreview;
   }, [dragPreview]);
 
-  const clearPendingClick = () => {
+  const clearPendingClick = useCallback(() => {
     if (clickTimerRef.current === null) return;
     window.clearTimeout(clickTimerRef.current);
     clickTimerRef.current = null;
-  };
+  }, []);
 
-  const updateMarkerHover = (target: MarkerDragTarget | null) => {
+  const resetZoomFromDoubleClick = useCallback((event?: ReactMouseEvent<HTMLDivElement>) => {
+    if (!canEditTimeMarkers) return;
+    debugZoom("double click reset requested", {
+      graphId: graph.id,
+      xRange,
+      effectiveRange,
+      defaultRange,
+      detail: event?.detail,
+    });
+    event?.stopPropagation();
+    clickBlockUntilRef.current = window.performance.now() + 450;
+    suppressClickRef.current = true;
+    clearPendingClick();
+    setProposal(null);
+    onXRangeChange(null);
+  }, [canEditTimeMarkers, clearPendingClick, defaultRange, effectiveRange, graph.id, onXRangeChange, xRange]);
+
+  const updateMarkerHover = useCallback((target: MarkerDragTarget | null) => {
     if (sameMarkerTarget(markerHoverRef.current, target)) return;
     markerHoverRef.current = target;
     setMarkerHover(target);
-  };
+  }, []);
 
-  const scheduleDragPreview = (next: MarkerDragPreview) => {
+  const scheduleDragPreview = useCallback((next: MarkerDragPreview) => {
     const current = pendingDragPreviewRef.current ?? dragPreviewRef.current;
     if (sameDragPreview(current, next)) return;
     pendingDragPreviewRef.current = next;
@@ -434,23 +559,24 @@ function PointChartBody({
         return pending;
       });
     });
-  };
+  }, []);
 
-  const clearPendingDragFrame = () => {
+  const clearPendingDragFrame = useCallback(() => {
     if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
     dragFrameRef.current = null;
     pendingDragPreviewRef.current = null;
-  };
+  }, []);
 
-  const openMarkerProposal = (event: Readonly<{ event?: MouseEvent; points?: Array<{ x?: unknown }> }>) => {
+  const openMarkerProposal = useCallback((event: Readonly<{ event?: MouseEvent; points?: Array<{ x?: unknown }> }>) => {
     if (!canEditTimeMarkers) return;
-    if (suppressClickRef.current) {
+    if (suppressClickRef.current || window.performance.now() < clickBlockUntilRef.current) {
       suppressClickRef.current = false;
       return;
     }
     const mouseEvent = event.event;
     const bounds = wrapperRef.current?.getBoundingClientRect();
     if (!mouseEvent || !bounds || mouseEvent.detail > 1) {
+      if (mouseEvent?.detail && mouseEvent.detail > 1) clickBlockUntilRef.current = window.performance.now() + 450;
       clearPendingClick();
       return;
     }
@@ -465,30 +591,31 @@ function PointChartBody({
         tSeconds: clamp(tSeconds, 0, maxTime),
         mode: "point",
         rangeDuration: "4:00",
+        previousDuration: "0:10",
       });
-    }, 180);
-  };
+    }, 320);
+  }, [canEditTimeMarkers, clearPendingClick, defaultRange, effectiveRange, maxTime, plotMargins]);
 
-  const cancelSingleClick = () => {
-    clearPendingClick();
-    setProposal(null);
-    onXRangeChange(null);
-  };
+  const cancelSingleClick = useCallback(() => {
+    resetZoomFromDoubleClick();
+  }, [resetZoomFromDoubleClick]);
 
-  const handleContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const handleContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     if (!target) return;
     event.preventDefault();
     setProposal(null);
     onDeleteMarker(target.marker);
-  };
+  }, [canEditTimeMarkers, defaultRange, effectiveRange, markers, onDeleteMarker, plotMargins]);
 
-  const handleMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const handleMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
     if (event.button !== 0) return;
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
-    const xSeconds = target ? timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins) : null;
+    const xSeconds = target
+      ? timeFromClientX(event.clientX, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins)
+      : null;
     if (!target || xSeconds === null) return;
     event.preventDefault();
     suppressClickRef.current = true;
@@ -498,27 +625,27 @@ function PointChartBody({
     const nextDrag = { ...target, xSeconds: clamp(xSeconds, 0, maxTime) };
     dragPreviewRef.current = nextDrag;
     setDragPreview(nextDrag);
-  };
+  }, [canEditTimeMarkers, clearPendingClick, clearPendingDragFrame, defaultRange, effectiveRange, markers, maxTime, plotMargins]);
 
-  const handleMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const handleMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
     const currentDrag = dragPreviewRef.current;
     if (currentDrag) {
-      const xSeconds = timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
+      const xSeconds = timeFromClientX(event.clientX, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
       if (xSeconds !== null) scheduleDragPreview({ ...currentDrag, xSeconds: clamp(xSeconds, 0, maxTime) });
       return;
     }
     updateMarkerHover(
       nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins),
     );
-  };
+  }, [canEditTimeMarkers, defaultRange, effectiveRange, markers, maxTime, plotMargins, scheduleDragPreview, updateMarkerHover]);
 
-  const handleMouseUp = (event?: ReactMouseEvent<HTMLDivElement>) => {
+  const handleMouseUp = useCallback((event?: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
     let finalDrag = pendingDragPreviewRef.current ?? dragPreviewRef.current;
     if (!finalDrag) return;
     const xSeconds = event
-      ? timeFromMouse(event, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins)
+      ? timeFromClientX(event.clientX, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins)
       : null;
     if (xSeconds !== null) finalDrag = { ...finalDrag, xSeconds: clamp(xSeconds, 0, maxTime) };
     clearPendingDragFrame();
@@ -526,21 +653,40 @@ function PointChartBody({
     onPlaceMarker(finalDrag.marker, next.tSeconds, next.mode, next.windowStart, next.windowEnd);
     dragPreviewRef.current = null;
     setDragPreview(null);
-  };
+  }, [canEditTimeMarkers, clearPendingDragFrame, defaultRange, effectiveRange, markers, maxTime, onPlaceMarker, plotMargins]);
 
-  const placeProposalMarker = (marker: MetaSoftMarkerName) => {
+  const placeProposalMarker = useCallback((marker: MetaSoftMarkerName) => {
     if (!proposal) return;
     if (proposal.mode === "point") {
       onPlaceMarker(marker, proposal.tSeconds, "point", null, null);
       setProposal(null);
       return;
     }
-    const rangeSeconds = durationToSeconds(proposal.rangeDuration);
+    const rangeSeconds = durationToSeconds(
+      proposal.mode === "previous" ? proposal.previousDuration : proposal.rangeDuration,
+    );
     if (rangeSeconds === null) return;
-    const [windowStart, windowEnd] = centeredWindowBounds(proposal.tSeconds, rangeSeconds, maxTime);
-    onPlaceMarker(marker, proposal.tSeconds, "range", windowStart, windowEnd);
+    const [windowStart, windowEnd] = proposal.mode === "previous"
+      ? previousWindowBounds(proposal.tSeconds, rangeSeconds)
+      : centeredWindowBounds(proposal.tSeconds, rangeSeconds, maxTime);
+    onPlaceMarker(marker, proposal.tSeconds, proposal.mode, windowStart, windowEnd);
     setProposal(null);
-  };
+  }, [maxTime, onPlaceMarker, proposal]);
+  const handleHover = useCallback((event: Readonly<{ points?: Array<{ customdata?: unknown; x?: unknown }> }>) => {
+    onCursorPoint(graph.id, nearestEventPoint(chartPoints, event, graph));
+  }, [chartPoints, graph, onCursorPoint]);
+  const handleUnhover = useCallback(() => onCursorPoint(graph.id, null), [graph.id, onCursorPoint]);
+  const handleRelayout = useCallback((event: Readonly<Record<string, unknown>>) => {
+    const nextRange = xRangeFromRelayout(event);
+    debugZoom("plot relayout", {
+      graphId: graph.id,
+      nextRange,
+      xRange,
+      effectiveRange,
+      event,
+    });
+    if (nextRange !== undefined) onXRangeChange(nextRange);
+  }, [effectiveRange, graph.id, onXRangeChange, xRange]);
 
   return (
     <div
@@ -551,6 +697,7 @@ function PointChartBody({
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onDoubleClickCapture={resetZoomFromDoubleClick}
       onMouseLeave={(event) => {
         updateMarkerHover(null);
         handleMouseUp(event);
@@ -558,31 +705,29 @@ function PointChartBody({
       onWheel={(event) => event.preventDefault()}
     >
       <Plot
+        key={`${graph.id}-${plotResetKey}`}
         data={data}
         layout={layout}
-        config={{
-          responsive: true,
-          displayModeBar: false,
-          scrollZoom: false,
-          doubleClick: "reset",
-          editable: false,
-        }}
+        config={config}
         revision={plotRevision}
         style={{ width: "100%", height }}
         useResizeHandler
         onClick={canEditTimeMarkers ? openMarkerProposal : undefined}
-        onRelayout={(event: Readonly<Record<string, unknown>>) => {
-          const nextRange = xRangeFromRelayout(event);
-          if (nextRange !== undefined) onXRangeChange(nextRange);
-        }}
-        onHover={(event: Readonly<{ points?: Array<{ customdata?: unknown; x?: unknown }> }>) => {
-          onCursorPoint(nearestEventPoint(chartPoints, event, graph));
-        }}
-        onUnhover={() => onCursorPoint(null)}
+        onRelayout={handleRelayout}
+        onHover={handleHover}
+        onUnhover={handleUnhover}
         onDoubleClick={cancelSingleClick}
       />
       {proposal && (
-        <div className="marker-popover" style={{ left: proposal.left, top: proposal.top }}>
+        <div
+          className="marker-popover"
+          style={{ left: proposal.left, top: proposal.top }}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onMouseMove={(event) => event.stopPropagation()}
+          onMouseUp={(event) => event.stopPropagation()}
+        >
           <div className="popover-head">
             <div>
               <p>Placer un seuil</p>
@@ -591,28 +736,32 @@ function PointChartBody({
             <button type="button" onClick={() => setProposal(null)} aria-label="Fermer">x</button>
           </div>
           <div className="segmented">
-            {(["point", "range"] as const).map((mode) => (
+            {(["point", "range", "previous"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
                 onClick={() => setProposal({ ...proposal, mode })}
                 className={proposal.mode === mode ? "active" : ""}
               >
-                {mode === "point" ? "Ligne" : "Range"}
+                {markerModeLabel(mode)}
               </button>
             ))}
           </div>
-          {proposal.mode === "range" && (
+          {proposal.mode !== "point" && (
             <label className="field small-field">
               Duree
               <input
-                value={proposal.rangeDuration}
-                onChange={(event) => setProposal({ ...proposal, rangeDuration: event.target.value })}
+                value={proposal.mode === "previous" ? proposal.previousDuration : proposal.rangeDuration}
+                onChange={(event) => setProposal({
+                  ...proposal,
+                  [proposal.mode === "previous" ? "previousDuration" : "rangeDuration"]: event.target.value,
+                })}
                 onBlur={() => {
-                  const seconds = durationToSeconds(proposal.rangeDuration);
-                  if (seconds !== null) setProposal({ ...proposal, rangeDuration: secondsToDuration(seconds) });
+                  const key = proposal.mode === "previous" ? "previousDuration" : "rangeDuration";
+                  const seconds = durationToSeconds(proposal[key]);
+                  if (seconds !== null) setProposal({ ...proposal, [key]: secondsToDuration(seconds) });
                 }}
-                placeholder="4:00"
+                placeholder={proposal.mode === "previous" ? "0:10" : "4:00"}
               />
             </label>
           )}
@@ -622,7 +771,9 @@ function PointChartBody({
                 key={marker}
                 type="button"
                 onClick={() => placeProposalMarker(marker)}
-                disabled={proposal.mode === "range" && durationToSeconds(proposal.rangeDuration) === null}
+                disabled={proposal.mode !== "point" && durationToSeconds(
+                  proposal.mode === "previous" ? proposal.previousDuration : proposal.rangeDuration,
+                ) === null}
                 style={{ borderColor: `${MARKER_COLORS[marker]}70`, color: MARKER_COLORS[marker] }}
               >
                 {marker === "VO2_max" ? "VO2max" : marker}
@@ -633,128 +784,6 @@ function PointChartBody({
       )}
     </div>
   );
-}
-
-function smoothSeries(
-  x: Array<number | null>,
-  y: Array<number | string | null | undefined>,
-  windowSeconds: number,
-): Array<number | string | null | undefined> {
-  if (windowSeconds <= 0) return y;
-  const radius = windowSeconds / 2;
-  let left = 0;
-  let right = 0;
-  let sum = 0;
-  let count = 0;
-  return y.map((value, index) => {
-    if (typeof value !== "number" || !Number.isFinite(value)) return value;
-    const center = x[index];
-    if (typeof center !== "number" || !Number.isFinite(center)) return value;
-    while (right < y.length) {
-      const rightX = x[right];
-      if (typeof rightX !== "number" || rightX > center + radius) break;
-      const candidate = y[right];
-      if (typeof candidate === "number" && Number.isFinite(candidate)) {
-        sum += candidate;
-        count += 1;
-      }
-      right += 1;
-    }
-    while (left < y.length) {
-      const leftX = x[left];
-      if (typeof leftX !== "number" || leftX >= center - radius) break;
-      const candidate = y[left];
-      if (typeof candidate === "number" && Number.isFinite(candidate)) {
-        sum -= candidate;
-        count -= 1;
-      }
-      left += 1;
-    }
-    return count ? Number((sum / count).toFixed(3)) : value;
-  });
-}
-
-function isSeriesAvailable(
-  analysis: import("../types/metasoft").MetaSoftAnalysis,
-  graph: MetaSoftGraphConfig,
-  series: MetaSoftSeriesConfig,
-): boolean {
-  if (graph.source === "running_economy") {
-    return (analysis.computed.running_economy ?? []).some((row) => row.value_j_kg_m !== null);
-  }
-  return isXAxisAvailable(analysis, graph)
-    && Boolean(analysis.metrics[series.key as keyof typeof analysis.metrics])
-    && hasNumericPointValue(analysis, series.key);
-}
-
-function isXAxisAvailable(
-  analysis: import("../types/metasoft").MetaSoftAnalysis,
-  graph: MetaSoftGraphConfig,
-): boolean {
-  if (graph.xAxis.key === "t_seconds" || graph.xAxis.key === "stage_index") return true;
-  return Boolean(analysis.metrics[graph.xAxis.key]) && hasNumericPointValue(analysis, graph.xAxis.key);
-}
-
-function hasNumericPointValue(
-  analysis: import("../types/metasoft").MetaSoftAnalysis,
-  key: MetaSoftSeriesConfig["key"] | MetaSoftGraphConfig["xAxis"]["key"],
-): boolean {
-  if (key === "t_seconds" || key === "stage_index" || key === "value_j_kg_m") return true;
-  return analysis.points.some((point) => {
-    const value = point.values[key];
-    return typeof value === "number" && Number.isFinite(value);
-  });
-}
-
-function xRangeFromRelayout(event: Readonly<Record<string, unknown>>): [number, number] | null | undefined {
-  if (event["xaxis.autorange"] === true) return null;
-  const eventRange = toRangeTuple(event["xaxis.range"]);
-  if (eventRange) return eventRange;
-  const start = toNumber(event["xaxis.range[0]"]);
-  const end = toNumber(event["xaxis.range[1]"]);
-  if (start === null || end === null || end <= start) return undefined;
-  return [start, end];
-}
-
-function previewDraggedMarker(marker: DraftMarker, drag: MarkerDragPreview, maxTime: number): DraftMarker {
-  const { tSeconds, mode, windowStart, windowEnd } = draggedMarkerBounds(marker, drag.part, drag.xSeconds, maxTime);
-  return {
-    ...marker,
-    mode,
-    t_seconds: tSeconds,
-    window_start_seconds: windowStart,
-    window_end_seconds: windowEnd,
-  };
-}
-
-function draggedMarkerBounds(
-  marker: DraftMarker,
-  part: MarkerDragPart,
-  xSeconds: number,
-  maxTime: number,
-): { tSeconds: number; mode: MarkerMode; windowStart: number | null; windowEnd: number | null } {
-  if (marker.mode === "point" || marker.window_start_seconds === null || marker.window_end_seconds === null) {
-    return { tSeconds: xSeconds, mode: "point", windowStart: null, windowEnd: null };
-  }
-  if (part === "center") {
-    const [windowStart, windowEnd] = centeredWindowBounds(
-      xSeconds,
-      marker.window_end_seconds - marker.window_start_seconds,
-      maxTime,
-    );
-    return { tSeconds: xSeconds, mode: "range", windowStart, windowEnd };
-  }
-  const upperBound = maxTime > 0 ? maxTime : Number.POSITIVE_INFINITY;
-  const minDuration = 1;
-  const maxStart = Math.max(0, marker.window_end_seconds - minDuration);
-  const minEnd = marker.window_start_seconds + minDuration;
-  const windowStart = part === "start"
-    ? clamp(xSeconds, 0, maxStart)
-    : marker.window_start_seconds;
-  const windowEnd = part === "end"
-    ? clamp(xSeconds, minEnd, Math.max(minEnd, upperBound))
-    : marker.window_end_seconds;
-  return { tSeconds: (windowStart + windowEnd) / 2, mode: "range", windowStart, windowEnd };
 }
 
 function nearestMarkerTargetFromMouse(
@@ -777,8 +806,8 @@ function nearestMarkerTargetFromMouse(
     const item = markers[marker];
     const candidates: Array<{ part: MarkerDragPart; seconds: number | null }> = [
       { part: "center", seconds: item.t_seconds },
-      { part: "start", seconds: item.mode === "range" ? item.window_start_seconds : null },
-      { part: "end", seconds: item.mode === "range" ? item.window_end_seconds : null },
+      { part: "start", seconds: item.mode !== "point" ? item.window_start_seconds : null },
+      { part: "end", seconds: item.mode !== "point" ? item.window_end_seconds : null },
     ];
     return candidates.reduce<typeof best>((candidateBest, candidate) => {
       if (candidate.seconds === null) return candidateBest;
@@ -789,163 +818,8 @@ function nearestMarkerTargetFromMouse(
   }, null)?.target ?? null;
 }
 
-function cursorForMarkerDrag(part: MarkerDragPart | null, dragging: boolean): string | undefined {
-  if (part === "start" || part === "end") return "ew-resize";
-  if (part === "center") return dragging ? "grabbing" : "grab";
-  return undefined;
-}
-
-function sameMarkerTarget(left: MarkerDragTarget | null, right: MarkerDragTarget | null): boolean {
-  return (left?.marker ?? null) === (right?.marker ?? null)
-    && (left?.part ?? null) === (right?.part ?? null);
-}
-
-function sameDragPreview(left: MarkerDragPreview | null, right: MarkerDragPreview | null): boolean {
-  return sameMarkerTarget(left, right) && (left?.xSeconds ?? null) === (right?.xSeconds ?? null);
-}
-
-function timeFromMouse(
-  event: ReactMouseEvent<HTMLDivElement>,
-  wrapper: HTMLDivElement | null,
-  range: [number, number],
-  margin: { l: number; r: number },
-): number | null {
-  return timeFromClientX(event.clientX, wrapper, range, margin);
-}
-
-function timeFromClientX(
-  clientX: number,
-  wrapper: HTMLDivElement | null,
-  range: [number, number],
-  margin: { l: number; r: number },
-): number | null {
-  if (!wrapper) return null;
-  const bounds = wrapper.getBoundingClientRect();
-  const plotLeft = bounds.left + margin.l;
-  const plotRight = bounds.right - margin.r;
-  const plotWidth = plotRight - plotLeft;
-  if (plotWidth <= 0 || clientX < plotLeft || clientX > plotRight) return null;
-  return range[0] + ((clientX - plotLeft) / plotWidth) * (range[1] - range[0]);
-}
-
-function centeredWindowBounds(tSeconds: number, durationSeconds: number, maxTime: number): [number, number] {
-  const duration = Math.max(1, durationSeconds);
-  if (maxTime > 0 && duration >= maxTime) return [0, maxTime];
-  let start = tSeconds - duration / 2;
-  let end = tSeconds + duration / 2;
-  if (start < 0) {
-    end -= start;
-    start = 0;
-  }
-  if (maxTime > 0 && end > maxTime) {
-    start = Math.max(0, start - (end - maxTime));
-    end = maxTime;
-  }
-  return [start, end];
-}
-
-function durationToSeconds(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (/^\d+([.,]\d+)?$/.test(trimmed)) {
-    const parsed = Number(trimmed.replace(",", "."));
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }
-  const parts = trimmed.split(":").map((part) => Number(part));
-  if (parts.length < 2 || parts.length > 3 || parts.some((part) => !Number.isFinite(part) || part < 0)) {
-    return null;
-  }
-  const [hours, minutes, seconds] = parts.length === 3 ? parts : [0, parts[0], parts[1]];
-  const total = hours * 3600 + minutes * 60 + seconds;
-  return total > 0 ? total : null;
-}
-
-function secondsToDuration(seconds: number): string {
-  const rounded = Math.max(1, Math.round(seconds));
-  const h = Math.floor(rounded / 3600);
-  const m = Math.floor((rounded % 3600) / 60);
-  const s = rounded % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function toRangeTuple(value: unknown): [number, number] | null {
-  if (!Array.isArray(value) || value.length !== 2) return null;
-  const start = toNumber(value[0]);
-  const end = toNumber(value[1]);
-  if (start === null || end === null || end <= start) return null;
-  return [start, end];
-}
-
-function toNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function nearestEventPoint(
-  points: MetaSoftPoint[],
-  event: Readonly<{ points?: Array<{ customdata?: unknown; x?: unknown }> }>,
-  graph: MetaSoftGraphConfig,
-): MetaSoftPoint | null {
-  const pointIndex = event.points?.[0]?.customdata;
-  if (typeof pointIndex === "number") {
-    return points.find((point) => point.index === pointIndex) ?? null;
-  }
-  const x = event.points?.[0]?.x;
-  if (typeof x !== "number") return null;
-  return points.reduce<MetaSoftPoint | null>((best, point) => {
-    const pointX = pointXValue(point, graph);
-    if (pointX === null) return best;
-    if (!best || best.t_seconds === null) return point;
-    const bestX = pointXValue(best, graph);
-    if (bestX === null) return point;
-    return Math.abs(pointX - x) < Math.abs(bestX - x) ? point : best;
-  }, null);
-}
-
-function defaultRangeFromValues(values: Array<number | null>, fallbackMax: number): [number, number] {
-  const numericValues = values
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (!numericValues.length) return [0, fallbackMax];
-  const start = Math.min(...numericValues);
-  const end = Math.max(...numericValues);
-  if (end > start) return [start, end];
-  const pad = Math.max(Math.abs(start) * 0.05, 1);
-  return [start - pad, end + pad];
-}
-
-function buildTickVals(range: [number, number]): number[] {
-  const span = range[1] - range[0];
-  if (span <= 0) return [];
-  const step = span > 5400 ? 1200 : span > 2400 ? 600 : 300;
-  const vals = [];
-  for (let value = Math.ceil(range[0] / step) * step; value <= range[1]; value += step) vals.push(value);
-  return vals;
-}
-
-function pointXValue(point: MetaSoftPoint, graph: MetaSoftGraphConfig): number | null {
-  if (graph.xAxis.key === "t_seconds") return point.t_seconds;
-  if (graph.xAxis.key === "stage_index") return null;
-  const value = point.values[graph.xAxis.key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function axisTitle(axis: MetaSoftGraphConfig["xAxis"]): string {
-  return axis.unit ? `${axis.label} (${axis.unit})` : axis.label;
-}
-
-function axisLabel(series: MetaSoftSeriesConfig[], axis: "y" | "y2"): string {
-  const units = series
-    .filter((item) => item.axis === axis)
-    .map((item) => item.unit)
-    .filter((unit): unit is string => Boolean(unit));
-  return Array.from(new Set(units)).join(" / ");
+function debugZoom(message: string, payload: Record<string, unknown>): void {
+  if (!DEBUG_ZOOM) return;
+  // eslint-disable-next-line no-console
+  console.info(`[metasoft zoom chart] ${message}`, payload);
 }

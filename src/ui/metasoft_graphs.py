@@ -30,6 +30,30 @@ def _series(key, label, unit, color, axis="y", smoothable=True):
 
 GRAPH_CONFIGS = (
     {
+        "id": "ve_vo2_peto2_time",
+        "title": "V'E, V'E/V'O2, PETO2",
+        "kind": "time",
+        "source": "points",
+        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
+        "series": (
+            _series("ve_l_min", "V'E", "L/min", "#10a8ff"),
+            _series("ve_vo2", "V'E/V'O2", "sans unite", "#16e0c2", "y2"),
+            _series("peto2_mmhg", "PETO2", "mmHg", "#ff8a00", "y2"),
+        ),
+    },
+    {
+        "id": "ve_vco2_petco2_time",
+        "title": "V'E, V'E/V'CO2, PETCO2",
+        "kind": "time",
+        "source": "points",
+        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
+        "series": (
+            _series("ve_l_min", "V'E", "L/min", "#10a8ff"),
+            _series("ve_vco2", "V'E/V'CO2", "sans unite", "#16e0c2", "y2"),
+            _series("petco2_mmhg", "PETCO2", "mmHg", "#ff6b00", "y2"),
+        ),
+    },
+    {
         "id": "ve_time",
         "title": "V'E",
         "kind": "time",
@@ -57,6 +81,19 @@ GRAPH_CONFIGS = (
         "series": (
             _series("vo2_l_min", "V'O2", "L/min", "#10a8ff"),
             _series("vco2_l_min", "V'CO2", "L/min", "#16d18d"),
+        ),
+    },
+    {
+        "id": "de_time",
+        "title": "DE / CHOx / FATOx / PROx",
+        "kind": "time",
+        "source": "points",
+        "x_axis": {"key": "t_seconds", "label": "Temps", "unit": "s"},
+        "series": (
+            _series("de_kcal_h", "DE", "kcal/h", "#f8fafc"),
+            _series("decho_kcal_h", "CHOx", "kcal/h", "#ff8a00"),
+            _series("defat_kcal_h", "FATOx", "kcal/h", "#16d18d"),
+            _series("depro_kcal_h", "PROx", "kcal/h", "#a855f7"),
         ),
     },
     {

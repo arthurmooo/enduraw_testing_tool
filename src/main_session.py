@@ -6,6 +6,7 @@ import os
 import sys
 import customtkinter as ctk
 from datetime import datetime
+from hashlib import sha256
 from tkinter import filedialog, messagebox
 from typing import Dict, List, Any, Optional
 from pathlib import Path
@@ -60,6 +61,11 @@ def _save_metasoft_audit_sidecar(
         app_version=APP_VERSION,
     )
     return session_manager.save_output(audit_filename, sidecar)
+
+
+def _match_id(profile_name: str, xml_filename: str) -> str:
+    raw = f"{Path(str(profile_name)).name}\0{Path(str(xml_filename)).name}"
+    return sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
 class SessionTab(ctk.CTkFrame):
@@ -793,7 +799,19 @@ class XmlMatchTab(ctk.CTkFrame):
             xml_data = self.parser.parse_file(xml_path)
             
             # Transform using existing transformer
-            output = self.transformer.transform(xml_data, profile_data)
+            match_id = _match_id(profile_name, xml_filename)
+            match = self.session_manager.get_match_for_profile(profile_name)
+            fingerprint = (
+                self.session_manager.build_match_fingerprint(match)
+                if match and match.xml_filename == xml_filename
+                else None
+            )
+            manual_ec = (
+                self.session_manager.get_manual_running_economy(match_id, fingerprint)
+                if fingerprint
+                else None
+            )
+            output = self.transformer.transform(xml_data, profile_data, manual_ec)
             
             # Generate output filename
             identity = profile_data.get('identity', {})
@@ -857,7 +875,14 @@ class XmlMatchTab(ctk.CTkFrame):
                     continue
                 
                 xml_data = self.parser.parse_file(xml_path)
-                output = self.transformer.transform(xml_data, profile_data)
+                match_id = _match_id(profile_name, xml_filename)
+                fingerprint = self.session_manager.build_match_fingerprint(match)
+                manual_ec = (
+                    self.session_manager.get_manual_running_economy(match_id, fingerprint)
+                    if fingerprint
+                    else None
+                )
+                output = self.transformer.transform(xml_data, profile_data, manual_ec)
                 
                 identity = profile_data.get('identity', {})
                 name = f"{identity.get('last_name', 'Unknown')}_{identity.get('first_name', '')}".strip('_')

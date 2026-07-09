@@ -2,9 +2,8 @@
 
 Le serveur expose uniquement la session locale deja chargee par l'app Tkinter.
 Source: profils/XML/matches via `SessionManager`. Transformations officielles:
-parser MetaSoft, analyse Python, marqueurs Python et report profil.
-Aucun endpoint ne lit de valeur preview React comme source officielle, et aucune
-ecriture BDD n'existe dans ce module.
+parser MetaSoft, analyse Python, marqueurs Python, EC manuelle validee UI et
+report profil. Aucune ecriture BDD n'existe dans ce module.
 """
 import json
 import mimetypes
@@ -20,7 +19,7 @@ from math import isfinite
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core.metasoft_analysis import build_metasoft_analysis
+from core.metasoft_analysis import build_manual_running_economy, build_metasoft_analysis
 from core.metasoft_markers import (
     apply_metasoft_stress_patch,
     build_metasoft_marker,
@@ -152,6 +151,8 @@ class LocalMetaSoftServer:
         suffix = parts[3:]
         if suffix == ["markers", "officialize"]:
             return self._officialize_payload(match_id, payload)
+        if suffix == ["running-economy", "manual"]:
+            return self._manual_running_economy_payload(match_id, payload)
         if suffix == ["profile", "report-preview"]:
             return self._report_preview_payload(match_id, payload)
         if suffix == ["profile", "report"]:
@@ -195,13 +196,97 @@ class LocalMetaSoftServer:
             "match": context["match"],
             "profile": _public_profile(context["profile"]),
             "analysis": _ui_analysis_payload(context["analysis"]),
+            "manual_running_economy": self.session_manager.get_manual_running_economy(
+                match_id,
+                context["fingerprint"],
+            ),
             "warnings": warnings,
             "source_of_truth": {
                 "metrics": "python.metasoft_analysis",
                 "markers": "python.metasoft_markers",
+                "running_economy_manual": "python.metasoft_analysis.manual_running_economy",
                 "export": "tkinter.export_button_json_valentin",
                 "smoothing": "react_visual_only",
             },
+        }
+
+    def _manual_running_economy_payload(self, match_id, payload):
+        context = self._match_context(match_id)
+        if not context["ok"]:
+            return context
+        if not isinstance(payload, dict):
+            return _error(
+                "invalid_running_economy_manual",
+                "Payload EC manuelle invalide.",
+                status=400,
+            )
+        selections = _manual_running_economy_selections(payload)
+        if selections is None:
+            return _error(
+                "invalid_running_economy_manual",
+                "selections doit etre une liste.",
+                status=400,
+            )
+        stage_selections = _manual_running_economy_stage_selections(payload)
+        if stage_selections is None:
+            return _error(
+                "invalid_running_economy_manual",
+                "stage_selections doit etre une liste valide.",
+                status=400,
+            )
+        if selections == [] and not stage_selections:
+            self.session_manager.clear_manual_running_economy(match_id)
+            return {"ok": True, "manual_running_economy": None}
+        data = self._build_manual_running_economy(context, match_id, selections, payload)
+        if not data["ok"]:
+            return data
+        data = data["manual_running_economy"]
+        if stage_selections:
+            data["stage_selections"] = stage_selections
+        self.session_manager.save_manual_running_economy(
+            match_id,
+            data,
+            context["fingerprint"],
+        )
+        return {"ok": True, "manual_running_economy": data}
+
+    def _build_manual_running_economy(self, context, match_id, selections, payload, markers=None):
+        """Calcule l'EC officielle depuis l'analyse Python, sans valeurs React."""
+        vo2max_result = self._manual_running_economy_vo2max(context, payload, markers)
+        if not vo2max_result["ok"]:
+            return vo2max_result
+        try:
+            data = build_manual_running_economy(
+                context["analysis"],
+                selections,
+                profile_vo2max_ml_kg_min=vo2max_result["value"],
+                vo2max_source=vo2max_result["source"],
+            )
+        except ValueError as exc:
+            return _error(
+                "invalid_running_economy_manual",
+                str(exc),
+                status=400,
+            )
+        data["match_id"] = match_id
+        return {"ok": True, "manual_running_economy": data}
+
+    def _manual_running_economy_vo2max(self, context, payload, markers=None):
+        if "marker_selections" in payload:
+            if markers is None:
+                markers_result = self._officialize(context, payload)
+                if not markers_result["ok"]:
+                    return markers_result
+                markers = markers_result["markers"]
+            marker = markers.get("VO2_max", {})
+            value = _positive_number(marker.get("values", {}).get("vo2_ml_kg_min"))
+            return {"ok": True, "value": value, "source": "metasoft_marker.vo2_max"}
+        return {
+            "ok": True,
+            "value": _positive_number(
+                context["profile"].get("stress_test_results", {}).get("measured_vo2max")
+            ),
+            "source": "profile.stress_test_results.measured_vo2max",
         }
 
     def _officialize_payload(self, match_id, payload):
@@ -252,6 +337,10 @@ class LocalMetaSoftServer:
                 details={"conflicts": conflicts},
             )
 
+        manual_result = self._manual_running_economy_for_report(context, match_id, payload, patch_result)
+        if not manual_result["ok"]:
+            return manual_result
+
         patch = patch_result["patch_result"].get("patch", {})
         updated_paths = [".".join(path) for path, _value in _flatten_patch_values(patch)]
         profile = context["profile"]
@@ -264,12 +353,60 @@ class LocalMetaSoftServer:
         else:
             profile_name = context["match"]["profile_name"]
 
+        manual_running_economy = manual_result.get("manual_running_economy")
+        if manual_result.get("present"):
+            final_fingerprint = self.session_manager.build_match_fingerprint(context["match_info"])
+            if not final_fingerprint:
+                return _error(
+                    "match_fingerprint_unavailable",
+                    "Fingerprint local profil/XML indisponible.",
+                    status=409,
+                )
+            self.session_manager.save_manual_running_economy(
+                match_id,
+                manual_running_economy,
+                final_fingerprint,
+            )
+
         return {
             "ok": True,
             "profile_name": profile_name,
             "updated_paths": updated_paths,
             "confirmed_markers": patch_result["markers"],
+            "manual_running_economy": manual_running_economy,
             "warnings": patch_result["warnings"],
+        }
+
+    def _manual_running_economy_for_report(self, context, match_id, payload, patch_result):
+        if "manual_running_economy_selections" not in payload:
+            return {"ok": True, "present": False, "manual_running_economy": None}
+        selections = _manual_running_economy_selections(
+            payload,
+            key="manual_running_economy_selections",
+        )
+        stage_selections = _manual_running_economy_stage_selections(payload)
+        if selections is None or stage_selections is None:
+            return _error(
+                "invalid_running_economy_manual",
+                "Payload EC manuelle invalide.",
+                status=400,
+            )
+        data = self._build_manual_running_economy(
+            context,
+            match_id,
+            selections,
+            payload,
+            markers=patch_result["markers"],
+        )
+        if not data["ok"]:
+            return data
+        manual_running_economy = data["manual_running_economy"]
+        if stage_selections:
+            manual_running_economy["stage_selections"] = stage_selections
+        return {
+            "ok": True,
+            "present": True,
+            "manual_running_economy": manual_running_economy,
         }
 
     def _patch_from_payload(self, context, payload):
@@ -381,13 +518,23 @@ class LocalMetaSoftServer:
             # jamais de disque, pour ne pas masquer un XML modifie.
             self._match_context_cache = {cache_key: {"xml_data": xml_data, "analysis": analysis}}
 
+        fingerprint = self.session_manager.build_match_fingerprint(match)
+        if not fingerprint:
+            return _error(
+                "match_fingerprint_unavailable",
+                "Fingerprint local profil/XML indisponible.",
+                status=409,
+            )
+
         return {
             "ok": True,
+            "fingerprint": fingerprint,
             "match": {
                 "match_id": _match_id(match.profile_name, match.xml_filename),
                 "profile_name": match.profile_name,
                 "xml_filename": match.xml_filename,
             },
+            "match_info": match,
             "profile": profile,
             "xml_data": xml_data,
             "analysis": analysis,
@@ -539,13 +686,55 @@ def _path_parts(path):
     return [unquote(part) for part in path.strip("/").split("/") if part]
 
 
+def _manual_running_economy_selections(payload, key="selections"):
+    """Extrait uniquement les champs officiels de selection EC manuelle."""
+    selections = payload.get(key)
+    if key == "selections" and selections is None and isinstance(payload.get("rows"), list):
+        selections = payload.get("rows")
+    if not isinstance(selections, list):
+        return None
+    result = []
+    for item in selections:
+        if not isinstance(item, dict):
+            return None
+        result.append({
+            "stage_index": item.get("stage_index"),
+            "start_seconds": item.get("start_seconds"),
+            "end_seconds": item.get("end_seconds"),
+            "exclusions": item.get("exclusions", []),
+        })
+    return result
+
+
+def _manual_running_economy_stage_selections(payload):
+    """Extrait la metadata UI locale qui memorise les paliers EC ecartes."""
+    if "stage_selections" in payload:
+        selections = payload.get("stage_selections")
+    elif "manual_running_economy_stage_selections" in payload:
+        selections = payload.get("manual_running_economy_stage_selections")
+    else:
+        return []
+    if not isinstance(selections, list):
+        return None
+    result = []
+    for item in selections:
+        if not isinstance(item, dict):
+            return None
+        stage_index = _integer(item.get("stage_index"))
+        enabled = item.get("enabled")
+        if stage_index is None or not isinstance(enabled, bool):
+            return None
+        result.append({"stage_index": stage_index, "enabled": enabled})
+    return result
+
+
 def _marker_from_selection(points, selection):
     if not isinstance(selection, dict):
         return _error("invalid_marker_selection", "Selection marqueur invalide.", status=400)
 
     name = _normalise_marker_name(selection.get("name"))
     mode = selection.get("mode")
-    if name not in VALID_MARKERS or mode not in {"point", "range"}:
+    if name not in VALID_MARKERS or mode not in {"point", "range", "previous"}:
         return _error("invalid_marker_selection", "Nom ou mode marqueur invalide.", status=400)
 
     if mode == "point":
@@ -553,6 +742,25 @@ def _marker_from_selection(points, selection):
         if t_seconds is None:
             return _error("invalid_marker_selection", "Temps point manquant.", status=400)
         marker = build_metasoft_marker(points, name, t_seconds=t_seconds)
+    elif mode == "previous":
+        t_seconds = _number(selection.get("t_seconds"))
+        start = _number(selection.get("window_start_seconds"))
+        if t_seconds is None or start is None or start > t_seconds:
+            return _error("invalid_marker_selection", "Fenetre precedente incomplete.", status=400)
+        start = max(0, start)
+        # Mode precedent: l'UI garde le temps clique, l'officiel moyenne la
+        # fenetre brute inclusive [t-X, t] sans lire les valeurs preview React.
+        marker = build_metasoft_marker(
+            points,
+            name,
+            window_start_seconds=start,
+            window_end_seconds=t_seconds,
+        )
+        marker.update({
+            "mode": "previous",
+            "t_seconds": t_seconds,
+            "selection_time_seconds": t_seconds,
+        })
     else:
         start = _number(selection.get("window_start_seconds"))
         end = _number(selection.get("window_end_seconds"))
@@ -724,6 +932,13 @@ def _number(value):
         except ValueError:
             return None
     return None
+
+
+def _integer(value):
+    number = _number(value)
+    if number is None or number != int(number):
+        return None
+    return int(number)
 
 
 def _normalise_marker_name(name):

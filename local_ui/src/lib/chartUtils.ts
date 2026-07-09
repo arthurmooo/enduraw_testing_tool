@@ -20,7 +20,7 @@ const PHASE_COLORS: Record<string, string> = {
   Rétablissement: "rgba(0, 190, 145, 0.16)",
 };
 
-export function buildTimeBandShapes(analysis: MetaSoftAnalysis): PlotShape[] {
+export function buildTimeBandShapes(analysis: MetaSoftAnalysis, showSpeedBands = true): PlotShape[] {
   const phaseBands = analysis.phases.filter(hasBounds).map((phase) => ({
     type: "rect",
     xref: "x",
@@ -35,7 +35,7 @@ export function buildTimeBandShapes(analysis: MetaSoftAnalysis): PlotShape[] {
     editable: false,
   }));
 
-  const speedBands = speedSegmentsForAnalysis(analysis).map((stage, index) => ({
+  const speedBands = showSpeedBands ? speedSegmentsForAnalysis(analysis).map((stage, index) => ({
     type: "rect",
     xref: "x",
     yref: "paper",
@@ -47,7 +47,7 @@ export function buildTimeBandShapes(analysis: MetaSoftAnalysis): PlotShape[] {
     line: { color: "rgba(255,255,255,0.07)", width: 1 },
     layer: "below",
     editable: false,
-  }));
+  })) : [];
 
   return [...speedBands, ...phaseBands];
 }
@@ -66,7 +66,7 @@ export function buildMarkerShapes(markers: DraftMarkers): PlotShape[] {
       y1: 1,
       line: { color, width: 1, dash: "dot" },
     }];
-    if (marker.mode === "range" && marker.window_start_seconds !== null && marker.window_end_seconds !== null) {
+    if (marker.mode !== "point" && marker.window_start_seconds !== null && marker.window_end_seconds !== null) {
       shapes.push({
         type: "rect",
         xref: "x",
@@ -89,8 +89,8 @@ export function buildAnnotations(analysis: MetaSoftAnalysis, markers: DraftMarke
   return [...buildStaticAnnotations(analysis), ...buildMarkerAnnotations(markers)];
 }
 
-export function buildStaticAnnotations(analysis: MetaSoftAnalysis) {
-  const speedLabels = speedSegmentsForAnalysis(analysis)
+export function buildStaticAnnotations(analysis: MetaSoftAnalysis, showSpeedBands = true) {
+  const speedLabels = showSpeedBands ? speedSegmentsForAnalysis(analysis)
     .filter((stage) => (
       typeof stage.start_seconds === "number"
       && typeof stage.end_seconds === "number"
@@ -107,7 +107,7 @@ export function buildStaticAnnotations(analysis: MetaSoftAnalysis) {
       bgcolor: "rgba(2, 12, 25, 0.30)",
       bordercolor: "rgba(255,255,255,0.05)",
       borderpad: 2,
-    }));
+    })) : [];
   const phaseLabels = analysis.phases.filter(hasBounds).map((phase) => ({
     x: ((phase.start_seconds ?? 0) + (phase.end_seconds ?? 0)) / 2,
     y: 0.04,

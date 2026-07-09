@@ -21,7 +21,12 @@ from config import GRAPH_COLORS, GRAPH_INTERVAL_SECONDS
 class DataTransformer:
     """Assemble le profil local et les mesures XML dans le JSON d'export."""
     
-    def transform(self, xml_data: Dict[str, Any], manual_input: Dict[str, Any]) -> Dict[str, Any]:
+    def transform(
+        self,
+        xml_data: Dict[str, Any],
+        manual_input: Dict[str, Any],
+        manual_running_economy: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Transforme un XML parse et un profil saisi vers le payload final."""
         # Identite export: le XML garde le nom de test si le profil est incomplet.
         filename_data = xml_data.get('filename_data', {})
@@ -78,6 +83,8 @@ class DataTransformer:
                 xml_data.get('measurements', []),
                 result.seuils
             )
+        if manual_running_economy and manual_running_economy.get("rows"):
+            result.running_economy_manual = manual_running_economy
         
         # Logos and partners (placeholders)
         result.logos = {

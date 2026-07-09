@@ -42,13 +42,16 @@ from ui.metasoft_analysis_window import (
 
 class MetaSoftUiHelpersTest(unittest.TestCase):
     def test_graph_configs_cover_nine_metasoft_graphs_plus_running_economy(self) -> None:
-        self.assertEqual(len(GRAPH_CONFIGS), 10)
+        self.assertEqual(len(GRAPH_CONFIGS), 13)
         self.assertEqual(
             [config["id"] for config in GRAPH_CONFIGS if config["source"] == "points"],
             [
+                "ve_vo2_peto2_time",
+                "ve_vco2_petco2_time",
                 "ve_time",
                 "hr_vo2_fc_time",
                 "vo2_vco2_time",
+                "de_time",
                 "ve_vco2_scatter",
                 "vco2_hr_scatter",
                 "ve_ratios_time",
@@ -60,9 +63,12 @@ class MetaSoftUiHelpersTest(unittest.TestCase):
         self.assertEqual(
             {config["id"] for config in GRAPH_CONFIGS},
             {
+                "ve_vo2_peto2_time",
+                "ve_vco2_petco2_time",
                 "ve_time",
                 "hr_vo2_fc_time",
                 "vo2_vco2_time",
+                "de_time",
                 "ve_vco2_scatter",
                 "vco2_hr_scatter",
                 "ve_ratios_time",
@@ -73,6 +79,10 @@ class MetaSoftUiHelpersTest(unittest.TestCase):
             },
         )
         self.assertEqual(MARKER_CONFIGS["VO2_max"]["label"], "VO2max")
+        self.assertEqual(
+            [series["label"] for series in GRAPH_CONFIGS_BY_ID["de_time"]["series"]],
+            ["DE", "CHOx", "FATOx", "PROx"],
+        )
 
         scatter_configs = [config for config in GRAPH_CONFIGS if config.get("kind") == "scatter"]
         self.assertEqual(

@@ -130,7 +130,7 @@ button:disabled {
   top: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: auto auto 1fr;
+  grid-template-columns: auto auto auto 1fr;
   gap: 12px;
   align-items: center;
   margin: 14px 0 22px;
@@ -141,6 +141,7 @@ button:disabled {
 
 .nav-buttons button,
 .phase-filter button,
+.nav-toggle,
 .segmented button {
   min-height: 34px;
   border: 0;
@@ -153,9 +154,15 @@ button:disabled {
 .nav-buttons button:hover,
 .phase-filter button:hover,
 .phase-filter button.active,
+.nav-toggle.active,
 .segmented button.active {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.1);
+}
+
+.nav-toggle {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .range-control {
@@ -496,11 +503,180 @@ td {
   color: #76f4b7;
 }
 
+.muted-row .accent-cell {
+  color: rgba(226, 232, 240, 0.34);
+}
+
 .analysis-grid {
   display: grid;
   grid-template-columns: 1fr 360px;
   gap: 14px;
   align-items: start;
+}
+
+.report-only-grid {
+  grid-template-columns: minmax(320px, 420px);
+}
+
+.ec-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(520px, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.ec-chart-panel {
+  min-width: 0;
+}
+
+.ec-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.active-action {
+  border-color: rgba(255, 138, 0, 0.42) !important;
+  color: #ffc46b !important;
+  background: rgba(255, 138, 0, 0.12) !important;
+}
+
+.stage-strip {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  overflow-x: auto;
+  padding-bottom: 3px;
+}
+
+.stage-strip button {
+  display: grid;
+  gap: 3px;
+  min-width: 112px;
+  min-height: 50px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: rgba(226, 232, 240, 0.68);
+  background: rgba(255, 255, 255, 0.035);
+  text-align: left;
+}
+
+.stage-strip button.active {
+  border-color: rgba(16, 211, 143, 0.45);
+  color: #f8fafc;
+  background: rgba(16, 211, 143, 0.11);
+}
+
+.stage-strip span,
+.bounds-grid span {
+  color: rgba(226, 232, 240, 0.52);
+  font-size: 12px;
+}
+
+.bounds-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.duration-pill {
+  display: inline-flex;
+  margin-top: 10px;
+  padding: 4px 8px;
+  border: 1px solid rgba(16, 211, 143, 0.24);
+  border-radius: 6px;
+  color: #76f4b7;
+  background: rgba(16, 211, 143, 0.08);
+  font-size: 12px;
+}
+
+.bounds-grid input[type="range"] {
+  --range-fill: #10d38f;
+  --range-track: rgba(226, 232, 240, 0.22);
+  --range-thumb: #f8fafc;
+  width: 100%;
+  height: 24px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bounds-grid input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--range-fill) 0%,
+    var(--range-fill) var(--range-progress, 0%),
+    var(--range-track) var(--range-progress, 0%),
+    var(--range-track) 100%
+  );
+}
+
+.bounds-grid input[type="range"]::-webkit-slider-thumb {
+  width: 24px;
+  height: 24px;
+  margin-top: -9px;
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.34);
+  background: var(--range-thumb);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.bounds-grid input[type="range"]::-moz-range-track {
+  height: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 999px;
+  background: var(--range-track);
+}
+
+.bounds-grid input[type="range"]::-moz-range-progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--range-fill);
+}
+
+.bounds-grid input[type="range"]::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.34);
+  background: var(--range-thumb);
+}
+
+.exclusion-list {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.artifact-editor {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 138, 0, 0.24);
+  border-radius: 6px;
+  background: rgba(255, 138, 0, 0.055);
+}
+
+.artifact-editor .panel-title-row {
+  margin-bottom: 8px;
+}
+
+.artifact-bounds input[type="range"] {
+  --range-fill: #ffc46b;
+}
+
+.selected-row td {
+  background: rgba(16, 211, 143, 0.08);
 }
 
 .action-panel {
@@ -598,7 +774,8 @@ td {
   }
 
   .reading-grid,
-  .analysis-grid {
+  .analysis-grid,
+  .ec-workbench {
     grid-template-columns: 1fr;
   }
 

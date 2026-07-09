@@ -19,6 +19,9 @@ export type MetaSoftMetricKey =
   | "ve_vco2";
 
 export type MetaSoftGraphId =
+  | "ve_vo2_peto2_time"
+  | "ve_vco2_petco2_time"
+  | "de_time"
   | "ve_time"
   | "hr_vo2_fc_time"
   | "vo2_vco2_time"
@@ -31,7 +34,7 @@ export type MetaSoftGraphId =
   | "running_economy";
 
 export type MetaSoftMarkerName = "SV1" | "SV2" | "VO2_max" | "VMA";
-export type MarkerMode = "point" | "range";
+export type MarkerMode = "point" | "range" | "previous";
 
 export interface MetaSoftMetricSpec {
   key: MetaSoftMetricKey;
@@ -80,6 +83,39 @@ export interface MetaSoftRunningEconomy {
   vco2_ml_min?: number;
   mass_kg?: number;
   warning?: MetaSoftWarning;
+}
+
+export interface ManualRunningEconomyExclusion {
+  start_seconds: number;
+  end_seconds: number;
+}
+
+export interface ManualRunningEconomyRow {
+  stage_index: number;
+  speed_kmh: number;
+  start_seconds: number;
+  end_seconds: number;
+  exclusions: ManualRunningEconomyExclusion[];
+  point_count: number;
+  vo2_l_min: number | null;
+  vco2_l_min: number | null;
+  ec_j_kg_m: number | null;
+  percent_vo2max: number | null;
+  de_kcal_h?: number | null;
+  decho_kcal_h?: number | null;
+  defat_kcal_h?: number | null;
+  depro_kcal_h?: number | null;
+  sources?: Record<string, string>;
+  warning?: string | null;
+  warnings?: MetaSoftWarning[];
+}
+
+export interface ManualRunningEconomyPayload {
+  source: string;
+  match_id: string;
+  rows: ManualRunningEconomyRow[];
+  stage_selections?: Array<{ stage_index: number; enabled: boolean }>;
+  warnings?: MetaSoftWarning[];
 }
 
 export interface MetaSoftWarning {
@@ -161,6 +197,7 @@ export interface LocalAnalysisPayload {
   };
   profile: Record<string, unknown>;
   analysis: MetaSoftAnalysis;
+  manual_running_economy?: ManualRunningEconomyPayload | null;
   warnings: MetaSoftWarning[];
   source_of_truth: Record<string, string>;
 }
@@ -192,5 +229,6 @@ export interface ReportResponse {
   profile_name: string;
   updated_paths: string[];
   confirmed_markers: ConfirmedMarkers;
+  manual_running_economy?: ManualRunningEconomyPayload | null;
   warnings: MetaSoftWarning[];
 }

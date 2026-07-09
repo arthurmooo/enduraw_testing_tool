@@ -27,7 +27,7 @@ def _cell(value: str) -> str:
     return f'<Cell><Data ss:Type="String">{value}</Data></Cell>'
 
 
-def _metasoft_xml(include_weight: bool = False) -> bytes:
+def _metasoft_xml(include_weight: bool = False, two_stages: bool = False) -> bytes:
     headers = [
         "t", "Phase", "Marqueur", "FC", "V'O2", "V'O2/kg", "RER",
         "V'E", "V'E/V'O2", "V'E/V'CO2", "BF", "v", "DE",
@@ -66,6 +66,21 @@ def _metasoft_xml(include_weight: bool = False) -> bytes:
             "0,95", "50", "20,8", "21,9", "31", "10", "760",
         ]],
     ])
+    if two_stages:
+        rows.extend([
+            [_cell(value) for value in [
+                "0:02:30,000", "Echauffement", "", "136", "2,60", "42",
+                "0,96", "54", "20,8", "21,6", "32", "12", "820",
+            ]],
+            [_cell(value) for value in [
+                "0:03:00,000", "Echauffement", "", "140", "2,80", "45",
+                "0,97", "58", "20,7", "21,3", "33", "12", "860",
+            ]],
+            [_cell(value) for value in [
+                "0:03:30,000", "Echauffement", "", "145", "3,00", "48",
+                "0,98", "62", "20,7", "21,1", "34", "12", "900",
+            ]],
+        ])
     xml_rows = "\n".join(f"<Row>{''.join(row)}</Row>" for row in rows)
     return f"""<?xml version="1.0"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
@@ -197,6 +212,31 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(payload["markers"]["SV2"]["values"]["fc_bpm"], 122)
         self.assertEqual(payload["source"], "python.build_metasoft_marker")
 
+    def test_officialize_previous_uses_window_and_keeps_clicked_time(self) -> None:
+        match_id = self._match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/markers/officialize",
+            {
+                "marker_selections": [{
+                    "name": "SV1",
+                    "mode": "previous",
+                    "t_seconds": 120,
+                    "window_start_seconds": 90,
+                    "values": {"fc_bpm": 999},
+                }]
+            },
+        )
+
+        marker = payload["markers"]["SV1"]
+        self.assertEqual(status, 200)
+        self.assertEqual(marker["mode"], "previous")
+        self.assertEqual(marker["t_seconds"], 120)
+        self.assertEqual(marker["window_start_seconds"], 90)
+        self.assertEqual(marker["window_end_seconds"], 120)
+        self.assertEqual(marker["point_count"], 2)
+        self.assertEqual(marker["values"]["fc_bpm"], 127)
+
     def test_analysis_payload_is_slim_and_officialize_still_uses_python(self) -> None:
         match_id = self._match_id()
         status, payload = self._get(f"/api/matches/{match_id}/analysis")
@@ -213,6 +253,193 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["markers"]["SV1"]["values"]["fc_bpm"], 120)
+
+    def test_manual_running_economy_ignores_react_calculated_values(self) -> None:
+        match_id = self._weighted_match_id()
+        row = {
+            "stage_index": 1,
+            "speed_kmh": 10,
+            "start_seconds": 60,
+            "end_seconds": 120,
+            "exclusions": [{"start_seconds": 80, "end_seconds": 90}],
+            "point_count": 3,
+            "vo2_l_min": 999,
+            "vco2_l_min": 999,
+            "ec_j_kg_m": 999,
+            "percent_vo2max": 999,
+            "sources": {"selection": "manual_stable_stage"},
+        }
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {"selections": [row]},
+        )
+
+        self.assertEqual(status, 200)
+        saved_row = payload["manual_running_economy"]["rows"][0]
+        self.assertNotEqual(saved_row["ec_j_kg_m"], 999)
+        self.assertNotEqual(saved_row["percent_vo2max"], 999)
+        self.assertEqual(
+            payload["manual_running_economy"]["source"],
+            "python.metasoft_analysis.manual_running_economy",
+        )
+
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["manual_running_economy"]["rows"][0]["stage_index"], 1)
+
+    def test_manual_running_economy_percent_uses_vo2max_marker_range(self) -> None:
+        match_id = self._weighted_match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {
+                "selections": [{
+                    "stage_index": 1,
+                    "start_seconds": 60,
+                    "end_seconds": 120,
+                    "exclusions": [],
+                }],
+                "marker_selections": [{
+                    "name": "VO2_max",
+                    "mode": "range",
+                    "window_start_seconds": 60,
+                    "window_end_seconds": 120,
+                }],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        row = payload["manual_running_economy"]["rows"][0]
+        self.assertAlmostEqual(row["percent_vo2max"], 100, places=2)
+        self.assertEqual(row["sources"]["vo2max"], "metasoft_marker.vo2_max")
+
+    def test_manual_running_economy_stores_only_selected_subset(self) -> None:
+        match_id = self._weighted_two_stage_match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {
+                "selections": [{
+                    "stage_index": 2,
+                    "start_seconds": 180,
+                    "end_seconds": 210,
+                    "exclusions": [],
+                }],
+                "stage_selections": [
+                    {"stage_index": 1, "enabled": False},
+                    {"stage_index": 2, "enabled": True},
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        rows = payload["manual_running_economy"]["rows"]
+        self.assertEqual([row["stage_index"] for row in rows], [2])
+        fingerprint = self.session_manager.build_match_fingerprint(
+            self.session_manager.matches[-1]
+        )
+        saved = self.session_manager.get_manual_running_economy(match_id, fingerprint)
+        self.assertEqual([row["stage_index"] for row in saved["rows"]], [2])
+        self.assertEqual(
+            saved["stage_selections"],
+            [
+                {"stage_index": 1, "enabled": False},
+                {"stage_index": 2, "enabled": True},
+            ],
+        )
+
+    def test_manual_running_economy_rejects_invalid_bounds_without_writing(self) -> None:
+        match_id = self._weighted_match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {
+                "selections": [{
+                    "stage_index": 1,
+                    "start_seconds": 120,
+                    "end_seconds": 60,
+                    "exclusions": [],
+                }]
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "invalid_running_economy_manual")
+        fingerprint = self.session_manager.build_match_fingerprint(
+            self.session_manager.matches[-1]
+        )
+        self.assertIsNone(self.session_manager.get_manual_running_economy(match_id, fingerprint))
+
+    def test_manual_running_economy_clear_removes_sidecar(self) -> None:
+        match_id = self._weighted_match_id()
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {
+                "selections": [{
+                    "stage_index": 1,
+                    "start_seconds": 60,
+                    "end_seconds": 120,
+                    "exclusions": [],
+                }]
+            },
+        )
+        self.assertEqual(status, 200)
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {"selections": []},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["manual_running_economy"])
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["manual_running_economy"])
+
+    def test_manual_running_economy_without_xml_weight_has_no_profile_fallback(self) -> None:
+        match_id = self._match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {
+                "selections": [{
+                    "stage_index": 1,
+                    "start_seconds": 60,
+                    "end_seconds": 120,
+                    "exclusions": [],
+                }]
+            },
+        )
+
+        self.assertEqual(status, 200)
+        row = payload["manual_running_economy"]["rows"][0]
+        self.assertIsNone(row["ec_j_kg_m"])
+        self.assertIn(
+            "missing_xml_mass_kg",
+            {warning["code"] for warning in payload["manual_running_economy"]["warnings"]},
+        )
+
+    def test_manual_running_economy_fingerprint_rejects_stale_and_legacy(self) -> None:
+        match_id = self._weighted_match_id()
+        match = self.session_manager.matches[-1]
+        fingerprint = self.session_manager.build_match_fingerprint(match)
+        data = {
+            "source": "python.metasoft_analysis.manual_running_economy",
+            "rows": [{"stage_index": 1, "ec_j_kg_m": 4.2}],
+        }
+
+        self.session_manager.save_manual_running_economy(match_id, data, fingerprint)
+        self.assertEqual(
+            self.session_manager.get_manual_running_economy(match_id, fingerprint),
+            data,
+        )
+        stale = {**fingerprint, "xml": {**fingerprint["xml"], "size": 1}}
+        self.assertIsNone(self.session_manager.get_manual_running_economy(match_id, stale))
+
+        path = self.session_manager.current_session_path / "running_economy_manual.json"
+        path.write_text(json.dumps({match_id: data}), encoding="utf-8")
+        self.assertIsNone(self.session_manager.get_manual_running_economy(match_id, fingerprint))
 
     def test_officialize_rejects_point_times_outside_raw_bounds(self) -> None:
         match_id = self._match_id()
@@ -308,6 +535,70 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(self.server.consume_pending_profile_updates(), [payload["profile_name"]])
         self.assertEqual(self.server.consume_pending_profile_updates(), [])
 
+    def test_report_conflict_does_not_persist_manual_running_economy(self) -> None:
+        match_id = self._weighted_match_id()
+        match = self.session_manager.matches[-1]
+        fingerprint = self.session_manager.build_match_fingerprint(match)
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [{"name": "SV1", "mode": "point", "t_seconds": 60}],
+                "manual_running_economy_selections": [{
+                    "stage_index": 1,
+                    "start_seconds": 60,
+                    "end_seconds": 120,
+                    "exclusions": [],
+                }],
+                "manual_running_economy_stage_selections": [
+                    {"stage_index": 1, "enabled": True},
+                ],
+            },
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "profile_conflict")
+        self.assertIsNone(
+            self.session_manager.get_manual_running_economy(match_id, fingerprint)
+        )
+
+    def test_report_persists_manual_running_economy_with_final_fingerprint(self) -> None:
+        match_id = self._weighted_match_id()
+        match = self.session_manager.matches[-1]
+        old_fingerprint = self.session_manager.build_match_fingerprint(match)
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [{"name": "SV1", "mode": "point", "t_seconds": 60}],
+                "manual_running_economy_selections": [{
+                    "stage_index": 1,
+                    "start_seconds": 60,
+                    "end_seconds": 120,
+                    "exclusions": [],
+                }],
+                "manual_running_economy_stage_selections": [
+                    {"stage_index": 1, "enabled": True},
+                ],
+                "conflict_policy": "overwrite",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["manual_running_economy"]["rows"][0]["stage_index"], 1)
+        self.assertIsNone(
+            self.session_manager.get_manual_running_economy(match_id, old_fingerprint)
+        )
+
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["manual_running_economy"]["rows"][0]["stage_index"], 1)
+        self.assertEqual(
+            payload["manual_running_economy"]["stage_selections"],
+            [{"stage_index": 1, "enabled": True}],
+        )
+
     def test_react_export_endpoint_is_removed(self) -> None:
         match_id = self._match_id()
         status, payload = self._post(
@@ -328,6 +619,28 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         status, payload = self._get("/api/matches")
         self.assertEqual(status, 200)
         return payload["matches"][0]["match_id"]
+
+    def _weighted_match_id(self) -> str:
+        profile_name = self.session_manager.add_profile(_profile())
+        source_xml = self.base / "weighted_metasoft.xml"
+        source_xml.write_bytes(_metasoft_xml(include_weight=True))
+        xml_filename = self.session_manager.import_xml(str(source_xml))
+        self.session_manager.create_match(profile_name, xml_filename)
+        return self.server.url_for_match({
+            "profile_name": profile_name,
+            "xml_filename": xml_filename,
+        }).split("match_id=", 1)[1].split("&", 1)[0]
+
+    def _weighted_two_stage_match_id(self) -> str:
+        profile_name = self.session_manager.add_profile(_profile())
+        source_xml = self.base / "weighted_two_stage_metasoft.xml"
+        source_xml.write_bytes(_metasoft_xml(include_weight=True, two_stages=True))
+        xml_filename = self.session_manager.import_xml(str(source_xml))
+        self.session_manager.create_match(profile_name, xml_filename)
+        return self.server.url_for_match({
+            "profile_name": profile_name,
+            "xml_filename": xml_filename,
+        }).split("match_id=", 1)[1].split("&", 1)[0]
 
     def _get(self, path: str, token: str | None = None):
         return self._request("GET", path, None, token)

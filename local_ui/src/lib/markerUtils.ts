@@ -11,6 +11,7 @@ import type {
 
 export const MARKER_NAMES: MetaSoftMarkerName[] = ["SV1", "SV2", "VO2_max", "VMA"];
 const DEFAULT_WINDOW_SECONDS = 120;
+const DEFAULT_PREVIOUS_SECONDS = 10;
 
 export function createInitialMarkers(analysis: MetaSoftAnalysis): DraftMarkers {
   return Object.fromEntries(
@@ -26,8 +27,8 @@ export function buildDraftMarker(
   points: MetaSoftPoint[],
   tSeconds: number | null,
   mode: MarkerMode = "range",
-  windowStart = mode === "point" || tSeconds === null ? null : tSeconds - DEFAULT_WINDOW_SECONDS,
-  windowEnd = mode === "point" || tSeconds === null ? null : tSeconds + DEFAULT_WINDOW_SECONDS,
+  windowStart = defaultWindowStart(mode, tSeconds),
+  windowEnd = defaultWindowEnd(mode, tSeconds),
 ): DraftMarker {
   const boundedStart = windowStart === null ? null : Math.max(0, windowStart);
   const boundedEnd = windowEnd === null ? null : Math.max(boundedStart ?? 0, windowEnd);
@@ -67,6 +68,20 @@ export function serializeMarkerSelections(markers: DraftMarkers): MarkerSelectio
       if (marker.t_seconds === null) return [];
       return [{ name, mode: "point", t_seconds: marker.t_seconds }];
     }
+    if (marker.mode === "previous") {
+      if (
+        marker.t_seconds === null
+        || marker.window_start_seconds === null
+        || marker.window_end_seconds === null
+      ) return [];
+      return [{
+        name,
+        mode: "previous",
+        t_seconds: marker.t_seconds,
+        window_start_seconds: marker.window_start_seconds,
+        window_end_seconds: marker.window_end_seconds,
+      }];
+    }
     if (marker.window_start_seconds === null || marker.window_end_seconds === null) return [];
     return [{
       name,
@@ -76,6 +91,16 @@ export function serializeMarkerSelections(markers: DraftMarkers): MarkerSelectio
       window_end_seconds: marker.window_end_seconds,
     }];
   });
+}
+
+function defaultWindowStart(mode: MarkerMode, tSeconds: number | null): number | null {
+  if (mode === "point" || tSeconds === null) return null;
+  return tSeconds - (mode === "previous" ? DEFAULT_PREVIOUS_SECONDS : DEFAULT_WINDOW_SECONDS);
+}
+
+function defaultWindowEnd(mode: MarkerMode, tSeconds: number | null): number | null {
+  if (mode === "point" || tSeconds === null) return null;
+  return mode === "previous" ? tSeconds : tSeconds + DEFAULT_WINDOW_SECONDS;
 }
 
 export function nearestPoint(points: MetaSoftPoint[], tSeconds: number | null): MetaSoftPoint | null {
