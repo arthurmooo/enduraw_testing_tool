@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import Plot from "react-plotly.js";
 import { Maximize2, X } from "lucide-react";
@@ -96,6 +96,8 @@ function MetaSoftChartComponent({
   const [localXRange, setLocalXRange] = useState<[number, number] | null>(null);
   const [plotRevision, setPlotRevision] = useState(0);
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
+  const modalTitleId = useId();
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const availableSeries = useMemo(
     () => graph.series.filter((series) => isSeriesAvailable(analysis, graph, series)),
     [analysis, graph],
@@ -121,6 +123,17 @@ function MetaSoftChartComponent({
     if (graph.kind === "time" && timeZoomResetRevision > 0) setPlotRevision((revision) => revision + 1);
   }, [graph.kind, timeZoomResetRevision]);
   useEffect(() => setHiddenSeries(new Set()), [analysis.file.filename, graph.id]);
+  useEffect(() => {
+    if (fullscreen) closeButtonRef.current?.focus();
+  }, [fullscreen]);
+  useEffect(() => {
+    if (!fullscreen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onFullscreenChange(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [fullscreen, onFullscreenChange]);
   useEffect(() => {
     debugZoom("chart mounted", { graphId: graph.id, kind: graph.kind, timeZoomResetRevision, fullscreen });
     return () => debugZoom("chart unmounted", { graphId: graph.id, kind: graph.kind, timeZoomResetRevision, fullscreen });
@@ -212,13 +225,14 @@ function MetaSoftChartComponent({
         <p className="missing-series">Absent XML : {missingSeries.map((series) => series.label).join(", ")}</p>
       )}
       {fullscreen && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby={modalTitleId}>
           <div className="modal-panel">
             <div className="modal-header">
-              <h2>{graph.title}</h2>
+              <h2 id={modalTitleId}>Plein ecran - {graph.title}</h2>
               <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
               <button
                 type="button"
+                ref={closeButtonRef}
                 className="icon-button push-right"
                 onClick={() => onFullscreenChange(false)}
                 aria-label="Fermer le plein ecran"
@@ -709,7 +723,7 @@ function PointChartBody({
     <div
       ref={wrapperRef}
       className="chart-body"
-      style={{ cursor: cursorForMarkerDrag(dragPreview?.part ?? markerHover?.part ?? null, Boolean(dragPreview)) }}
+      style={{ height, cursor: cursorForMarkerDrag(dragPreview?.part ?? markerHover?.part ?? null, Boolean(dragPreview)) }}
       onContextMenu={handleContextMenu}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}

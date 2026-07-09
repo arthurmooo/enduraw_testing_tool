@@ -35,6 +35,21 @@ interface Props {
   analysis: MetaSoftAnalysis;
   profileVo2maxMlKgMin: number | null;
   initialManualEconomy?: ManualRunningEconomyPayload | null;
+  onReportSummaryChange?: (summary: ManualEconomyReportSummary | null) => void;
+}
+
+export interface ManualEconomyReportSummary {
+  includedCount: number;
+  excludedCount: number;
+  rows: Array<{
+    stageIndex: number;
+    enabled: boolean;
+    speed: string;
+    bounds: string;
+    pointCount: number;
+    ec: string;
+    warning: string | null;
+  }>;
 }
 
 export interface RunningEconomyManualHandle {
@@ -48,6 +63,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
   analysis,
   profileVo2maxMlKgMin,
   initialManualEconomy,
+  onReportSummaryChange,
 }: Props, ref) {
   const stableStages = useMemo(() => analysis.warmup_stages.filter(hasStageBounds), [analysis.warmup_stages]);
   const [selectedStageIndex, setSelectedStageIndex] = useState(stableStages[0]?.stage_index ?? 0);
@@ -179,6 +195,30 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
       manual_running_economy_stage_selections: stageSelections,
     };
   }, [drafts, stableStages]);
+  const reportSummary = useMemo<ManualEconomyReportSummary>(() => {
+    const summaryRows = rows.map((row) => {
+      const stage = stableStages.find((item) => item.stage_index === row.stage_index);
+      const draft = stage ? drafts[row.stage_index] ?? initialEconomyDraft(stage) : null;
+      return {
+        stageIndex: row.stage_index,
+        enabled: Boolean(draft?.enabled),
+        speed: formatNumber(row.speed_kmh, 1),
+        bounds: `${secondsToClock(row.start_seconds)} - ${secondsToClock(row.end_seconds)}`,
+        pointCount: row.point_count,
+        ec: formatNumber(row.ec_j_kg_m, 2),
+        warning: row.warning ?? null,
+      };
+    });
+    return {
+      includedCount: summaryRows.filter((row) => row.enabled).length,
+      excludedCount: summaryRows.filter((row) => !row.enabled).length,
+      rows: summaryRows,
+    };
+  }, [drafts, rows, stableStages]);
+
+  useEffect(() => {
+    onReportSummaryChange?.(stableStages.length ? reportSummary : null);
+  }, [onReportSummaryChange, reportSummary, stableStages.length]);
 
   useImperativeHandle(ref, () => ({
     reportPayload: buildReportPayload,
@@ -331,7 +371,11 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
         <section className="panel">
           <div className="panel-title-row">
             <h2>Tableau EC</h2>
-            <span className="status-muted">J/kg/m</span>
+            <div className="table-summary">
+              <span className="status-ok">{reportSummary.includedCount} inclus</span>
+              <span className="status-muted">{reportSummary.excludedCount} ecartes</span>
+              <span className="status-muted">J/kg/m</span>
+            </div>
           </div>
           <div className="table-wrap">
             <table>
@@ -358,7 +402,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
                   const draft = drafts[row.stage_index] ?? initialEconomyDraft(stage);
                   const rowClass = [
                     row.stage_index === selectedStage?.stage_index ? "selected-row" : "",
-                    draft.enabled ? "" : "muted-row",
+                    draft.enabled ? "ec-row-included" : "muted-row ec-row-excluded",
                   ].filter(Boolean).join(" ");
                   return (
                     <tr
@@ -375,7 +419,8 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
                       <td>
                         <button
                           type="button"
-                          className={draft.enabled ? "table-icon-button active-action" : "table-icon-button"}
+                          className={draft.enabled ? "table-icon-button status-button status-button-ok" : "table-icon-button status-button"}
+                          aria-pressed={draft.enabled}
                           onClick={(event) => {
                             event.stopPropagation();
                             toggleStageEnabled(stage);

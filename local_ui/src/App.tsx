@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, FileUp, SlidersHorizontal } from "lucide-react";
-import { AnalysisExportSection } from "./components/AnalysisExportSection";
+import { AnalysisExportSection, type MarkerReportSummaryItem } from "./components/AnalysisExportSection";
 import { CursorRail } from "./components/CursorRail";
 import { MarkerPanel } from "./components/MarkerPanel";
 import { MetaSoftChart } from "./components/MetaSoftChart";
-import { RunningEconomyManualSection, type RunningEconomyManualHandle } from "./components/RunningEconomyManualSection";
+import {
+  RunningEconomyManualSection,
+  type ManualEconomyReportSummary,
+  type RunningEconomyManualHandle,
+} from "./components/RunningEconomyManualSection";
 import { GRAPH_CONFIGS } from "./lib/graphConfig";
 import { ApiError, apiGet, apiPost, getBootstrap } from "./lib/localApi";
-import { buildDraftMarker, createInitialMarkers, serializeMarkerSelections } from "./lib/markerUtils";
+import {
+  buildDraftMarker,
+  createInitialMarkers,
+  formatNumber,
+  MARKER_NAMES,
+  secondsToClock,
+  serializeMarkerSelections,
+} from "./lib/markerUtils";
 import type {
   ConfirmedMarkers,
   DraftMarkers,
@@ -29,6 +40,7 @@ const READING_GRAPH_CONFIGS = GRAPH_CONFIGS.filter((graph) => graph.source === "
 const DEFAULT_READING_GRAPH_ID = READING_GRAPH_CONFIGS.some((graph) => graph.id === "vo2_vco2_time")
   ? "vo2_vco2_time"
   : READING_GRAPH_CONFIGS[0]?.id;
+type ReadingViewMode = "all" | "focus";
 const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
 
 export default function App() {
@@ -45,11 +57,12 @@ export default function App() {
   const [fullscreenGraphId, setFullscreenGraphId] = useState<string | null>(null);
   const [cursorPoint, setCursorPoint] = useState<MetaSoftPoint | null>(null);
   const [selectedReadingGraphId, setSelectedReadingGraphId] = useState(DEFAULT_READING_GRAPH_ID);
-  const [showAllReadingGraphs, setShowAllReadingGraphs] = useState(false);
+  const [readingViewMode, setReadingViewMode] = useState<ReadingViewMode>("all");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [conflicts, setConflicts] = useState<ProfileConflict[]>([]);
+  const [manualEconomyReportSummary, setManualEconomyReportSummary] = useState<ManualEconomyReportSummary | null>(null);
   const manualEconomyRef = useRef<RunningEconomyManualHandle | null>(null);
   const ignoreTimeRelayoutUntilRef = useRef(0);
   const timeXRangeRef = useRef<[number, number] | null>(null);
@@ -82,6 +95,8 @@ export default function App() {
         blockedResetGraphIdRef.current = null;
         setFullscreenGraphId(null);
         setTimeXRange(null);
+        setReadingViewMode("all");
+        setManualEconomyReportSummary(null);
       } catch (err) {
         if (!cancelled) setError(errorMessage(err));
       } finally {
@@ -229,7 +244,7 @@ export default function App() {
   );
   const selectedReadingGraph = READING_GRAPH_CONFIGS.find((graph) => graph.id === selectedReadingGraphId)
     ?? READING_GRAPH_CONFIGS[0];
-  const secondaryReadingGraphs = READING_GRAPH_CONFIGS.filter((graph) => graph.id !== selectedReadingGraph?.id);
+  const markerReportSummary = buildMarkerReportSummary(draftMarkers, confirmedMarkers, dirtyMarkers);
 
   const renderReadingChart = (graph: (typeof READING_GRAPH_CONFIGS)[number], height?: number) => (
     <MetaSoftChart
@@ -349,46 +364,54 @@ export default function App() {
         <div className="section-head reading-section-head">
           <div>
             <h2>Lecture</h2>
-            <p>Graphe principal pour lire le test, grille complete disponible a la demande.</p>
+            <p>{readingViewMode === "all" ? "Tous les graphes de lecture visibles." : "Graphe principal pour travailler au calme."}</p>
           </div>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => setShowAllReadingGraphs((current) => !current)}
-            aria-expanded={showAllReadingGraphs}
-          >
-            {showAllReadingGraphs ? "Replier la grille" : "Tous les graphes"}
-          </button>
-        </div>
-        <div className="reading-workspace">
-          <div className="reading-main">
-            {selectedReadingGraph && renderReadingChart(selectedReadingGraph, 430)}
-            <div className="graph-picker" aria-label="Choisir le graphe principal">
-              {READING_GRAPH_CONFIGS.map((graph) => (
-                <button
-                  key={graph.id}
-                  type="button"
-                  className={graph.id === selectedReadingGraph?.id ? "graph-picker-button active" : "graph-picker-button"}
-                  onClick={() => setSelectedReadingGraphId(graph.id)}
-                  aria-pressed={graph.id === selectedReadingGraph?.id}
-                >
-                  <span>{graph.title}</span>
-                  <small>{graph.kind === "time" ? "Temps" : "Relation"}</small>
-                </button>
-              ))}
-            </div>
+          <div className="view-mode-toggle" aria-label="Mode de vue lecture">
+            <button
+              type="button"
+              className={readingViewMode === "all" ? "active" : ""}
+              onClick={() => setReadingViewMode("all")}
+              aria-pressed={readingViewMode === "all"}
+            >
+              Tout
+            </button>
+            <button
+              type="button"
+              className={readingViewMode === "focus" ? "active" : ""}
+              onClick={() => setReadingViewMode("focus")}
+              aria-pressed={readingViewMode === "focus"}
+            >
+              Focus
+            </button>
           </div>
-          <CursorRail analysis={analysis} cursorPoint={cursorPoint} />
         </div>
-        {showAllReadingGraphs && (
-          <div className="reading-secondary">
-            <div className="reading-secondary-head">
-              <h2>Tous les graphes</h2>
-              <span className="status-muted">{secondaryReadingGraphs.length} graphes secondaires</span>
-            </div>
+        {readingViewMode === "all" ? (
+          <div className="reading-workspace">
             <div className="charts-grid">
-              {secondaryReadingGraphs.map((graph) => renderReadingChart(graph))}
+              {READING_GRAPH_CONFIGS.map((graph) => renderReadingChart(graph))}
             </div>
+            <CursorRail analysis={analysis} cursorPoint={cursorPoint} />
+          </div>
+        ) : (
+          <div className="reading-workspace">
+            <div className="reading-main">
+              {selectedReadingGraph && renderReadingChart(selectedReadingGraph, 430)}
+              <div className="graph-picker" aria-label="Choisir le graphe principal">
+                {READING_GRAPH_CONFIGS.map((graph) => (
+                  <button
+                    key={graph.id}
+                    type="button"
+                    className={graph.id === selectedReadingGraph?.id ? "graph-picker-button active" : "graph-picker-button"}
+                    onClick={() => setSelectedReadingGraphId(graph.id)}
+                    aria-pressed={graph.id === selectedReadingGraph?.id}
+                  >
+                    <span>{graph.title}</span>
+                    <small>{graph.kind === "time" ? "Temps" : "Relation"}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <CursorRail analysis={analysis} cursorPoint={cursorPoint} />
           </div>
         )}
       </section>
@@ -407,6 +430,7 @@ export default function App() {
         analysis={analysis}
         profileVo2maxMlKgMin={markerVo2maxMlKgMin}
         initialManualEconomy={payload.manual_running_economy}
+        onReportSummaryChange={setManualEconomyReportSummary}
       />
 
       <AnalysisExportSection
@@ -414,6 +438,9 @@ export default function App() {
         error={error}
         report={report}
         conflicts={conflicts}
+        markerSummary={markerReportSummary}
+        manualEconomySummary={manualEconomyReportSummary}
+        warnings={analysis.warnings}
         onReport={() => void reportProfile(false)}
         onReportOverwrite={() => void reportProfile(true)}
       />
@@ -461,6 +488,32 @@ function currentMarkerVo2maxMlKgMin(
     : confirmedMarkers.VO2_max ?? draftMarkers.VO2_max;
   const value = marker.values.vo2_ml_kg_min;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function buildMarkerReportSummary(
+  draftMarkers: DraftMarkers,
+  confirmedMarkers: ConfirmedMarkers,
+  dirtyMarkers: Set<MetaSoftMarkerName>,
+): MarkerReportSummaryItem[] {
+  return MARKER_NAMES.map((name) => {
+    const draft = draftMarkers[name];
+    const confirmed = confirmedMarkers[name];
+    const dirty = dirtyMarkers.has(name);
+    const official = confirmed && !dirty ? confirmed : null;
+    const row = official ?? draft;
+    const status = dirty ? "A reporter" : official ? "Officiel" : "Brouillon";
+    return {
+      name: name === "VO2_max" ? "VO2max" : name,
+      status,
+      time: secondsToClock(row.t_seconds),
+      window: row.window_start_seconds === null || row.window_end_seconds === null
+        ? "-"
+        : `${secondsToClock(row.window_start_seconds)} - ${secondsToClock(row.window_end_seconds)}`,
+      fc: formatNumber(row.values.fc_bpm, 0),
+      vo2kg: formatNumber(row.values.vo2_ml_kg_min, 1),
+      speed: formatNumber(row.values.speed_kmh, 1),
+    };
+  });
 }
 
 function sameCursorPoint(left: MetaSoftPoint | null, right: MetaSoftPoint | null): boolean {

@@ -19,11 +19,24 @@ export function MarkerPanel({
     dirtyMarkers,
     profileVo2maxMlKgMin,
   );
+  const statusCounts = MARKER_NAMES.reduce((counts, name) => {
+    const dirty = dirtyMarkers.has(name);
+    const official = confirmedMarkers[name] && !dirty;
+    if (dirty) counts.dirty += 1;
+    else if (official) counts.official += 1;
+    else counts.draft += 1;
+    return counts;
+  }, { official: 0, dirty: 0, draft: 0 });
 
   return (
     <section className="panel marker-panel">
       <div className="panel-title-row">
         <h2>Marqueurs</h2>
+        <div className="table-summary">
+          <span className="status-ok">{statusCounts.official} officiels</span>
+          <span className="status-warn">{statusCounts.dirty} a reporter</span>
+          <span className="status-muted">{statusCounts.draft} brouillons</span>
+        </div>
       </div>
       <div className="table-wrap">
         <table>
@@ -48,8 +61,9 @@ export function MarkerPanel({
               const dirty = dirtyMarkers.has(name);
               const official = confirmed && !dirty ? confirmed : null;
               const row = official ?? draft;
+              const rowClass = dirty ? "marker-row-dirty" : official ? "marker-row-official" : "marker-row-draft";
               return (
-                <tr key={name}>
+                <tr key={name} className={rowClass}>
                   <td>
                     <span className="marker-name" style={{ color: MARKER_COLORS[name] }}>
                       {name === "VO2_max" ? "VO2max" : name}

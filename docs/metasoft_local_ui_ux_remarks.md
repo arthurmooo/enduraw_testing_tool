@@ -1094,29 +1094,25 @@ Risque:
 - Faible. Le principal arbitrage non bloquant est le libelle court des graphes:
   il faut reutiliser `graph.title` pour eviter un deuxieme dictionnaire.
 
-#### 3. Grille complete secondaire et repliable
+#### 3. Grille complete secondaire visible
 
 Decision technique exacte:
 
-- Ajouter un etat UI local `showAllReadingGraphs`.
-- Remplacer l'affichage permanent de `.charts-grid` par une section secondaire
-  `Tous les graphes`, fermee par defaut.
-- Quand la section est fermee, ne pas monter les `MetaSoftChart` secondaires:
-  cela evite de rendre plus de Plotly que necessaire.
-- Quand elle est ouverte, rendre la grille existante avec les memes props,
-  en excluant le graphe deja affiche en focus pour eviter un double rendu
-  inutile.
+- Garder une section secondaire visible directement avec tous les graphes de
+  lecture sauf le graphe deja affiche en focus.
+- Ne pas ajouter de collapse par defaut: la comparaison simultanee est une
+  contrainte produit.
+- Rendre la grille existante avec les memes props, en excluant le graphe deja
+  affiche en focus pour eviter un double rendu inutile.
 - Conserver les classes de grille existantes autant que possible.
 
 Fichiers/fonctions/classes probables:
 
 - `local_ui/src/App.tsx`
-  - etat `showAllReadingGraphs`
-  - bouton d'ouverture/repli
-  - rendu conditionnel de la grille secondaire
+  - rendu permanent de la grille secondaire
 - `local_ui/src/styles.css`
-  - `.reading-secondary`
-  - `.reading-secondary-header`
+  - `.view-mode-toggle`
+  - `.reading-workspace`
   - ajustements mineurs de `.charts-grid` si necessaire
 
 Invariant a preserver:
@@ -1128,18 +1124,18 @@ Invariant a preserver:
 
 Critere d'acceptation testable:
 
-- Par defaut, la page ne montre pas la grille complete.
-- Ouvrir `Tous les graphes` affiche les graphes restants avec zoom, hover,
-  marqueurs, plein ecran et toggles.
-- Refermer la section retire visuellement la grille sans modifier les donnees,
-  les marqueurs ou les reglages globaux.
+- Par defaut, le graphe focus et tous les autres graphes de lecture sont
+  visibles.
+- Les graphes secondaires affichent zoom, hover, marqueurs, plein ecran et
+  toggles.
+- Changer le graphe focus garde tous les graphes visibles sans doublonner le
+  graphe focus.
 
 Risque:
 
-- Moyen. Le hover synchronise ne peut concerner que les graphes montes; c'est
-  acceptable si la grille est explicite et ouverte a la demande. Les etats
-  globaux (`cursorPoint`, `timeXRange`) restent disponibles pour les graphes
-  qui seront montes ensuite.
+- Moyen. Le cout Plotly redevient celui d'une vue simultanee, mais c'est le
+  comportement produit demande. La compensation reste l'absence de double rendu
+  du graphe focus dans la grille secondaire.
 
 #### 4. Repositionner `Valeurs au curseur` et `Warnings`
 
@@ -1235,23 +1231,22 @@ Risque:
 ### Strategie performance
 
 - Ne pas rendre deux fois le graphe focus.
-- Ne pas monter la grille complete tant qu'elle est repliee.
 - Ne pas creer de mini graphes Plotly: le selecteur est textuel.
 - Reutiliser `MetaSoftChart` pour eviter une logique de plotting parallele.
-- Accepter que l'ouverture de `Tous les graphes` retrouve le cout actuel:
-  l'utilisateur l'a demande explicitement et les features restent completes.
+- Accepter le cout de la vue simultanee: l'utilisateur l'a demande
+  explicitement et les features restent completes.
 
 ### Strategie de test apres GO implementation
 
 - `npm --prefix local_ui run build`.
 - `git diff --check`.
 - Verification Safari manuelle:
-  - ouverture initiale: un graphe principal, rail curseur/warnings, grille
-    secondaire repliee;
+  - ouverture initiale: un graphe principal, rail curseur/warnings, graphes
+    secondaires visibles;
   - selection de plusieurs graphes time et scatter;
-  - zoom sur graphe principal puis ouverture de la grille: les graphes time
-    montes respectent le range global;
-  - double-clic reset depuis graphe principal et depuis grille ouverte;
+  - zoom sur graphe principal: les graphes time montes respectent le range
+    global;
+  - double-clic reset depuis graphe principal et depuis grille secondaire;
   - hover synchronise entre graphes montes;
   - toggles series et plein ecran depuis graphe principal et secondaire;
   - placement/deplacement/suppression de marqueur;
@@ -1283,6 +1278,336 @@ separe de la lecture brute, et la performance s'ameliore par defaut en montant
 moins de Plotly. Aucun arbitrage bloquant n'est identifie; le choix du graphe
 principal par defaut (`V'O2, V'CO2`) peut etre change sans impact
 architectural si Arthur prefere une autre courbe.
+
+### Note correction utilisateur apres Lot 4
+
+- Decision finale utilisateur: deux modes de vue lecture.
+- Mode `Tout` par defaut: tous les graphes de lecture sont visibles
+  simultanement, sans graphe cache.
+- Mode `Focus`: graphe principal + selecteur, pour travailler au calme sur un
+  graphe.
+- Le plein ecran reste disponible sur chaque graphe dans les deux modes.
+
+## Plan d'execution Lot 4 - GO candidate
+
+Objectif: durcir l'UI locale MetaSoft avant validation finale, sans changer les
+calculs, les series, les unites, les callbacks metier, les exports ou les
+payloads report.
+
+### Etat actuel
+
+- `App.tsx` orchestre le flux complet: lecture, marqueurs, EC et report. Le
+  report appelle `serializeMarkerSelections(draftMarkers)` puis
+  `manualEconomyRef.current?.reportPayload()` avant `apiPost`.
+- `AnalysisExportSection` affiche seulement le bouton `Reporter au profil`, les
+  conflits, l'erreur et le resultat. Il ne montre pas encore ce qui va etre
+  officialise juste avant le clic.
+- `MarkerPanel` montre deja les statuts utilisateurs `Brouillon`, `A reporter`
+  et `Officiel`, mais la table reste principalement numerique: le statut ne
+  pilote pas assez la lecture de decision.
+- `RunningEconomyManualSection` possede l'etat EC courant, les lignes preview,
+  les paliers inclus/ecartes et le handle `reportPayload()`. C'est la source
+  correcte pour resumer l'EC sans recalculer ailleurs.
+- `MetaSoftChart` a deja une modale fullscreen avec `role="dialog"`,
+  `aria-modal="true"` et bouton de fermeture. Il manque encore le minimum
+  clavier attendu: focus initial clair, fermeture par `Escape`, titre relie au
+  dialog.
+- Les fixes recents a preserver sont concentres dans `MetaSoftChart`,
+  `metasoftChartHelpers`, `chartUtils`, `RunningEconomyManualSection` et
+  `App.tsx`: zoom synchronise, double-click reset, fullscreen ouvert, tooltips
+  custom/synchronises, paliers vitesse, arrondi FC, EC independante.
+
+### Probleme UX racine
+
+- La page sait calculer et reporter, mais elle ne donne pas assez de moment de
+  verification juste avant l'action irreversible de report profil.
+- Les etats importants existent, mais ils sont disperses: marqueurs dans une
+  table, EC dans une autre, warnings dans le rail. Le bouton report arrive sans
+  synthese de decision.
+- Les tables sont exactes mais pas assez hierarchisees: un utilisateur doit
+  scanner toutes les colonnes pour savoir quoi verifier, inclure ou reporter.
+- Le fullscreen fonctionne, mais il reste un overlay technique plutot qu'un
+  dialog produit accessible.
+- La root cause n'est pas metier: c'est une couche de presentation et de
+  confirmation manquante autour des donnees deja presentes.
+
+### Plan d'implementation precis
+
+#### 1. Resume avant report profil
+
+Decision technique exacte:
+
+- Ajouter un resume visible dans `AnalysisExportSection`, au-dessus du bouton
+  `Reporter au profil`, sans bouton preview separe.
+- Le resume doit afficher:
+  - marqueurs qui seront reportes, avec nom, statut utilisateur, temps/fenetre
+    et valeurs clefs deja affichees dans `MarkerPanel`;
+  - EC manuelle: paliers inclus et ecartes, vitesse, bornes, EC si disponible;
+  - warnings critiques: uniquement `warning.blocking === true`; afficher aussi
+    le nombre de warnings non bloquants sans les presenter comme critiques.
+- Ne pas appeler une API de preview et ne pas creer de nouveau payload.
+- Pour l'EC, ne pas reconstruire le calcul dans `App.tsx` ou
+  `AnalysisExportSection`. Faire remonter depuis `RunningEconomyManualSection`
+  une synthese UI derivee des `rows` et `drafts` existants.
+- Option d'implementation minimale:
+  - ajouter un type exporte `ManualEconomyReportSummary` dans
+    `RunningEconomyManualSection.tsx`;
+  - ajouter une prop optionnelle `onReportSummaryChange`;
+  - calculer la synthese via `useMemo` depuis `rows`, `drafts` et
+    `stableStages`;
+  - notifier `App.tsx` via `useEffect`;
+  - passer cette synthese a `AnalysisExportSection`.
+- Pour les marqueurs, construire dans `App.tsx` une synthese UI depuis
+  `draftMarkers`, `confirmedMarkers`, `dirtyMarkers` et les helpers existants
+  `MARKER_NAMES`, `secondsToClock`, `formatNumber`. Cette synthese n'est pas le
+  payload; elle sert seulement a l'affichage.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/App.tsx`
+  - etat `manualEconomyReportSummary`
+  - derive `markerReportSummary`
+  - passage des summaries et warnings a `AnalysisExportSection`
+- `local_ui/src/components/RunningEconomyManualSection.tsx`
+  - type `ManualEconomyReportSummary`
+  - prop `onReportSummaryChange?: (...) => void`
+  - `useMemo` + `useEffect` de synthese UI
+  - aucun changement de `buildReportPayload`
+- `local_ui/src/components/AnalysisExportSection.tsx`
+  - rendu `ReportSummary`
+  - props de synthese
+- `local_ui/src/styles.css`
+  - `.report-summary`, `.summary-grid`, `.summary-list`, badges de niveau
+
+Invariant a preserver:
+
+- `reportProfile()` continue d'envoyer exactement:
+  `marker_selections: serializeMarkerSelections(draftMarkers)` et
+  `...(manualEconomyRef.current?.reportPayload() ?? {})`.
+- Aucun changement de `manual_running_economy_selections`,
+  `manual_running_economy_stage_selections`, `marker_selections` ou
+  `conflict_policy`.
+- Le resume ne devient jamais source de verite: il lit les etats existants.
+- Les warnings critiques sont definis uniquement par `blocking === true`; ne
+  pas inferer une criticite depuis le texte.
+
+Critere d'acceptation testable:
+
+- Avant le bouton report, l'utilisateur voit les 4 marqueurs et leur statut
+  actuel.
+- Les paliers EC inclus/ecartes visibles dans le resume correspondent au
+  `Tableau EC`.
+- Les warnings bloquants sont separes des warnings non bloquants; s'il n'y en a
+  pas, le resume le dit explicitement.
+- Modifier un marqueur ou inclure/ecarter un palier EC met a jour le resume
+  sans clic preview.
+- Le payload envoye au report reste identique a avant Lot 4 pour le meme etat
+  UI.
+
+Risque:
+
+- Moyen. Le principal risque est de dupliquer de la logique d'affichage entre
+  tables et resume. Le garder acceptable en limitant le resume aux champs deja
+  visibles et en ne creant aucun helper generique "report builder".
+
+#### 2. Fullscreen accessible sans casser Plotly
+
+Decision technique exacte:
+
+- Garder le fullscreen dans `MetaSoftChart`; ne pas creer de composant modal
+  global.
+- Ajouter un `id` stable au titre de la modale via `useId()` et relier le
+  dialog avec `aria-labelledby`.
+- Donner un label explicite au dialog, par exemple `Plein ecran - {graph.title}`.
+- Quand `fullscreen` passe a `true`, focaliser le bouton fermer avec un ref.
+- Ajouter un listener `keydown` actif uniquement en fullscreen pour fermer sur
+  `Escape`.
+- Ne pas fermer au clic backdrop pour eviter les fermetures involontaires
+  pendant les interactions Plotly.
+- Ne pas toucher aux handlers Plotly de zoom, relayout, double-click ou hover.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/components/MetaSoftChart.tsx`
+  - import `useId`
+  - ref bouton fermer
+  - `useEffect` focus + `Escape`
+  - `aria-labelledby`
+- `local_ui/src/styles.css`
+  - polish `.modal-header`, `.modal-panel`, focus visible deja commun
+
+Invariant a preserver:
+
+- `fullscreenGraphId` reste l'etat unique dans `App.tsx`.
+- Le placeholder de carte reste present quand la modale est ouverte.
+- Zoom, double-click reset, tooltips, paliers vitesse et marqueurs restent
+  routes par `PointChartBody`.
+
+Critere d'acceptation testable:
+
+- Ouvrir fullscreen place le focus sur le bouton fermer.
+- `Escape` ferme la modale.
+- Tab permet d'atteindre les toggles series et le bouton fermer avec focus
+  visible.
+- Zoom, reset double-clic, hover synchronise et plein ecran restent fonctionnels
+  apres ouverture/fermeture.
+
+Risque:
+
+- Faible a moyen. Un focus trap complet serait plus lourd et plus risque avec
+  Plotly; pour Lot 4, focus initial + Escape + labels ARIA couvrent le minimum
+  utile sans perturber les interactions graphe.
+
+#### 3. Tables marqueurs et EC plus decisionnelles
+
+Decision technique exacte:
+
+- `MarkerPanel`:
+  - ajouter des classes de ligne selon statut: officiel, a reporter,
+    brouillon;
+  - ajouter une petite synthese en tete: nombre de marqueurs `Officiel`,
+    `A reporter`, `Brouillon`;
+  - conserver les valeurs et colonnes actuelles;
+  - ne pas changer `currentVo2maxMlKgMin` ni `percentVo2Max`.
+- `RunningEconomyManualSection`:
+  - ajouter une synthese en tete du `Tableau EC`: nombre de paliers inclus et
+    ecartes;
+  - rendre `Inclus` / `Ecarte` plus lisible par classes dediees, sans changer
+    le bouton qui toggle `draft.enabled`;
+  - ajouter `aria-pressed={draft.enabled}` sur le bouton inclus/ecarte;
+  - renforcer visuellement la ligne selectionnee et les lignes ecartees via CSS
+    existant ou classes dediees.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/components/MarkerPanel.tsx`
+  - derive de compteurs statut
+  - classes de ligne
+- `local_ui/src/components/RunningEconomyManualSection.tsx`
+  - derive compteurs inclus/ecartes
+  - `aria-pressed`
+  - classes de ligne/bouton si necessaire
+- `local_ui/src/styles.css`
+  - `.table-summary`
+  - `.marker-row-official`, `.marker-row-dirty`, `.marker-row-draft`
+  - `.ec-row-included`, `.ec-row-excluded`
+  - badges inclus/ecarte
+
+Invariant a preserver:
+
+- Aucun changement de valeurs, arrondis, colonnes de donnees, calcul EC ou
+  selection de points.
+- Un clic sur une ligne EC continue de selectionner le palier.
+- Un clic sur le bouton inclus/ecarte continue uniquement de toggler
+  `draft.enabled`.
+
+Critere d'acceptation testable:
+
+- La table marqueurs permet de distinguer immediatement officiel, brouillon et
+  a reporter.
+- La table EC permet de distinguer immediatement inclus et ecarte.
+- Les chiffres affiches sont identiques a avant Lot 4 pour le meme fichier.
+- Les interactions table EC restent identiques.
+
+Risque:
+
+- Faible. Risque principal: sur-colorer les tables et nuire a la lecture des
+  nombres. Garder des fonds faibles et des bordures/status pills plutot que de
+  grands aplats.
+
+#### 4. Direction visuelle Enduraw plus nette, sans refonte
+
+Decision technique exacte:
+
+- Rester dans les couleurs actuelles: fond sombre, vert Enduraw pour action
+  positive, orange pour attention, rouge uniquement risque/conflit.
+- Renforcer la hierarchie par:
+  - titres de sections plus nets;
+  - spacing coherent entre section, panel et table;
+  - badges de statut reutilisant `.status-*`;
+  - bordures actives sobres sur lignes/paliers importants.
+- Ne pas ajouter de hero, illustration, gradient decoratif, cartes imbriquees,
+  design system, tokens globaux massifs ou nouvelle dependance.
+- Si du CSS commun est ajoute, le limiter a des classes de presentation
+  concretes reutilisees par ce lot.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/styles.css`
+  - petites classes de hierarchie et decision
+- Eventuellement `AnalysisExportSection.tsx`, `MarkerPanel.tsx`,
+  `RunningEconomyManualSection.tsx` pour appliquer les classes.
+
+Invariant a preserver:
+
+- La DA reste celle de l'UI locale actuelle.
+- Pas de changement structurel de navigation Lot 3.
+- Pas de carte dans carte: le resume report vit dans le panel report existant,
+  avec blocs internes plats.
+
+Critere d'acceptation testable:
+
+- La page reste sobre et operationnelle, pas marketing.
+- Les etats principaux se lisent avant les details numeriques.
+- Aucun texte ne deborde sur desktop, largeur intermediaire ou mobile.
+
+Risque:
+
+- Faible. Le risque est de refaire le style au lieu de durcir le produit; le GO
+  implementation doit rester limite aux zones report, tables et fullscreen.
+
+### Strategie pour preserver les fixes recents
+
+- Ne pas toucher a `chartUtils.ts` ni aux helpers de zoom sauf bug bloquant
+  decouvert.
+- Ne pas modifier `buildCursorAnnotations`, les hovertemplates time/scatter ou
+  `hoverinfo: "none"` des time charts.
+- Ne pas changer `handleTimeXRangeChange`, `timeRangeKey`,
+  `timeZoomResetRevision` ou les guards de reset.
+- Ne pas modifier la logique des paliers vitesse ni les couleurs/taille deja
+  validees.
+- Ne pas changer `formatNumber` ni l'arrondi FC.
+- Ne pas deplacer l'EC dans la lecture; seulement resumer son etat avant report.
+
+### Strategie de test apres GO implementation
+
+- `npm --prefix local_ui run build`.
+- `git diff --check`.
+- Verification Safari manuelle:
+  - resume report avant clic, avec marqueurs, EC inclus/ecartes et warnings;
+  - modification d'un marqueur puis resume qui passe `A reporter`;
+  - toggle EC `Inclus` / `Ecarte` puis resume mis a jour;
+  - report profil: payload et comportement inchanges, conflits toujours
+    affiches;
+  - fullscreen: ouverture, focus fermer, `Escape`, toggles series, zoom,
+    double-click reset, hover;
+  - tables marqueurs et EC lisibles sur desktop, largeur intermediaire et
+    mobile;
+  - regression Lot 1/2/3: tooltips uniques, vitesse non dupliquee, tooltip EC
+    lisible, artefact `Terminer`, vue simultanee des graphes ouverte par
+    defaut.
+
+### Points hors scope Lot 4
+
+- Backend Python, endpoints, BDD/Mongo, stockage session.
+- API preview separee ou nouveau bouton preview.
+- Changement des calculs MetaSoft, EC, VO2, FC, RER, DE ou derives.
+- Changement des payloads report, serialization JSON, noms de champs ou
+  conflict policy.
+- Refonte graphique globale, nouvelle navigation, nouveau design system,
+  nouvelle dependance.
+- Focus trap modal complet si le minimum clavier fonctionne; a reevaluer plus
+  tard seulement si usage clavier strict requis.
+
+### Verdict
+
+GO candidate.
+
+Justification: le lot est faisable en frontend uniquement, avec une synthese
+UI lue depuis les etats deja proprietaires (`draftMarkers` dans `App.tsx`, EC
+dans `RunningEconomyManualSection`) et sans toucher aux chemins de calcul ou de
+payload. Le seul point d'attention est la remontee de la synthese EC: elle doit
+rester une vue derivee, pas une deuxieme source de verite.
 
 ### Lot 3 - Rehierarchiser la lecture
 
