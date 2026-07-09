@@ -308,7 +308,7 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(self.server.consume_pending_profile_updates(), [payload["profile_name"]])
         self.assertEqual(self.server.consume_pending_profile_updates(), [])
 
-    def test_export_saves_json_sidecar_and_marks_match_exported(self) -> None:
+    def test_react_export_endpoint_is_removed(self) -> None:
         match_id = self._match_id()
         status, payload = self._post(
             f"/api/matches/{match_id}/export",
@@ -316,25 +316,13 @@ class MetaSoftLocalApiTest(unittest.TestCase):
                 "marker_selections": [
                     {"name": "VMA", "mode": "point", "t_seconds": 120}
                 ],
-                "include_audit_points": True,
             },
         )
 
-        self.assertEqual(status, 200)
-        json_path = Path(payload["json"]["path"])
-        audit_path = Path(payload["audit"]["path"])
-        self.assertTrue(json_path.exists())
-        self.assertTrue(audit_path.exists())
-        self.assertEqual(payload["confirmed_markers"]["VMA"]["values"]["vma"], 10)
-
-        exported = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(exported["seuils"]["VMA"]["valeur"], 10)
-        sidecar = json.loads(audit_path.read_text(encoding="utf-8"))
-        self.assertEqual(sidecar["markers"]["VMA"]["official_source"], "build_metasoft_marker")
-        self.assertIn("audit_points", sidecar)
-
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"]["code"], "match_not_found")
         self.session_manager._load_matches()
-        self.assertTrue(self.session_manager.matches[0].exported)
+        self.assertFalse(self.session_manager.matches[0].exported)
 
     def _match_id(self) -> str:
         status, payload = self._get("/api/matches")

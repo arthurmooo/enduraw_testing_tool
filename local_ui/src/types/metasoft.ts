@@ -194,12 +194,3 @@ export interface ReportResponse {
   confirmed_markers: ConfirmedMarkers;
   warnings: MetaSoftWarning[];
 }
-
-export interface ExportResponse {
-  ok: true;
-  json: { filename: string; path: string };
-  audit: { filename: string; path: string };
-  confirmed_markers: ConfirmedMarkers;
-  warnings: MetaSoftWarning[];
-  blocking_errors: MetaSoftWarning[];
-}

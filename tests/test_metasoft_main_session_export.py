@@ -36,6 +36,7 @@ except ModuleNotFoundError:
     sys.modules["customtkinter"] = _CustomTkinterStub("customtkinter")
 
 from core.metasoft_analysis import build_metasoft_analysis
+from core.data_transformer import DataTransformer
 from main_session import _save_metasoft_audit_sidecar
 
 
@@ -66,6 +67,61 @@ class _SessionManager:
 
 
 class MetaSoftMainSessionExportTest(unittest.TestCase):
+    def test_valentin_json_contract_stays_separate_from_audit(self) -> None:
+        output = DataTransformer().transform(
+            {
+                "patient_data": {"Nom": "Mo", "Prénom": "Arthur"},
+                "filename_data": {"date": "2026-07-08"},
+                "measurements": [],
+            },
+            {
+                "email": "arthur@example.test",
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+                "body_composition": {"current_weight": 68},
+                "stress_test_results": {
+                    "thresholds": {
+                        "sv1": {
+                            "hr_bpm": 142,
+                            "pace_km_h": 11,
+                            "vo2_ml_kg_min": 34.1,
+                        },
+                        "sv2": {
+                            "hr_bpm": 152,
+                            "pace_km_h": 13,
+                            "vo2_ml_kg_min": 42.9,
+                        },
+                    },
+                    "measured_vo2max": 44.8,
+                    "max_hr": 164,
+                    "vma": 14.7,
+                },
+            },
+        )
+
+        self.assertEqual(
+            set(output),
+            {
+                "user_id",
+                "athlete_name",
+                "test_date",
+                "test_type",
+                "consentements",
+                "seuils",
+                "protocole",
+                "test_lactate",
+                "observations_lactate",
+                "patient_info",
+                "conseils_entrainements",
+                "graphiques",
+                "logos",
+                "partenaires",
+            },
+        )
+        for forbidden_key in ("markers", "metasoft", "audit", "running_economy"):
+            self.assertNotIn(forbidden_key, output)
+        self.assertEqual(output["seuils"]["SV1"]["fc"], 142)
+        self.assertEqual(output["seuils"]["SV2"]["allure"], 13)
+
     def test_historical_export_saves_sidecar_without_markers_or_ui_warnings(self) -> None:
         session_manager = _SessionManager()
 

@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Eye, EyeOff, FileJson, Send, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, Send, ShieldCheck } from "lucide-react";
 import Plot from "react-plotly.js";
 import { formatNumber } from "../lib/markerUtils";
 import type {
-  ExportResponse,
   MetaSoftAnalysis,
   MetaSoftWarning,
   ProfileConflict,
@@ -17,24 +16,20 @@ export function AnalysisExportSection({
   error,
   preview,
   report,
-  exportResult,
   conflicts,
   onPreview,
   onReport,
   onReportOverwrite,
-  onExport,
 }: {
   analysis: MetaSoftAnalysis;
   busy: string | null;
   error: string | null;
   preview: ReportPreviewResponse | null;
   report: ReportResponse | null;
-  exportResult: ExportResponse | null;
   conflicts: ProfileConflict[];
   onPreview: () => void;
   onReport: () => void;
   onReportOverwrite: () => void;
-  onExport: () => void;
 }) {
   const runningEconomy = analysis.computed.running_economy ?? [];
   const [hiddenEconomyStages, setHiddenEconomyStages] = useState<Set<number>>(new Set());
@@ -143,9 +138,9 @@ export function AnalysisExportSection({
           />
         </section>
 
-        <section id="metasoft-export-json" className="panel action-panel">
+        <section id="metasoft-profile-report" className="panel action-panel">
           <div className="panel-title-row">
-            <h2>Report / export</h2>
+            <h2>Report profil</h2>
             {busy && <span className="status-muted">{busy}</span>}
           </div>
           <div className="action-stack">
@@ -162,10 +157,6 @@ export function AnalysisExportSection({
                 Ecraser les champs en conflit
               </button>
             )}
-            <button type="button" className="secondary-button" onClick={onExport} disabled={Boolean(busy)}>
-              <FileJson size={16} />
-              Exporter JSON Valentin
-            </button>
           </div>
           {error && <p className="error-text">{error}</p>}
           {preview && <ResultBox title={`Preview: ${preview.status}`} warnings={preview.warnings} />}
@@ -174,13 +165,6 @@ export function AnalysisExportSection({
               <strong>Profil mis a jour</strong>
               <p>{report.profile_name}</p>
               <p>{report.updated_paths.length ? report.updated_paths.join(", ") : "Aucun champ modifie."}</p>
-            </div>
-          )}
-          {exportResult && (
-            <div className="result-box">
-              <strong>Fichiers exportes</strong>
-              <p>JSON: {exportResult.json.path}</p>
-              <p>Audit: {exportResult.audit.path}</p>
             </div>
           )}
           {conflicts.length > 0 && (

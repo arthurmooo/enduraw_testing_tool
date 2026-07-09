@@ -10,7 +10,6 @@ import { buildDraftMarker, createInitialMarkers, serializeMarkerSelections } fro
 import type {
   ConfirmedMarkers,
   DraftMarkers,
-  ExportResponse,
   LocalAnalysisPayload,
   MarkerMode,
   MetaSoftMarkerName,
@@ -24,7 +23,7 @@ const NAV_ITEMS = [
   { label: "Lecture", targetId: "metasoft-reading" },
   { label: "Marqueurs", targetId: "metasoft-markers" },
   { label: "Analyse", targetId: "metasoft-analysis-export" },
-  { label: "Export", targetId: "metasoft-export-json" },
+  { label: "Report", targetId: "metasoft-profile-report" },
 ];
 const READING_GRAPH_CONFIGS = GRAPH_CONFIGS.filter((graph) => graph.source === "points");
 
@@ -41,7 +40,6 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<ReportPreviewResponse | null>(null);
   const [report, setReport] = useState<ReportResponse | null>(null);
-  const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
   const [conflicts, setConflicts] = useState<ProfileConflict[]>([]);
   const cursorFrameRef = useRef<number | null>(null);
   const cursorPointRef = useRef<MetaSoftPoint | null>(null);
@@ -104,7 +102,6 @@ export default function App() {
     setDirtyMarkers((current) => new Set(current).add(marker));
     setPreview(null);
     setReport(null);
-    setExportResult(null);
     setConflicts([]);
     setError(null);
   }, []);
@@ -209,18 +206,6 @@ export default function App() {
     });
   };
 
-  const exportJson = async () => {
-    await runOfficialAction("Export", async () => {
-      const response = await apiPost<ExportResponse>(
-        `/api/matches/${match.match_id}/export`,
-        bootstrap?.token ?? "",
-        { marker_selections: serializeMarkerSelections(draftMarkers) },
-      );
-      setExportResult(response);
-      acceptConfirmedMarkers(response.confirmed_markers);
-    });
-  };
-
   return (
     <main className="app-shell">
       <header className="top-header">
@@ -310,12 +295,10 @@ export default function App() {
         error={error}
         preview={preview}
         report={report}
-        exportResult={exportResult}
         conflicts={conflicts}
         onPreview={() => void previewReport()}
         onReport={() => void reportProfile(false)}
         onReportOverwrite={() => void reportProfile(true)}
-        onExport={() => void exportJson()}
       />
     </main>
   );

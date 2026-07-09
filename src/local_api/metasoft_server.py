@@ -2,7 +2,7 @@
 
 Le serveur expose uniquement la session locale deja chargee par l'app Tkinter.
 Source: profils/XML/matches via `SessionManager`. Transformations officielles:
-parser MetaSoft, analyse Python, marqueurs Python et export `DataTransformer`.
+parser MetaSoft, analyse Python, marqueurs Python et report profil.
 Aucun endpoint ne lit de valeur preview React comme source officielle, et aucune
 ecriture BDD n'existe dans ce module.
 """
@@ -14,26 +14,18 @@ import unicodedata
 import gc
 from contextlib import contextmanager
 from copy import deepcopy
-from datetime import datetime
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from math import isfinite
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from config import APP_VERSION
-from core.data_transformer import DataTransformer
 from core.metasoft_analysis import build_metasoft_analysis
-from core.metasoft_audit_export import (
-    build_metasoft_audit_export,
-    metasoft_audit_filename,
-)
 from core.metasoft_markers import (
     apply_metasoft_stress_patch,
     build_metasoft_marker,
     metasoft_marker_to_stress_patch,
 )
-from utils.json_exporter import JsonExporter
 from utils.xml_parser import TCPXmlParser
 
 
@@ -166,12 +158,6 @@ class LocalMetaSoftServer:
             return self._report_payload(match_id, payload)
         return _error("match_not_found", "Route API locale inconnue.", status=404)
 
-    def route_export(self, path, payload):
-        parts = _path_parts(path)
-        if len(parts) == 4 and parts[:2] == ["api", "matches"] and parts[3] == "export":
-            return self._export_payload(parts[2], payload)
-        return _error("match_not_found", "Route API locale inconnue.", status=404)
-
     def static_dist(self):
         return Path(__file__).resolve().parents[2] / "local_ui" / "dist"
 
@@ -213,7 +199,7 @@ class LocalMetaSoftServer:
             "source_of_truth": {
                 "metrics": "python.metasoft_analysis",
                 "markers": "python.metasoft_markers",
-                "export": "python.data_transformer + python.metasoft_audit_export",
+                "export": "tkinter.export_button_json_valentin",
                 "smoothing": "react_visual_only",
             },
         }
@@ -284,64 +270,6 @@ class LocalMetaSoftServer:
             "updated_paths": updated_paths,
             "confirmed_markers": patch_result["markers"],
             "warnings": patch_result["warnings"],
-        }
-
-    def _export_payload(self, match_id, payload):
-        context = self._match_context(match_id)
-        if not context["ok"]:
-            return context
-        patch_result = self._patch_from_payload(context, payload)
-        if not patch_result["ok"]:
-            return patch_result
-
-        profile = context["profile"]
-        if patch_result["updated_paths"]:
-            # Les marqueurs officiels peuvent alimenter le JSON exporte sans
-            # ecrire le profil local; l'ecriture profil reste reservee a /report.
-            profile = apply_metasoft_stress_patch(profile, patch_result["patch_result"])
-
-        output = DataTransformer().transform(context["xml_data"], profile)
-        validation = JsonExporter().validate_structure(output)
-        blocking_errors = [
-            {"field": "export", "message": message}
-            for message in validation.get("errors", [])
-        ]
-        if blocking_errors:
-            return _error(
-                "export_validation_failed",
-                "Export JSON incomplet.",
-                status=422,
-                extra={"blocking_errors": blocking_errors},
-            )
-
-        output_filename = _output_filename(profile, self.session_manager)
-        output_path = self.session_manager.save_output(output_filename, output)
-        audit_filename = metasoft_audit_filename(output_filename)
-        sidecar = build_metasoft_audit_export(
-            context["analysis"],
-            profile=profile,
-            markers=patch_result["markers"],
-            json_filename=output_filename,
-            audit_filename=audit_filename,
-            profile_filename=context["match"]["profile_name"],
-            generated_at=datetime.now().isoformat(timespec="seconds"),
-            app_version=APP_VERSION,
-            export_warnings=[
-                {"code": "export_warning", "message": message}
-                for message in validation.get("warnings", [])
-            ],
-            include_audit_points=bool(payload.get("include_audit_points", False)),
-        )
-        audit_path = self.session_manager.save_output(audit_filename, sidecar)
-        self.session_manager.mark_as_exported(context["match"]["profile_name"])
-
-        return {
-            "ok": True,
-            "json": {"filename": output_filename, "path": output_path},
-            "audit": {"filename": audit_filename, "path": audit_path},
-            "confirmed_markers": patch_result["markers"],
-            "warnings": patch_result["warnings"],
-            "blocking_errors": [],
         }
 
     def _patch_from_payload(self, context, payload):
@@ -501,10 +429,7 @@ class _MetaSoftHandler(BaseHTTPRequestHandler):
             if not payload["ok"]:
                 self._send_json(payload)
                 return
-            if parsed.path.endswith("/export"):
-                self._send_json(self.server.local_api.route_export(parsed.path, payload["data"]))
-            else:
-                self._send_json(self.server.local_api.route_post(parsed.path, payload["data"]))
+            self._send_json(self.server.local_api.route_post(parsed.path, payload["data"]))
 
     def log_message(self, _format, *_args):
         return
@@ -819,20 +744,6 @@ def _marker_warnings(markers):
             copied.setdefault("marker", name)
             warnings.append(copied)
     return warnings
-
-
-def _output_filename(profile, session_manager):
-    identity = profile.get("identity", {})
-    name = f"{identity.get('last_name', 'Unknown')}_{identity.get('first_name', '')}"
-    name = _safe_filename_part(name.strip("_") or "Unknown")
-    session = getattr(session_manager, "current_session", None)
-    date = getattr(session, "date", "") or datetime.now().strftime("%Y-%m-%d")
-    return f"{name}_{date}.json"
-
-
-def _safe_filename_part(value):
-    cleaned = "".join(char if char.isalnum() or char in " _-" else "_" for char in str(value))
-    return cleaned.replace(" ", "_")
 
 
 def _placeholder_html(match_id, token):

@@ -815,9 +815,9 @@ class XmlMatchTab(ctk.CTkFrame):
             self.session_manager.mark_as_exported(profile_name)
             self._refresh_matches()
             
-            message = f"Exporté vers:\n{output_path}"
+            message = f"JSON Valentin:\n{output_path}"
             if audit_path:
-                message += f"\n\nAudit:\n{audit_path}"
+                message += f"\n\nAudit local MetaSoft:\n{audit_path}"
             messagebox.showinfo("Succès", message)
             
         except Exception as e:
@@ -881,7 +881,10 @@ class XmlMatchTab(ctk.CTkFrame):
         self._refresh_matches()
         
         # Show summary
-        msg = f"{success}/{len(matches)} exporté(s) avec succès."
+        msg = (
+            f"{success}/{len(matches)} JSON Valentin exporté(s) avec succès."
+            "\nAudit local MetaSoft créé quand l'analyse MetaSoft est disponible."
+        )
         if errors:
             msg += "\n\nErreurs:\n" + "\n".join(f"• {e}" for e in errors)
             messagebox.showwarning("Export terminé", msg)
