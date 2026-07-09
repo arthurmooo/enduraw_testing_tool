@@ -61,6 +61,7 @@ interface Props {
   timeZoomResetRevision: number;
   cursorPoint: MetaSoftPoint | null;
   fullscreen: boolean;
+  height?: number;
   onFullscreenChange: (open: boolean) => void;
   onTimeXRangeChange?: (graphId: string, range: [number, number] | null) => void;
   onCursorPoint: (graphId: string, point: MetaSoftPoint | null) => void;
@@ -85,6 +86,7 @@ function MetaSoftChartComponent({
   timeZoomResetRevision,
   cursorPoint,
   fullscreen,
+  height = 260,
   onFullscreenChange,
   onTimeXRangeChange,
   onCursorPoint,
@@ -205,7 +207,7 @@ function MetaSoftChartComponent({
           <Maximize2 size={16} />
         </button>
       </div>
-      {fullscreen ? <div className="chart-body" style={{ height: 260 }} /> : body(260)}
+      {fullscreen ? <div className="chart-body" style={{ height }} /> : body(height)}
       {missingSeries.length > 0 && (
         <p className="missing-series">Absent XML : {missingSeries.map((series) => series.label).join(", ")}</p>
       )}

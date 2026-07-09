@@ -964,6 +964,326 @@ Risque:
   - libelles de statuts marqueurs et report;
   - navigation clavier Tab/Shift+Tab sur controles visibles.
 
+## Plan d'execution Lot 3 - GO candidate
+
+Objectif: rehierarchiser la lecture MetaSoft locale pour reduire la lourdeur
+percue sans perdre les graphes, les gestes et les controles existants.
+
+### Etat actuel
+
+- `local_ui/src/App.tsx` derive `READING_GRAPH_CONFIGS` depuis
+  `GRAPH_CONFIGS.filter((graph) => graph.source === "points")`, puis monte tous
+  les graphes de lecture dans `.charts-grid`.
+- Chaque graphe est rendu avec le meme poids visuel via `MetaSoftChart`, avec
+  toggles series, plein ecran, zoom, double-clic reset, marqueurs, tooltip
+  synchronise, filtres phase, lissage et paliers vitesse.
+- Les etats de synchronisation importants vivent deja dans `App.tsx`:
+  `timeXRange`, `timeResetRevision`, `cursorPoint`, `cursorSourceGraphId`,
+  `phaseFilter`, `smoothingSeconds`, `showSpeedBands`.
+- `CursorRail` contient `Valeurs au curseur` et `Warnings` en colonne droite de
+  la grille de lecture.
+- `MarkerPanel`, `RunningEconomyManualSection` et `AnalysisExportSection` sont
+  empiles apres la lecture. EC possede deja son propre workbench et ne doit pas
+  etre melange a la lecture brute.
+- `MetaSoftChart` fixe aujourd'hui une hauteur compacte pour les cartes
+  standard (`body(260)`) et une hauteur adaptee en plein ecran.
+
+### Probleme UX racine
+
+- La page donne le meme rang a tous les graphes, alors que l'utilisateur doit
+  d'abord lire une courbe principale, puis comparer ou verifier les graphes
+  secondaires.
+- Le nombre de Plotly visibles simultanement cree une charge mentale et
+  graphique elevee: axes doubles, phases, paliers, marqueurs et tooltips
+  s'accumulent partout.
+- Les panneaux utiles (`Valeurs au curseur`, `Warnings`, `Marqueurs`, `EC`,
+  `Report`) sont presents, mais l'ordre ne raconte pas assez le workflow:
+  lire, poser/verifier les marqueurs, analyser EC, reporter.
+- La root cause n'est pas un probleme de style ou de donnees: c'est
+  l'orchestration des composants existants dans `App.tsx`.
+
+### Plan d'implementation precis
+
+#### 1. Lecture principale avec graphe focus
+
+Decision technique exacte:
+
+- Ajouter dans `App.tsx` un etat UI local `selectedReadingGraphId`.
+- Deriver `selectedReadingGraph` depuis `READING_GRAPH_CONFIGS`, avec fallback
+  sur un graphe stable si l'id n'existe plus.
+- Choisir par defaut `vo2_vco2_time` si disponible, sinon le premier graphe de
+  `READING_GRAPH_CONFIGS`.
+- Rendre un seul `MetaSoftChart` principal dans une zone `.reading-focus`.
+- Passer a ce graphe les memes props que les cartes actuelles pour conserver
+  toutes les interactions existantes.
+- Ajouter a `MetaSoftChart` une prop optionnelle `height?: number` avec valeur
+  par defaut `260`, utilisee uniquement pour la vue carte normale. Le plein
+  ecran garde son calcul actuel.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/App.tsx`
+  - etat `selectedReadingGraphId`
+  - derive `selectedReadingGraph`
+  - rendu de la zone focus
+- `local_ui/src/components/MetaSoftChart.tsx`
+  - prop optionnelle `height`
+  - appel `body(height)` au lieu de `body(260)`
+- `local_ui/src/styles.css`
+  - `.reading-workspace`
+  - `.reading-focus`
+  - hauteur/respiration du graphe principal
+
+Invariant a preserver:
+
+- Aucun changement de `GRAPH_CONFIGS`, des series, des calculs, des donnees ou
+  des payloads.
+- Zoom temporel synchronise conserve via `timeXRange`.
+- Double-clic reset conserve via `timeResetRevision`.
+- Marqueurs et plein ecran continuent de passer par `MetaSoftChart`.
+
+Critere d'acceptation testable:
+
+- A l'ouverture de la page, un graphe principal plus lisible est visible.
+- Les toggles series, le plein ecran, le hover synchronise, les marqueurs, le
+  zoom et le reset fonctionnent sur ce graphe principal comme avant.
+- Changer filtre phase, lissage ou paliers vitesse impacte le graphe principal.
+
+Risque:
+
+- Faible a moyen. `hiddenSeries` est local a chaque `MetaSoftChart`; si un
+  utilisateur change de graphe focus puis revient, l'etat des toggles peut etre
+  reinitialise. Preserver cet etat par graphe ajouterait du state transverse et
+  n'est pas justifie pour Lot 3 sauf demande explicite.
+
+#### 2. Selection de graphe sans mini Plotly
+
+Decision technique exacte:
+
+- Ajouter sous ou a cote du graphe principal un selecteur de graphes base sur
+  `READING_GRAPH_CONFIGS`.
+- Utiliser des boutons/list items natifs du style existant, pas de vignettes
+  Plotly et pas de nouvelle abstraction.
+- Afficher le titre du graphe et un indicateur discret du type `Temps` ou
+  `Relation` derive de `graph.kind`.
+- Le clic met a jour `selectedReadingGraphId`.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/App.tsx`
+  - rendu du selecteur
+- `local_ui/src/styles.css`
+  - `.graph-picker`
+  - `.graph-picker-button`
+  - etat actif/focus
+
+Invariant a preserver:
+
+- Tous les graphes restent disponibles.
+- Le selecteur ne remplace pas les toggles series internes au graphe.
+- Aucun mapping metier supplementaire des variables.
+
+Critere d'acceptation testable:
+
+- Chaque graphe de `READING_GRAPH_CONFIGS` est selectionnable.
+- Selectionner un graphe scatter conserve ses interactions propres.
+- Le selecteur est utilisable clavier avec focus visible Lot 2.
+
+Risque:
+
+- Faible. Le principal arbitrage non bloquant est le libelle court des graphes:
+  il faut reutiliser `graph.title` pour eviter un deuxieme dictionnaire.
+
+#### 3. Grille complete secondaire et repliable
+
+Decision technique exacte:
+
+- Ajouter un etat UI local `showAllReadingGraphs`.
+- Remplacer l'affichage permanent de `.charts-grid` par une section secondaire
+  `Tous les graphes`, fermee par defaut.
+- Quand la section est fermee, ne pas monter les `MetaSoftChart` secondaires:
+  cela evite de rendre plus de Plotly que necessaire.
+- Quand elle est ouverte, rendre la grille existante avec les memes props,
+  en excluant le graphe deja affiche en focus pour eviter un double rendu
+  inutile.
+- Conserver les classes de grille existantes autant que possible.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/App.tsx`
+  - etat `showAllReadingGraphs`
+  - bouton d'ouverture/repli
+  - rendu conditionnel de la grille secondaire
+- `local_ui/src/styles.css`
+  - `.reading-secondary`
+  - `.reading-secondary-header`
+  - ajustements mineurs de `.charts-grid` si necessaire
+
+Invariant a preserver:
+
+- Les graphes secondaires gardent les memes interactions lorsqu'ils sont
+  ouverts.
+- La synchronisation globale continue de passer par les props existantes.
+- Pas de rendu miniature approximatif ni de degradation de precision.
+
+Critere d'acceptation testable:
+
+- Par defaut, la page ne montre pas la grille complete.
+- Ouvrir `Tous les graphes` affiche les graphes restants avec zoom, hover,
+  marqueurs, plein ecran et toggles.
+- Refermer la section retire visuellement la grille sans modifier les donnees,
+  les marqueurs ou les reglages globaux.
+
+Risque:
+
+- Moyen. Le hover synchronise ne peut concerner que les graphes montes; c'est
+  acceptable si la grille est explicite et ouverte a la demande. Les etats
+  globaux (`cursorPoint`, `timeXRange`) restent disponibles pour les graphes
+  qui seront montes ensuite.
+
+#### 4. Repositionner `Valeurs au curseur` et `Warnings`
+
+Decision technique exacte:
+
+- Garder `CursorRail` comme composant unique pour eviter une duplication de
+  logique d'affichage.
+- Le placer dans la nouvelle `.reading-workspace`, a droite du graphe principal
+  sur desktop et sous le graphe sur mobile.
+- Ne pas modifier la liste `CURSOR_VALUES` ni la selection des warnings.
+- Option CSS seulement: rendre le rail plus compact si le graphe principal
+  prend plus de place.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/App.tsx`
+  - deplacement du rendu `CursorRail`
+- `local_ui/src/components/CursorRail.tsx`
+  - idealement aucun changement
+- `local_ui/src/styles.css`
+  - `.reading-workspace`
+  - `.side-rail` responsive si necessaire
+
+Invariant a preserver:
+
+- Les valeurs au curseur restent issues de `analysis` et `cursorPoint`.
+- Les warnings restent informatifs, sans changer leur source ni leur nombre.
+- Aucun calcul ou fallback de donnees n'est modifie.
+
+Critere d'acceptation testable:
+
+- En hover sur le graphe principal, `Valeurs au curseur` se met a jour.
+- Les warnings restent visibles dans le contexte de lecture.
+- Sur mobile/tablette, le rail ne compresse pas le graphe principal.
+
+Risque:
+
+- Faible. Le risque principal est purement layout: colonne trop etroite sur
+  largeurs intermediaires. A couvrir par CSS responsive.
+
+#### 5. Reordonner Marqueurs, EC et Report sans les melanger
+
+Decision technique exacte:
+
+- Conserver les ancres existantes: `metasoft-reading`, `metasoft-markers`,
+  `metasoft-ec`, `metasoft-profile-report`.
+- Apres la lecture, afficher une zone workflow plus claire:
+  `MarkerPanel` comme etape de validation des seuils et `AnalysisExportSection`
+  comme action de report.
+- Sur desktop, placer `MarkerPanel` et `AnalysisExportSection` dans une grille
+  sobre si cela reduit la longueur sans tasser la table; sur mobile, empiler.
+- Garder `RunningEconomyManualSection` comme section dediee `EC`, separee de la
+  lecture brute et de la grille des graphes.
+- Ne pas deplacer le graphe EC dans le focus de lecture.
+
+Fichiers/fonctions/classes probables:
+
+- `local_ui/src/App.tsx`
+  - structure d'ordre des sections
+  - eventuel wrapper `.workflow-grid`
+- `local_ui/src/components/MarkerPanel.tsx`
+  - idealement aucun changement
+- `local_ui/src/components/AnalysisExportSection.tsx`
+  - idealement aucun changement
+- `local_ui/src/components/RunningEconomyManualSection.tsx`
+  - aucun changement de logique
+- `local_ui/src/styles.css`
+  - `.workflow-grid`
+  - responsive pour la table marqueurs et le report
+
+Invariant a preserver:
+
+- Les marqueurs restent officialises par le flux Python/report existant.
+- Le report profil conserve ses callbacks et son payload.
+- EC reste une analyse manuelle dediee, sans changement de calcul ni de
+  sauvegarde.
+
+Critere d'acceptation testable:
+
+- Les liens de nav `Marqueurs`, `EC`, `Report` scrollent toujours vers les bons
+  contenus.
+- La table marqueurs reste lisible et utilisable.
+- Le report reste accessible sans traverser toute la grille de graphes.
+- L'onglet/zone EC reste separe et identifiable comme analyse, pas lecture
+  brute.
+
+Risque:
+
+- Moyen. Mettre report et marqueurs cote a cote peut compresser la table sur
+  certaines largeurs. Si la table devient trop dense, fallback: garder
+  `MarkerPanel` pleine largeur et placer `Report` juste apres, sans grille.
+
+### Strategie performance
+
+- Ne pas rendre deux fois le graphe focus.
+- Ne pas monter la grille complete tant qu'elle est repliee.
+- Ne pas creer de mini graphes Plotly: le selecteur est textuel.
+- Reutiliser `MetaSoftChart` pour eviter une logique de plotting parallele.
+- Accepter que l'ouverture de `Tous les graphes` retrouve le cout actuel:
+  l'utilisateur l'a demande explicitement et les features restent completes.
+
+### Strategie de test apres GO implementation
+
+- `npm --prefix local_ui run build`.
+- `git diff --check`.
+- Verification Safari manuelle:
+  - ouverture initiale: un graphe principal, rail curseur/warnings, grille
+    secondaire repliee;
+  - selection de plusieurs graphes time et scatter;
+  - zoom sur graphe principal puis ouverture de la grille: les graphes time
+    montes respectent le range global;
+  - double-clic reset depuis graphe principal et depuis grille ouverte;
+  - hover synchronise entre graphes montes;
+  - toggles series et plein ecran depuis graphe principal et secondaire;
+  - placement/deplacement/suppression de marqueur;
+  - filtres phase, lissage, paliers vitesse;
+  - nav vers `Marqueurs`, `EC`, `Report`;
+  - responsive desktop, largeur intermediaire et mobile.
+
+### Points hors scope Lot 3
+
+- Changement des calculs MetaSoft, EC, VO2, FC ou derives.
+- Changement du backend Python, des exports, du stockage session, DB/Mongo ou
+  payload report.
+- Refonte visuelle globale, nouvelle DA, design system parallele ou nouvelle
+  dependance.
+- Refonte des tooltips Lot 1/2 deja traites.
+- Resume avant report profil, table decisionnelle avancee et accessibilite
+  fullscreen: a garder pour Lot 4.
+- Persistance fine des toggles series par graphe si le composant est demonte:
+  non necessaire pour ce lot.
+
+### Verdict
+
+GO candidate.
+
+Justification: le lot peut etre implemente avec une orchestration minimale dans
+`App.tsx`, une petite extension optionnelle de `MetaSoftChart` pour la hauteur,
+et du CSS responsive. Les composants metier et data restent inchanges, EC reste
+separe de la lecture brute, et la performance s'ameliore par defaut en montant
+moins de Plotly. Aucun arbitrage bloquant n'est identifie; le choix du graphe
+principal par defaut (`V'O2, V'CO2`) peut etre change sans impact
+architectural si Arthur prefere une autre courbe.
+
 ### Lot 3 - Rehierarchiser la lecture
 
 1. Passer d'une grille de tous les graphes a une lecture principale.

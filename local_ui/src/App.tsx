@@ -26,6 +26,9 @@ const NAV_ITEMS = [
   { label: "Report", targetId: "metasoft-profile-report" },
 ];
 const READING_GRAPH_CONFIGS = GRAPH_CONFIGS.filter((graph) => graph.source === "points");
+const DEFAULT_READING_GRAPH_ID = READING_GRAPH_CONFIGS.some((graph) => graph.id === "vo2_vco2_time")
+  ? "vo2_vco2_time"
+  : READING_GRAPH_CONFIGS[0]?.id;
 const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
 
 export default function App() {
@@ -41,6 +44,8 @@ export default function App() {
   const [timeZoomResetRevision, setTimeZoomResetRevision] = useState(0);
   const [fullscreenGraphId, setFullscreenGraphId] = useState<string | null>(null);
   const [cursorPoint, setCursorPoint] = useState<MetaSoftPoint | null>(null);
+  const [selectedReadingGraphId, setSelectedReadingGraphId] = useState(DEFAULT_READING_GRAPH_ID);
+  const [showAllReadingGraphs, setShowAllReadingGraphs] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ReportResponse | null>(null);
@@ -222,6 +227,31 @@ export default function App() {
     dirtyMarkers,
     profileVo2maxMlKgMin,
   );
+  const selectedReadingGraph = READING_GRAPH_CONFIGS.find((graph) => graph.id === selectedReadingGraphId)
+    ?? READING_GRAPH_CONFIGS[0];
+  const secondaryReadingGraphs = READING_GRAPH_CONFIGS.filter((graph) => graph.id !== selectedReadingGraph?.id);
+
+  const renderReadingChart = (graph: (typeof READING_GRAPH_CONFIGS)[number], height?: number) => (
+    <MetaSoftChart
+      key={graph.kind === "time" ? `${graph.id}-${timeRangeKey}` : graph.id}
+      analysis={analysis}
+      graph={graph}
+      markers={draftMarkers}
+      phaseFilter={phaseFilter}
+      smoothingSeconds={smoothingSeconds}
+      showSpeedBands={showSpeedBands}
+      timeXRange={graph.kind === "time" ? timeXRange : null}
+      timeZoomResetRevision={graph.kind === "time" ? timeZoomResetRevision : 0}
+      cursorPoint={graph.kind === "time" ? cursorPoint : null}
+      fullscreen={fullscreenGraphId === graph.id}
+      height={height}
+      onFullscreenChange={(open) => setFullscreenGraphId(open ? graph.id : null)}
+      onTimeXRangeChange={graph.kind === "time" ? handleTimeXRangeChange : undefined}
+      onCursorPoint={handleCursorPoint}
+      onPlaceMarker={placeMarker}
+      onDeleteMarker={deleteMarker}
+    />
+  );
 
   const reportProfile = async (overwrite = false) => {
     await runOfficialAction(overwrite ? "Overwrite" : "Report", async () => {
@@ -315,30 +345,52 @@ export default function App() {
         </div>
       </nav>
 
-      <section id="metasoft-reading" className="section-block reading-grid">
-        <div className="charts-grid">
-          {READING_GRAPH_CONFIGS.map((graph) => (
-            <MetaSoftChart
-              key={graph.kind === "time" ? `${graph.id}-${timeRangeKey}` : graph.id}
-              analysis={analysis}
-              graph={graph}
-              markers={draftMarkers}
-              phaseFilter={phaseFilter}
-              smoothingSeconds={smoothingSeconds}
-              showSpeedBands={showSpeedBands}
-              timeXRange={graph.kind === "time" ? timeXRange : null}
-              timeZoomResetRevision={graph.kind === "time" ? timeZoomResetRevision : 0}
-              cursorPoint={graph.kind === "time" ? cursorPoint : null}
-              fullscreen={fullscreenGraphId === graph.id}
-              onFullscreenChange={(open) => setFullscreenGraphId(open ? graph.id : null)}
-              onTimeXRangeChange={graph.kind === "time" ? handleTimeXRangeChange : undefined}
-              onCursorPoint={handleCursorPoint}
-              onPlaceMarker={placeMarker}
-              onDeleteMarker={deleteMarker}
-            />
-          ))}
+      <section id="metasoft-reading" className="section-block reading-section">
+        <div className="section-head reading-section-head">
+          <div>
+            <h2>Lecture</h2>
+            <p>Graphe principal pour lire le test, grille complete disponible a la demande.</p>
+          </div>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowAllReadingGraphs((current) => !current)}
+            aria-expanded={showAllReadingGraphs}
+          >
+            {showAllReadingGraphs ? "Replier la grille" : "Tous les graphes"}
+          </button>
         </div>
-        <CursorRail analysis={analysis} cursorPoint={cursorPoint} />
+        <div className="reading-workspace">
+          <div className="reading-main">
+            {selectedReadingGraph && renderReadingChart(selectedReadingGraph, 430)}
+            <div className="graph-picker" aria-label="Choisir le graphe principal">
+              {READING_GRAPH_CONFIGS.map((graph) => (
+                <button
+                  key={graph.id}
+                  type="button"
+                  className={graph.id === selectedReadingGraph?.id ? "graph-picker-button active" : "graph-picker-button"}
+                  onClick={() => setSelectedReadingGraphId(graph.id)}
+                  aria-pressed={graph.id === selectedReadingGraph?.id}
+                >
+                  <span>{graph.title}</span>
+                  <small>{graph.kind === "time" ? "Temps" : "Relation"}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+          <CursorRail analysis={analysis} cursorPoint={cursorPoint} />
+        </div>
+        {showAllReadingGraphs && (
+          <div className="reading-secondary">
+            <div className="reading-secondary-head">
+              <h2>Tous les graphes</h2>
+              <span className="status-muted">{secondaryReadingGraphs.length} graphes secondaires</span>
+            </div>
+            <div className="charts-grid">
+              {secondaryReadingGraphs.map((graph) => renderReadingChart(graph))}
+            </div>
+          </div>
+        )}
       </section>
 
       <section id="metasoft-markers" className="section-block">
