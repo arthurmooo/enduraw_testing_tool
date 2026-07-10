@@ -9,6 +9,7 @@ import json
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -399,10 +400,10 @@ class MetaSoftLocalApiTest(unittest.TestCase):
             payload["manual_running_economy"]["stage_selections"],
             stage_selections,
         )
-        fingerprint = self.session_manager.build_match_fingerprint(
-            self.session_manager.matches[-1]
+        saved = self.session_manager.get_manual_running_economy(
+            match_id,
+            self.session_manager.matches[-1],
         )
-        saved = self.session_manager.get_manual_running_economy(match_id, fingerprint)
         self.assertEqual(saved, payload["manual_running_economy"])
 
         status, analysis_payload = self._get(f"/api/matches/{match_id}/analysis")
@@ -430,10 +431,13 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"]["code"], "invalid_running_economy_manual")
-        fingerprint = self.session_manager.build_match_fingerprint(
-            self.session_manager.matches[-1]
+        self.assertEqual(
+            self.session_manager.manual_running_economy_state(
+                match_id,
+                self.session_manager.matches[-1],
+            )["status"],
+            "missing",
         )
-        self.assertIsNone(self.session_manager.get_manual_running_economy(match_id, fingerprint))
 
     def test_manual_running_economy_clear_removes_sidecar(self) -> None:
         match_id = self._weighted_match_id()
@@ -487,23 +491,144 @@ class MetaSoftLocalApiTest(unittest.TestCase):
     def test_manual_running_economy_fingerprint_rejects_stale_and_legacy(self) -> None:
         match_id = self._weighted_match_id()
         match = self.session_manager.matches[-1]
-        fingerprint = self.session_manager.build_match_fingerprint(match)
         data = {
             "source": "python.metasoft_analysis.manual_running_economy",
-            "rows": [{"stage_index": 1, "ec_j_kg_m": 4.2}],
+            "rows": [{
+                "stage_index": 1,
+                "ec_j_kg_m": 4.2,
+                "sources": {"vo2max": "metasoft_marker.vo2_max"},
+            }],
         }
+        fingerprint = self.session_manager.build_manual_running_economy_fingerprint(
+            match,
+            data,
+        )
 
         self.session_manager.save_manual_running_economy(match_id, data, fingerprint)
         self.assertEqual(
-            self.session_manager.get_manual_running_economy(match_id, fingerprint),
+            self.session_manager.get_manual_running_economy(match_id, match),
             data,
         )
-        stale = {**fingerprint, "xml": {**fingerprint["xml"], "size": 1}}
-        self.assertIsNone(self.session_manager.get_manual_running_economy(match_id, stale))
+        xml_path = self.session_manager.xml_path(match.xml_filename)
+        xml_path.write_bytes(xml_path.read_bytes() + b"\n")
+        self.assertEqual(
+            self.session_manager.manual_running_economy_state(match_id, match)["status"],
+            "stale",
+        )
 
         path = self.session_manager.current_session_path / "running_economy_manual.json"
-        path.write_text(json.dumps({match_id: data}), encoding="utf-8")
-        self.assertIsNone(self.session_manager.get_manual_running_economy(match_id, fingerprint))
+        path.write_text(json.dumps({match_id: {"fingerprint": {}, "data": data}}), encoding="utf-8")
+        state = self.session_manager.manual_running_economy_state(match_id, match)
+        self.assertEqual(state["status"], "stale")
+        self.assertEqual(state["reason"], "legacy_fingerprint")
+
+    def test_manual_economy_fingerprint_ignores_unrelated_profile_change(self) -> None:
+        match_id = self._weighted_match_id()
+        match = self.session_manager.matches[-1]
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {"selections": [{
+                "stage_index": 1,
+                "start_seconds": 60,
+                "end_seconds": 120,
+                "exclusions": [],
+            }]},
+        )
+        self.assertEqual(status, 200)
+
+        profile = self.session_manager.get_profile(match.profile_name)
+        profile["professional_life"]["occupation"] = "Coach"
+        self.session_manager.update_profile(match.profile_name, profile)
+
+        state = self.session_manager.manual_running_economy_state(match_id, match)
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["data"], payload["manual_running_economy"])
+
+    def test_manual_economy_stale_is_blocking_for_xml_or_profile_vo2max_change(self) -> None:
+        for change in ("xml", "vo2max"):
+            with self.subTest(change=change):
+                match_id = self._weighted_match_id()
+                match = self.session_manager.matches[-1]
+                status, _payload = self._post(
+                    f"/api/matches/{match_id}/running-economy/manual",
+                    {"selections": [{
+                        "stage_index": 1,
+                        "start_seconds": 60,
+                        "end_seconds": 120,
+                        "exclusions": [],
+                    }]},
+                )
+                self.assertEqual(status, 200)
+                if change == "xml":
+                    xml_path = self.session_manager.xml_path(match.xml_filename)
+                    xml_path.write_bytes(xml_path.read_bytes() + b"\n")
+                else:
+                    profile = self.session_manager.get_profile(match.profile_name)
+                    profile["stress_test_results"]["measured_vo2max"] = 60
+                    self.session_manager.update_profile(match.profile_name, profile)
+
+                status, payload = self._get(f"/api/matches/{match_id}/analysis")
+                self.assertEqual(status, 200)
+                warning = next(
+                    item for item in payload["warnings"]
+                    if item["code"] == "manual_running_economy_stale"
+                )
+                self.assertTrue(warning["blocking"])
+                self.assertIsNone(payload["manual_running_economy"])
+                self.session_manager.clear_manual_running_economy(match_id)
+
+    def test_corrupt_manual_economy_warns_and_blocks_report_without_overwrite(self) -> None:
+        match_id = self._weighted_match_id()
+        match = self.session_manager.matches[-1]
+        path = self.session_manager.current_session_path / "running_economy_manual.json"
+        path.write_text("{broken", encoding="utf-8")
+        original_profile = self.session_manager.get_profile(match.profile_name)
+
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(
+            warning["code"] == "manual_running_economy_corrupt" and warning["blocking"]
+            for warning in payload["warnings"]
+        ))
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [{"name": "SV1", "mode": "point", "t_seconds": 60}],
+                "conflict_policy": "overwrite",
+            },
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "manual_running_economy_corrupt")
+        self.assertEqual(self.session_manager.get_profile(match.profile_name), original_profile)
+        self.assertEqual(path.read_text(encoding="utf-8"), "{broken")
+
+    def test_manual_economy_atomic_replace_failure_preserves_old_bytes(self) -> None:
+        match_id = self._weighted_match_id()
+        match = self.session_manager.matches[-1]
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {"selections": [{
+                "stage_index": 1,
+                "start_seconds": 60,
+                "end_seconds": 120,
+                "exclusions": [],
+            }]},
+        )
+        self.assertEqual(status, 200)
+        path = self.session_manager.current_session_path / "running_economy_manual.json"
+        original_bytes = path.read_bytes()
+        data = payload["manual_running_economy"]
+        fingerprint = self.session_manager.build_manual_running_economy_fingerprint(
+            match,
+            data,
+        )
+
+        with patch("core.session_manager.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.session_manager.save_manual_running_economy(match_id, data, fingerprint)
+
+        self.assertEqual(path.read_bytes(), original_bytes)
+        self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
 
     def test_officialize_rejects_point_times_outside_raw_bounds(self) -> None:
         match_id = self._match_id()
@@ -799,7 +924,7 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         def fail_final_save():
             nonlocal save_calls
             save_calls += 1
-            if save_calls == 2:
+            if save_calls == 1:
                 raise OSError("disk full")
             original_save()
 
@@ -819,9 +944,10 @@ class MetaSoftLocalApiTest(unittest.TestCase):
             )
 
         self.assertEqual(status, 500)
-        self.assertEqual(payload["error"]["code"], "metasoft_provenance_save_failed")
+        self.assertEqual(payload["error"]["code"], "metasoft_report_failed")
         profile = self.session_manager.get_profile(self.profile_name)
-        self.assertEqual(profile["stress_test_results"]["thresholds"]["sv1"]["hr_bpm"], 120)
+        self.assertEqual(profile["stress_test_results"]["thresholds"]["sv1"]["hr_bpm"], 99)
+        self.assertEqual(self.server.consume_pending_profile_updates(), [])
         validation = self.session_manager.validate_metasoft_report(
             self.session_manager.matches[0],
             profile,
@@ -833,6 +959,100 @@ class MetaSoftLocalApiTest(unittest.TestCase):
             profile,
         )
         self.assertFalse(persisted["valid"])
+
+    def test_manual_save_failure_rolls_back_profile_ec_and_pending_update(self) -> None:
+        match_id = self._weighted_match_id()
+        match = self.session_manager.matches[-1]
+        original_profile = self.session_manager.get_profile(match.profile_name)
+        original_report = deepcopy(match.metasoft_report)
+        sidecar = self.session_manager.current_session_path / "running_economy_manual.json"
+
+        with patch.object(
+            self.session_manager,
+            "save_manual_running_economy",
+            side_effect=OSError("disk full"),
+        ):
+            status, payload = self._post(
+                f"/api/matches/{match_id}/profile/report",
+                {
+                    "marker_selections": [{"name": "SV1", "mode": "point", "t_seconds": 60}],
+                    "manual_running_economy_selections": [{
+                        "stage_index": 1,
+                        "start_seconds": 60,
+                        "end_seconds": 120,
+                        "exclusions": [],
+                    }],
+                    "manual_running_economy_stage_selections": [
+                        {"stage_index": 1, "enabled": True},
+                    ],
+                    "conflict_policy": "overwrite",
+                },
+            )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"]["code"], "metasoft_report_failed")
+        self.assertEqual(self.session_manager.get_profile(match.profile_name), original_profile)
+        self.assertEqual(match.metasoft_report, original_report)
+        self.assertFalse(sidecar.exists())
+        self.assertEqual(self.server.consume_pending_profile_updates(), [])
+
+    def test_provenance_failure_restores_previous_cumulative_report(self) -> None:
+        match_id = self._match_id()
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [{"name": "SV1", "mode": "point", "t_seconds": 60}],
+                "conflict_policy": "overwrite",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.server.consume_pending_profile_updates()
+        match = self.session_manager.matches[0]
+        original_profile = self.session_manager.get_profile(match.profile_name)
+        original_report = deepcopy(match.metasoft_report)
+
+        with patch.object(
+            self.session_manager,
+            "record_metasoft_report",
+            side_effect=OSError("disk full"),
+        ):
+            status, payload = self._post(
+                f"/api/matches/{match_id}/profile/report",
+                {
+                    "marker_selections": [{"name": "SV2", "mode": "point", "t_seconds": 90}],
+                    "conflict_policy": "overwrite",
+                },
+            )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"]["code"], "metasoft_report_failed")
+        self.assertEqual(self.session_manager.get_profile(match.profile_name), original_profile)
+        self.assertEqual(match.metasoft_report, original_report)
+        validation = self.session_manager.validate_metasoft_report(match, original_profile)
+        self.assertTrue(validation["valid"])
+        self.assertEqual(set(validation["markers"]), {"SV1"})
+        self.assertEqual(self.server.consume_pending_profile_updates(), [])
+
+    def test_tampered_canonical_marker_projection_invalidates_provenance(self) -> None:
+        match_id = self._match_id()
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [{"name": "SV1", "mode": "point", "t_seconds": 60}],
+                "conflict_policy": "overwrite",
+            },
+        )
+        self.assertEqual(status, 200)
+        match = self.session_manager.matches[0]
+        match.metasoft_report["markers"]["SV1"]["values"]["fc_bpm"] = 999
+        self.session_manager._save_matches()
+
+        validation = self.session_manager.validate_metasoft_report(
+            match,
+            self.session_manager.get_profile(match.profile_name),
+        )
+        self.assertFalse(validation["valid"])
+        self.assertEqual(validation["reason"], "marker_profile_mismatch")
 
     def test_matches_without_metasoft_report_remain_loadable(self) -> None:
         matches_path = self.session_manager.current_session_path / "matches.json"
@@ -846,8 +1066,6 @@ class MetaSoftLocalApiTest(unittest.TestCase):
     def test_report_conflict_does_not_persist_manual_running_economy(self) -> None:
         match_id = self._weighted_match_id()
         match = self.session_manager.matches[-1]
-        fingerprint = self.session_manager.build_match_fingerprint(match)
-
         status, payload = self._post(
             f"/api/matches/{match_id}/profile/report",
             {
@@ -866,15 +1084,14 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"]["code"], "profile_conflict")
-        self.assertIsNone(
-            self.session_manager.get_manual_running_economy(match_id, fingerprint)
+        self.assertEqual(
+            self.session_manager.manual_running_economy_state(match_id, match)["status"],
+            "missing",
         )
 
     def test_report_persists_manual_running_economy_with_final_fingerprint(self) -> None:
         match_id = self._weighted_match_id()
         match = self.session_manager.matches[-1]
-        old_fingerprint = self.session_manager.build_match_fingerprint(match)
-
         status, payload = self._post(
             f"/api/matches/{match_id}/profile/report",
             {
@@ -898,8 +1115,9 @@ class MetaSoftLocalApiTest(unittest.TestCase):
             payload["manual_running_economy"]["rows"][0]["sources"]["vo2max"],
             "profile.stress_test_results.measured_vo2max",
         )
-        self.assertIsNone(
-            self.session_manager.get_manual_running_economy(match_id, old_fingerprint)
+        self.assertEqual(
+            self.session_manager.manual_running_economy_state(match_id, match)["status"],
+            "ok",
         )
 
         status, payload = self._get(f"/api/matches/{match_id}/analysis")

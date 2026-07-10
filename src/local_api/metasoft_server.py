@@ -209,6 +209,12 @@ class LocalMetaSoftServer:
         )
         if provenance_warning:
             warnings.append(provenance_warning)
+        manual_economy_state = self.session_manager.manual_running_economy_state(
+            match_id,
+            context["match_info"],
+        )
+        if manual_economy_state["status"] in {"stale", "corrupt"}:
+            warnings.append(_manual_running_economy_warning(manual_economy_state))
         confirmed_markers = {
             name: marker
             for name, marker in markers.items()
@@ -224,9 +230,10 @@ class LocalMetaSoftServer:
             "match": context["match"],
             "profile": _public_profile(context["profile"]),
             "analysis": _ui_analysis_payload(context["analysis"]),
-            "manual_running_economy": self.session_manager.get_manual_running_economy(
-                match_id,
-                context["fingerprint"],
+            "manual_running_economy": (
+                manual_economy_state["data"]
+                if manual_economy_state["status"] == "ok"
+                else None
             ),
             "confirmed_markers": confirmed_markers,
             "deleted_markers": deleted_markers,
@@ -273,11 +280,25 @@ class LocalMetaSoftServer:
         data = data["manual_running_economy"]
         if stage_selections:
             data["stage_selections"] = stage_selections
-        self.session_manager.save_manual_running_economy(
-            match_id,
-            data,
-            context["fingerprint"],
-        )
+        try:
+            fingerprint = self.session_manager.build_manual_running_economy_fingerprint(
+                context["match_info"],
+                data,
+                context["profile"],
+            )
+            if not fingerprint:
+                return _error(
+                    "match_fingerprint_unavailable",
+                    "Fingerprint local EC/XML indisponible.",
+                    status=409,
+                )
+            self.session_manager.save_manual_running_economy(match_id, data, fingerprint)
+        except ValueError as exc:
+            return _error(
+                "manual_running_economy_corrupt",
+                str(exc),
+                status=409,
+            )
         return {"ok": True, "manual_running_economy": data}
 
     def _build_manual_running_economy(self, context, match_id, selections, payload, markers=None):
@@ -383,61 +404,119 @@ class LocalMetaSoftServer:
             context["profile"],
         )
         canonical_markers = (
-            previous_provenance["markers"] if previous_provenance["valid"] else {}
+            deepcopy(previous_provenance["markers"])
+            if previous_provenance.get("markers")
+            and (
+                previous_provenance["valid"]
+                or str(previous_provenance.get("reason", "")).startswith(
+                    "manual_running_economy_"
+                )
+            )
+            else {}
         )
         canonical_markers.update(deepcopy(patch_result["markers"]))
-
         try:
-            # Un crash ou une erreur apres la premiere ecriture ne doit jamais
-            # laisser l'ancienne provenance exportable au redemarrage.
-            self.session_manager.invalidate_metasoft_report(context["match_info"])
-        except Exception as exc:
+            manual_state = self.session_manager.manual_running_economy_state(
+                match_id,
+                context["match_info"],
+            )
+            manual_snapshot = self.session_manager.snapshot_manual_running_economy_entry(
+                match_id
+            )
+        except ValueError as exc:
             return _error(
-                "metasoft_provenance_prepare_failed",
-                f"Report annule avant ecriture: provenance non invalidable: {exc}",
-                status=500,
+                "manual_running_economy_corrupt",
+                f"Report refuse: sidecar EC corrompu: {exc}",
+                status=409,
             )
 
         updated_paths = _patch_updated_paths(context["profile"], patch_result["patch_result"])
-        profile = context["profile"]
-        if updated_paths:
-            profile = apply_metasoft_stress_patch(profile, patch_result["patch_result"])
-            profile_name = self.session_manager.update_profile(context["match"]["profile_name"], profile)
-            if not profile_name:
-                return _error("profile_not_found", "Sauvegarde profil impossible.", status=404)
-            self._record_profile_update(profile_name)
-        else:
-            profile_name = context["match"]["profile_name"]
-
+        original_profile = deepcopy(context["profile"])
+        profile = apply_metasoft_stress_patch(
+            original_profile,
+            patch_result["patch_result"],
+        ) if updated_paths else original_profile
+        profile_name = context["match"]["profile_name"]
         manual_running_economy = manual_result.get("manual_running_economy")
-        if manual_result.get("present"):
-            final_fingerprint = self.session_manager.build_match_fingerprint(context["match_info"])
-            if not final_fingerprint:
+        if not manual_result.get("present"):
+            if manual_state["status"] in {"stale", "corrupt"}:
                 return _error(
-                    "match_fingerprint_unavailable",
-                    "Fingerprint local profil/XML indisponible.",
+                    f"manual_running_economy_{manual_state['status']}",
+                    "Report refuse: EC perimee/corrompue non remplacee.",
                     status=409,
                 )
-            self.session_manager.save_manual_running_economy(
-                match_id,
-                manual_running_economy,
-                final_fingerprint,
+            manual_running_economy = (
+                manual_state["data"] if manual_state["status"] == "ok" else None
             )
+        final_ec_fingerprint = None
+        if manual_running_economy is not None:
+            final_ec_fingerprint = self.session_manager.build_manual_running_economy_fingerprint(
+                context["match_info"],
+                manual_running_economy,
+                profile,
+            )
+            if not final_ec_fingerprint:
+                return _error(
+                    "match_fingerprint_unavailable",
+                    "Fingerprint local EC/XML indisponible.",
+                    status=409,
+                )
 
+        previous_report = deepcopy(context["match_info"].metasoft_report)
         try:
-            # La provenance est volontairement la derniere ecriture du report:
-            # elle n'atteste que le profil et l'EC deja sauvegardes avec succes.
+            if updated_paths:
+                saved_name = self.session_manager.update_profile(profile_name, profile)
+                if not saved_name:
+                    raise ValueError("Sauvegarde profil impossible")
+                profile_name = saved_name
+            if manual_result.get("present"):
+                if manual_running_economy is None:
+                    self.session_manager.clear_manual_running_economy(match_id)
+                else:
+                    self.session_manager.save_manual_running_economy(
+                        match_id,
+                        manual_running_economy,
+                        final_ec_fingerprint,
+                    )
             self.session_manager.record_metasoft_report(
                 context["match_info"],
                 profile,
                 canonical_markers,
+                manual_running_economy,
             )
         except Exception as exc:
+            rollback_errors = []
+            try:
+                if updated_paths:
+                    self.session_manager.update_profile(profile_name, original_profile)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"profil: {rollback_exc}")
+            try:
+                self.session_manager.restore_manual_running_economy_entry(
+                    match_id,
+                    manual_snapshot,
+                )
+            except Exception as rollback_exc:
+                rollback_errors.append(f"EC: {rollback_exc}")
+            try:
+                self.session_manager.restore_metasoft_report(
+                    context["match_info"],
+                    previous_report,
+                )
+            except Exception as rollback_exc:
+                rollback_errors.append(f"provenance: {rollback_exc}")
             return _error(
-                "metasoft_provenance_save_failed",
-                f"Report profil effectue mais provenance MetaSoft non sauvegardee: {exc}",
+                "metasoft_report_rollback_failed" if rollback_errors else "metasoft_report_failed",
+                (
+                    f"Report annule et restaure: {exc}"
+                    if not rollback_errors
+                    else f"Report echoue ({exc}); rollback incomplet: {', '.join(rollback_errors)}"
+                ),
                 status=500,
             )
+
+        if updated_paths:
+            self._record_profile_update(profile_name)
 
         return {
             "ok": True,
@@ -603,8 +682,7 @@ class LocalMetaSoftServer:
             # jamais de disque, pour ne pas masquer un XML modifie.
             self._match_context_cache = {cache_key: {"xml_data": xml_data, "analysis": analysis}}
 
-        fingerprint = self.session_manager.build_match_fingerprint(match)
-        if not fingerprint:
+        if not self.session_manager.build_metasoft_source_fingerprint(match):
             return _error(
                 "match_fingerprint_unavailable",
                 "Fingerprint local profil/XML indisponible.",
@@ -613,7 +691,6 @@ class LocalMetaSoftServer:
 
         return {
             "ok": True,
-            "fingerprint": fingerprint,
             "match": {
                 "match_id": _match_id(match.profile_name, match.xml_filename),
                 "profile_name": match.profile_name,
@@ -1066,6 +1143,15 @@ def _metasoft_provenance_warning(provenance, match, profile):
         "markers": unproven,
         "profile_name": match.profile_name,
         "xml_filename": match.xml_filename,
+    }
+
+
+def _manual_running_economy_warning(state):
+    return {
+        "code": f"manual_running_economy_{state['status']}",
+        "message": "EC manuelle perimee ou corrompue: nouveau report requis avant export.",
+        "blocking": True,
+        "reason": state.get("reason"),
     }
 
 

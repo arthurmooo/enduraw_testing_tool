@@ -73,7 +73,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
   const [xRange, setXRange] = useState<[number, number] | null>(null);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [savedManualEconomy, setSavedManualEconomy] = useState<ManualRunningEconomyPayload | null>(initialManualEconomy ?? null);
-  const [dirty, setDirty] = useState(false);
+  const [dirtyStageIndexes, setDirtyStageIndexes] = useState<Set<number>>(new Set());
   const selectedStage = useMemo(
     () => stableStages.find((stage) => stage.stage_index === selectedStageIndex) ?? stableStages[0] ?? null,
     [selectedStageIndex, stableStages],
@@ -81,7 +81,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
 
   useEffect(() => {
     setSavedManualEconomy(initialManualEconomy ?? null);
-    setDirty(false);
+    setDirtyStageIndexes(new Set());
     const savedRows = new Map((initialManualEconomy?.rows ?? []).map((row) => [row.stage_index, row]));
     const savedStageSelections = new Map(
       (initialManualEconomy?.stage_selections ?? []).map((item) => [item.stage_index, item.enabled]),
@@ -97,7 +97,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
     setSelectedStageIndex(stableStages[0]?.stage_index ?? 0);
     setXRange(null);
     setActiveExclusionIndex(null);
-  }, [analysis.file.filename]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [analysis.file.filename, initialManualEconomy, stableStages]);
 
   const previewRows = useMemo(
     () => stableStages.map((stage) => buildManualEconomyPreviewRow(
@@ -113,8 +113,12 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
     [savedManualEconomy],
   );
   const rows = useMemo(
-    () => previewRows.map((row) => (!dirty ? savedRows.get(row.stage_index) ?? row : row)),
-    [dirty, previewRows, savedRows],
+    () => previewRows.map((row) => (
+      dirtyStageIndexes.has(row.stage_index)
+        ? row
+        : savedRows.get(row.stage_index) ?? row
+    )),
+    [dirtyStageIndexes, previewRows, savedRows],
   );
   const selectedDraft = useMemo(
     () => (selectedStage ? drafts[selectedStage.stage_index] ?? initialEconomyDraft(selectedStage) : null),
@@ -141,7 +145,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
       ...current,
       [selectedStage.stage_index]: clampDraftToStage(updater(selectedDraft, selectedStage), selectedStage),
     }));
-    setDirty(true);
+    setDirtyStageIndexes((current) => new Set(current).add(selectedStage.stage_index));
     setSaveStatus(null);
   }, [selectedDraft, selectedStage]);
 
@@ -162,7 +166,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
       ...current,
       [selectedStage.stage_index]: clampDraftToStage({ ...selectedDraft, exclusions }, selectedStage),
     }));
-    setDirty(true);
+    setDirtyStageIndexes((current) => new Set(current).add(selectedStage.stage_index));
     setActiveExclusionIndex(Math.max(0, exclusions.findIndex((item) => start <= item.end_seconds && end >= item.start_seconds)));
     setExcludeMode(false);
     setSaveStatus(null);
@@ -175,7 +179,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
       [stage.stage_index]: clampDraftToStage({ ...draft, enabled: !draft.enabled }, stage),
     }));
     setSelectedStageIndex(stage.stage_index);
-    setDirty(true);
+    setDirtyStageIndexes((current) => new Set(current).add(stage.stage_index));
     setSaveStatus(null);
   }, [drafts]);
 

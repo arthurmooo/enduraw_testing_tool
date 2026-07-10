@@ -6,6 +6,7 @@ import json
 import shutil
 import uuid
 import hashlib
+import threading
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -89,6 +90,8 @@ class SessionManager:
         self.current_session: Optional[Session] = None
         self.current_session_path: Optional[Path] = None
         self.matches: List[ProfileMatch] = []
+        self._matches_lock = threading.RLock()
+        self._manual_running_economy_lock = threading.RLock()
     
     def _ensure_sessions_dir(self):
         """Ensure Sessions directory exists"""
@@ -496,34 +499,37 @@ class SessionManager:
     
     def _load_matches(self):
         """Load matches from file"""
-        if not self.current_session_path:
-            self.matches = []
-            return
-        
-        matches_file = self.current_session_path / self.MATCHES_FILE
-        if matches_file.exists():
-            with open(matches_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            self.matches = [ProfileMatch.from_dict(m) for m in data]
-        else:
-            self.matches = []
+        with self._matches_lock:
+            if not self.current_session_path:
+                self.matches = []
+                return
+            matches_file = self.current_session_path / self.MATCHES_FILE
+            if matches_file.exists():
+                with open(matches_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self.matches = [ProfileMatch.from_dict(m) for m in data]
+            else:
+                self.matches = []
     
     def _save_matches(self):
         """Sauvegarde matches.json par remplacement atomique dans le meme dossier."""
         if not self.current_session_path:
             return
 
-        matches_file = self.current_session_path / self.MATCHES_FILE
-        temporary_file = matches_file.with_suffix(matches_file.suffix + '.tmp')
-        try:
-            with open(temporary_file, 'w', encoding='utf-8') as f:
-                json.dump([m.to_dict() for m in self.matches], f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temporary_file, matches_file)
-        finally:
-            if temporary_file.exists():
-                temporary_file.unlink()
+        with self._matches_lock:
+            matches_file = self.current_session_path / self.MATCHES_FILE
+            temporary_file = matches_file.with_name(
+                f".{matches_file.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                with open(temporary_file, 'w', encoding='utf-8') as f:
+                    json.dump([m.to_dict() for m in self.matches], f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary_file, matches_file)
+            finally:
+                if temporary_file.exists():
+                    temporary_file.unlink()
     
     def create_match(self, profile_filename: str, xml_filename: str) -> ProfileMatch:
         """
@@ -625,38 +631,6 @@ class SessionManager:
         
         return str(filepath)
 
-    def build_match_fingerprint(self, match: ProfileMatch) -> Optional[Dict[str, Any]]:
-        """Fingerprint anti-stale sans exposer de chemins disque.
-
-        Sources: session courante, fichier profil et XML importes. Les hash
-        SHA-256 protegent l'export contre un sidecar EC issu d'un ancien fichier.
-        """
-        if not self.current_session_path or not self.current_session:
-            return None
-        profile_path = self.profile_path(match.profile_name)
-        xml_path = self.xml_path(match.xml_filename)
-        if not profile_path or not xml_path:
-            return None
-        try:
-            xml_size = xml_path.stat().st_size
-        except OSError:
-            return None
-        return {
-            "session": {
-                "name": self.current_session.name,
-                "created_at": self.current_session.created_at,
-            },
-            "profile": {
-                "filename": match.profile_name,
-                "sha256": self._file_sha256(profile_path),
-            },
-            "xml": {
-                "filename": match.xml_filename,
-                "sha256": self._file_sha256(xml_path),
-                "size": xml_size,
-            },
-        }
-
     def build_metasoft_source_fingerprint(
         self,
         match: ProfileMatch,
@@ -692,18 +666,54 @@ class SessionManager:
             },
         }
 
+    def build_manual_running_economy_fingerprint(
+        self,
+        match: ProfileMatch,
+        data: Dict[str, Any],
+        profile: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fingerprint EC v2 limite aux sources qui influencent son calcul."""
+        source = self.build_metasoft_source_fingerprint(match)
+        if not source or not isinstance(data, dict):
+            return None
+        uses_profile_vo2max = any(
+            isinstance(row, dict)
+            and isinstance(row.get("sources"), dict)
+            and row["sources"].get("vo2max")
+            == "profile.stress_test_results.measured_vo2max"
+            for row in data.get("rows", [])
+        )
+        dependencies = {}
+        if uses_profile_vo2max:
+            current_profile = profile if profile is not None else self.get_profile(match.profile_name)
+            if not isinstance(current_profile, dict):
+                return None
+            stress = current_profile.get("stress_test_results", {}) or {}
+            dependencies["measured_vo2max"] = {
+                "present": "measured_vo2max" in stress,
+                "value": deepcopy(stress.get("measured_vo2max")),
+            }
+        return {
+            "schema_version": 2,
+            "source": source,
+            "profile_dependencies": dependencies,
+        }
+
     def validate_metasoft_report(
         self,
         match: ProfileMatch,
         profile: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Valide provenance source et snapshot des champs marqueurs profil."""
-        from core.metasoft_markers import metasoft_profile_marker_snapshot
+        from core.metasoft_markers import (
+            metasoft_markers_match_profile,
+            metasoft_profile_marker_snapshot,
+        )
 
         report = match.metasoft_report
         if not isinstance(report, dict):
             return {"valid": False, "reason": "missing", "markers": {}}
-        if report.get("schema_version") != 1:
+        if report.get("schema_version") != 2:
             return {"valid": False, "reason": "schema", "markers": {}}
         fingerprint = self.build_metasoft_source_fingerprint(match)
         if not fingerprint:
@@ -715,6 +725,27 @@ class SessionManager:
         markers = report.get("markers")
         if not isinstance(markers, dict):
             return {"valid": False, "reason": "invalid_markers", "markers": {}}
+        if not metasoft_markers_match_profile(profile, markers):
+            return {"valid": False, "reason": "marker_profile_mismatch", "markers": {}}
+        ec_state = self.manual_running_economy_state(self._match_id(match), match)
+        expected_ec_digest = report.get("manual_running_economy_sha256")
+        current_ec_digest = (
+            self._json_sha256(ec_state["data"])
+            if ec_state["status"] == "ok"
+            else None
+        )
+        if ec_state["status"] not in {"missing", "ok"}:
+            return {
+                "valid": False,
+                "reason": f"manual_running_economy_{ec_state['status']}",
+                "markers": deepcopy(markers),
+            }
+        if expected_ec_digest != current_ec_digest:
+            return {
+                "valid": False,
+                "reason": "manual_running_economy_changed",
+                "markers": deepcopy(markers),
+            }
         return {"valid": True, "reason": None, "markers": deepcopy(markers)}
 
     def record_metasoft_report(
@@ -722,51 +753,58 @@ class SessionManager:
         match: ProfileMatch,
         profile: Dict[str, Any],
         markers: Dict[str, Any],
+        manual_running_economy: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Enregistre en dernier l'etat canonique d'un report MetaSoft reussi."""
-        from core.metasoft_markers import metasoft_profile_marker_snapshot
+        from core.metasoft_markers import (
+            metasoft_markers_match_profile,
+            metasoft_profile_marker_snapshot,
+        )
 
-        fingerprint = self.build_metasoft_source_fingerprint(match)
-        if not fingerprint:
-            raise ValueError("Fingerprint source MetaSoft indisponible")
-        match.metasoft_report = {
-            "schema_version": 1,
-            "source_fingerprint": fingerprint,
-            "markers": deepcopy(markers),
-            "profile_marker_snapshot": metasoft_profile_marker_snapshot(profile),
-            "reported_at": datetime.now().isoformat(),
-        }
-        try:
-            self._save_matches()
-        except Exception:
-            # Sans ecriture matches.json confirmee, l'export courant doit rester
-            # bloque plutot que reutiliser une ancienne preuve en memoire.
+        with self._matches_lock:
+            if not any(item is match for item in self.matches):
+                raise ValueError("Association profil/XML MetaSoft perimee")
+            fingerprint = self.build_metasoft_source_fingerprint(match)
+            if not fingerprint:
+                raise ValueError("Fingerprint source MetaSoft indisponible")
+            if not metasoft_markers_match_profile(profile, markers):
+                raise ValueError("Marqueurs canoniques incompatibles avec le profil")
+            previous = deepcopy(match.metasoft_report)
             match.metasoft_report = {
-                "schema_version": 1,
-                "status": "record_failed",
+                "schema_version": 2,
+                "source_fingerprint": fingerprint,
+                "markers": deepcopy(markers),
+                "profile_marker_snapshot": metasoft_profile_marker_snapshot(profile),
+                "manual_running_economy_sha256": (
+                    self._json_sha256(manual_running_economy)
+                    if manual_running_economy is not None
+                    else None
+                ),
+                "reported_at": datetime.now().isoformat(),
             }
-            raise
+            try:
+                self._save_matches()
+            except Exception:
+                match.metasoft_report = previous
+                raise
 
-    def invalidate_metasoft_report(self, match: ProfileMatch) -> None:
-        """Persiste un etat non exportable avant les ecritures d'un report."""
-        previous = deepcopy(match.metasoft_report)
-        match.metasoft_report = {
-            "schema_version": 1,
-            "status": "report_in_progress",
-        }
-        try:
+    def restore_metasoft_report(
+        self,
+        match: ProfileMatch,
+        report: Optional[Dict[str, Any]],
+    ) -> None:
+        with self._matches_lock:
+            match.metasoft_report = deepcopy(report)
             self._save_matches()
-        except Exception:
-            match.metasoft_report = previous
-            raise
 
     def clear_manual_running_economy(self, match_id: str) -> None:
         """Supprime l'EC manuelle sauvegardee pour ce match uniquement."""
         if not self.current_session_path:
             raise ValueError("No session loaded")
-        payload = self._load_manual_running_economy_payload()
-        payload.pop(str(match_id), None)
-        self._write_manual_running_economy_payload(payload)
+        with self._manual_running_economy_lock:
+            payload = self._load_manual_running_economy_payload()
+            payload.pop(str(match_id), None)
+            self._write_manual_running_economy_payload(payload)
 
     def save_manual_running_economy(
         self,
@@ -777,47 +815,154 @@ class SessionManager:
         """Persiste l'EC manuelle Python avec fingerprint anti-stale."""
         if not self.current_session_path:
             raise ValueError("No session loaded")
-        payload = self._load_manual_running_economy_payload()
-        payload[str(match_id)] = {
-            "fingerprint": fingerprint,
-            "data": data,
-        }
-        self._write_manual_running_economy_payload(payload)
+        with self._manual_running_economy_lock:
+            payload = self._load_manual_running_economy_payload()
+            payload[str(match_id)] = {
+                "fingerprint": fingerprint,
+                "data": data,
+            }
+            self._write_manual_running_economy_payload(payload)
 
     def get_manual_running_economy(
         self,
         match_id: str,
-        fingerprint: Optional[Dict[str, Any]] = None,
+        match: ProfileMatch,
     ) -> Optional[Dict[str, Any]]:
-        """Retourne l'EC manuelle seulement si le sidecar est fingerprint-compatible."""
-        item = self._load_manual_running_economy_payload().get(str(match_id))
-        if not isinstance(item, dict):
+        """Retourne l'EC valide; stale/corrupt doit etre traite explicitement."""
+        state = self.manual_running_economy_state(match_id, match)
+        if state["status"] == "missing":
             return None
-        stored_fingerprint = item.get("fingerprint")
-        if not stored_fingerprint or fingerprint is None:
-            return None
-        if stored_fingerprint != fingerprint:
-            return None
-        data = item.get("data")
-        return data if isinstance(data, dict) else None
+        if state["status"] != "ok":
+            raise ValueError(
+                f"manual_running_economy_{state['status']}: {state.get('reason', '')}"
+            )
+        return state["data"]
+
+    def manual_running_economy_state(
+        self,
+        match_id: str,
+        match: ProfileMatch,
+    ) -> Dict[str, Any]:
+        """Etat structure missing/ok/stale/corrupt du sidecar EC."""
+        loaded = self._read_manual_running_economy_payload()
+        if loaded["status"] == "missing":
+            return {"status": "missing", "data": None, "reason": None}
+        if loaded["status"] == "corrupt":
+            return {"status": "corrupt", "data": None, "reason": loaded["reason"]}
+        item = loaded["payload"].get(str(match_id))
+        if item is None:
+            return {"status": "missing", "data": None, "reason": None}
+        if not isinstance(item, dict) or not isinstance(item.get("data"), dict):
+            return {"status": "corrupt", "data": None, "reason": "invalid_match_entry"}
+        fingerprint = item.get("fingerprint")
+        if not isinstance(fingerprint, dict) or fingerprint.get("schema_version") != 2:
+            return {"status": "stale", "data": None, "reason": "legacy_fingerprint"}
+        rows = item["data"].get("rows")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return {"status": "corrupt", "data": None, "reason": "invalid_rows"}
+        expected = self.build_manual_running_economy_fingerprint(match, item["data"])
+        if expected is None:
+            return {"status": "stale", "data": None, "reason": "source_unavailable"}
+        if fingerprint != expected:
+            return {"status": "stale", "data": None, "reason": "source_changed"}
+        return {"status": "ok", "data": deepcopy(item["data"]), "reason": None}
+
+    def snapshot_manual_running_economy_entry(self, match_id: str) -> Dict[str, Any]:
+        with self._manual_running_economy_lock:
+            payload = self._load_manual_running_economy_payload()
+            key = str(match_id)
+            path = self.current_session_path / self.MANUAL_RUNNING_ECONOMY_FILE
+            return {
+                "present": key in payload,
+                "item": deepcopy(payload.get(key)),
+                "file_bytes": path.read_bytes() if path.exists() else None,
+            }
+
+    def restore_manual_running_economy_entry(
+        self,
+        match_id: str,
+        snapshot: Dict[str, Any],
+    ) -> None:
+        with self._manual_running_economy_lock:
+            path = self.current_session_path / self.MANUAL_RUNNING_ECONOMY_FILE
+            original_bytes = snapshot.get("file_bytes")
+            if original_bytes is None:
+                if path.exists():
+                    path.unlink()
+                return
+            temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with open(temporary_path, "wb") as f:
+                    f.write(original_bytes)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary_path, path)
+            finally:
+                if temporary_path.exists():
+                    temporary_path.unlink()
 
     def _load_manual_running_economy_payload(self) -> Dict[str, Any]:
-        if not self.current_session_path:
+        loaded = self._read_manual_running_economy_payload()
+        if loaded["status"] == "missing":
             return {}
+        if loaded["status"] == "corrupt":
+            raise ValueError(f"manual_running_economy_corrupt: {loaded['reason']}")
+        return loaded["payload"]
+
+    def _read_manual_running_economy_payload(self) -> Dict[str, Any]:
+        if not self.current_session_path:
+            return {"status": "missing", "payload": {}, "reason": None}
         path = self.current_session_path / self.MANUAL_RUNNING_ECONOMY_FILE
         if not path.exists():
-            return {}
+            return {"status": "missing", "payload": {}, "reason": None}
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"status": "corrupt", "payload": None, "reason": str(exc)}
+        if not isinstance(data, dict):
+            return {"status": "corrupt", "payload": None, "reason": "invalid_root"}
+        for key, item in data.items():
+            if (
+                not isinstance(key, str)
+                or not isinstance(item, dict)
+                or not isinstance(item.get("fingerprint"), dict)
+                or not isinstance(item.get("data"), dict)
+            ):
+                return {
+                    "status": "corrupt",
+                    "payload": None,
+                    "reason": f"invalid_entry:{key}",
+                }
+        return {"status": "ok", "payload": data, "reason": None}
 
     def _write_manual_running_economy_payload(self, payload: Dict[str, Any]) -> None:
         path = self.current_session_path / self.MANUAL_RUNNING_ECONOMY_FILE
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+        temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(temporary_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+    @staticmethod
+    def _match_id(match: ProfileMatch) -> str:
+        raw = f"{Path(match.profile_name).name}\0{Path(match.xml_filename).name}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+    @staticmethod
+    def _json_sha256(data: Dict[str, Any]) -> str:
+        encoded = json.dumps(
+            data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def _file_sha256(self, path: Path) -> str:
         digest = hashlib.sha256()

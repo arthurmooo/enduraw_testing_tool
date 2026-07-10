@@ -27,9 +27,10 @@ export function MarkerPanel({
     const official = confirmedMarkers[name] && !dirty;
     if (dirty) counts.dirty += 1;
     else if (official) counts.official += 1;
+    else if (deletedMarkers.has(name)) counts.deleted += 1;
     else counts.draft += 1;
     return counts;
-  }, { official: 0, dirty: 0, draft: 0 });
+  }, { official: 0, dirty: 0, deleted: 0, draft: 0 });
 
   return (
     <section className="panel marker-panel">
@@ -38,6 +39,7 @@ export function MarkerPanel({
         <div className="table-summary">
           <span className="status-ok">{statusCounts.official} officiels</span>
           <span className="status-warn">{statusCounts.dirty} a reporter</span>
+          <span className="status-muted">{statusCounts.deleted} supprimés</span>
           <span className="status-muted">{statusCounts.draft} brouillons</span>
         </div>
       </div>
@@ -63,6 +65,7 @@ export function MarkerPanel({
               const confirmed = confirmedMarkers[name];
               const dirty = dirtyMarkers.has(name);
               const official = confirmed && !dirty ? confirmed : null;
+              const deleted = deletedMarkers.has(name) && !dirty;
               const row = official ?? draft;
               const rowClass = dirty ? "marker-row-dirty" : official ? "marker-row-official" : "marker-row-draft";
               return (
@@ -89,6 +92,8 @@ export function MarkerPanel({
                       <span className="status-warn">A reporter</span>
                     ) : official ? (
                       <span className="status-ok">Officiel</span>
+                    ) : deleted ? (
+                      <span className="status-muted">Supprimé</span>
                     ) : (
                       <span className="status-muted">Brouillon</span>
                     )}

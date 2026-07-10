@@ -67,6 +67,29 @@ def metasoft_unproven_profile_markers(profile: dict, markers: dict) -> list[str]
     return unproven
 
 
+def metasoft_markers_match_profile(profile: dict, markers: dict) -> bool:
+    """Verifie que chaque operation canonique projette exactement le profil."""
+    if not isinstance(markers, dict):
+        return False
+    for name, marker in markers.items():
+        if name not in MARKER_PROFILE_PATHS or not isinstance(marker, dict):
+            return False
+        if _canonical_marker_name(marker.get("name")) != name:
+            return False
+        patch_result = metasoft_marker_to_stress_patch(marker)
+        if patch_result.get("status") != "ok":
+            return False
+        for path, value in _flatten_values(patch_result.get("patch", {})):
+            present, current = _read_path_with_presence(profile, path)
+            if not present or current != value:
+                return False
+        for path in patch_result.get("delete_paths", []):
+            present, _value = _read_path_with_presence(profile, tuple(path))
+            if present:
+                return False
+    return True
+
+
 def build_metasoft_marker(
     points: list[dict],
     name: str,
@@ -383,6 +406,15 @@ def _blocked_marker(name: str, code: str, message: str) -> dict:
 def _normalise_marker_name(name) -> str:
     normalized = str(name or "").strip().lower().replace(" ", "_").replace("-", "_")
     return "vo2_max" if normalized == "vo2max" else normalized
+
+
+def _canonical_marker_name(name) -> str:
+    return {
+        "sv1": "SV1",
+        "sv2": "SV2",
+        "vo2_max": "VO2_max",
+        "vma": "VMA",
+    }.get(_normalise_marker_name(name), "")
 
 
 def _marker_delete_paths(name) -> list[list[str]]:

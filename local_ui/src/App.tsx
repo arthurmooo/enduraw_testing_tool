@@ -24,7 +24,6 @@ import type {
   DraftMarkers,
   LocalAnalysisPayload,
   MarkerMode,
-  MarkerOperationResults,
   MetaSoftMarkerName,
   MetaSoftPoint,
   ProfileConflict,
@@ -267,7 +266,12 @@ export default function App() {
   );
   const selectedReadingGraph = READING_GRAPH_CONFIGS.find((graph) => graph.id === selectedReadingGraphId)
     ?? READING_GRAPH_CONFIGS[0];
-  const markerReportSummary = buildMarkerReportSummary(draftMarkers, confirmedMarkers, dirtyMarkers);
+  const markerReportSummary = buildMarkerReportSummary(
+    draftMarkers,
+    confirmedMarkers,
+    dirtyMarkers,
+    deletedMarkers,
+  );
 
   const renderReadingChart = (graph: (typeof READING_GRAPH_CONFIGS)[number], height?: number) => (
     <MetaSoftChart
@@ -307,9 +311,28 @@ export default function App() {
           },
         );
         if (markerEditRevisionRef.current !== markerEditRevision) return;
+        const canonical = await apiGet<LocalAnalysisPayload>(
+          `/api/matches/${match.match_id}/analysis`,
+          bootstrap?.token ?? "",
+        );
+        if (markerEditRevisionRef.current !== markerEditRevision) return;
+        const canonicalConfirmed = canonical.confirmed_markers ?? {};
+        const canonicalDeleted = new Set(canonical.deleted_markers ?? []);
+        const canonicalDrafts = createInitialMarkers(canonical.analysis);
+        for (const name of MARKER_NAMES) {
+          const marker = canonicalConfirmed[name];
+          if (marker) canonicalDrafts[name] = marker;
+          if (canonicalDeleted.has(name)) {
+            canonicalDrafts[name] = buildDraftMarker(name, canonical.analysis.points, null, "point");
+          }
+        }
+        setPayload(canonical);
+        setDraftMarkers(canonicalDrafts);
+        setConfirmedMarkers(canonicalConfirmed);
+        setDeletedMarkers(canonicalDeleted);
+        setDirtyMarkers(new Set());
         setReport(response);
         setConflicts([]);
-        acceptConfirmedMarkers(response.confirmed_markers);
       } catch (err) {
         if (markerEditRevisionRef.current !== markerEditRevision) return;
         const apiError = err instanceof ApiError ? err : null;
@@ -474,45 +497,6 @@ export default function App() {
     </main>
   );
 
-  function acceptConfirmedMarkers(markers: MarkerOperationResults) {
-    const names = Object.keys(markers) as MetaSoftMarkerName[];
-    if (!names.length) return;
-    setConfirmedMarkers((current) => {
-      const next = { ...current };
-      for (const name of names) {
-        const marker = markers[name];
-        if (!marker || marker.action === "delete") delete next[name];
-        else next[name] = marker;
-      }
-      return next;
-    });
-    setDeletedMarkers((current) => {
-      const next = new Set(current);
-      for (const name of names) {
-        if (markers[name]?.action === "delete") next.add(name);
-        else next.delete(name);
-      }
-      return next;
-    });
-    setDraftMarkers((current) => {
-      if (!current) return current;
-      const next = { ...current };
-      for (const name of names) {
-        const marker = markers[name];
-        if (!marker) continue;
-        next[name] = marker.action === "delete"
-          ? buildDraftMarker(name, analysis.points, null, "point")
-          : marker;
-      }
-      return next;
-    });
-    setDirtyMarkers((current) => {
-      const next = new Set(current);
-      names.forEach((name) => next.delete(name));
-      return next;
-    });
-  }
-
   async function runOfficialAction(label: string, action: () => Promise<void>) {
     setBusy(label);
     setError(null);
@@ -565,14 +549,16 @@ function buildMarkerReportSummary(
   draftMarkers: DraftMarkers,
   confirmedMarkers: ConfirmedMarkers,
   dirtyMarkers: Set<MetaSoftMarkerName>,
+  deletedMarkers: Set<MetaSoftMarkerName>,
 ): MarkerReportSummaryItem[] {
   return MARKER_NAMES.map((name) => {
     const draft = draftMarkers[name];
     const confirmed = confirmedMarkers[name];
     const dirty = dirtyMarkers.has(name);
     const official = confirmed && !dirty ? confirmed : null;
+    const deleted = deletedMarkers.has(name) && !dirty;
     const row = official ?? draft;
-    const status = dirty ? "A reporter" : official ? "Officiel" : "Brouillon";
+    const status = dirty ? "A reporter" : official ? "Officiel" : deleted ? "Supprimé" : "Brouillon";
     return {
       name: name === "VO2_max" ? "VO2max" : name,
       status,

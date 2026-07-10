@@ -8,7 +8,7 @@ import type {
 
 export interface MarkerReportSummaryItem {
   name: string;
-  status: "Brouillon" | "A reporter" | "Officiel";
+  status: "Brouillon" | "A reporter" | "Officiel" | "Supprimé";
   time: string;
   window: string;
   fc: string;
@@ -178,6 +178,7 @@ function ReportSummary({
 
 function statusClass(status: MarkerReportSummaryItem["status"]): string {
   if (status === "Officiel") return "status-ok";
+  if (status === "Supprimé") return "status-muted";
   if (status === "A reporter") return "status-warn";
   return "status-muted";
 }

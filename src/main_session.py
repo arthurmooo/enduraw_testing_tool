@@ -108,6 +108,18 @@ def _validated_metasoft_export_markers(
     return provenance["markers"]
 
 
+def _validated_manual_running_economy(session_manager, match, match_id):
+    """Retourne l'EC exportable ou bloque explicitement stale/corrupt."""
+    state = session_manager.manual_running_economy_state(match_id, match)
+    if state["status"] == "missing":
+        return None
+    if state["status"] != "ok":
+        raise ValueError(
+            f"manual_running_economy_{state['status']}: {state.get('reason', '')}"
+        )
+    return state["data"]
+
+
 def _match_id(profile_name: str, xml_filename: str) -> str:
     raw = f"{Path(str(profile_name)).name}\0{Path(str(xml_filename)).name}"
     return sha256(raw.encode("utf-8")).hexdigest()[:12]
@@ -854,15 +866,10 @@ class XmlMatchTab(ctk.CTkFrame):
 
             # La transformation ne commence qu'apres tous les garde-fous bloquants.
             match_id = _match_id(profile_name, xml_filename)
-            fingerprint = (
-                self.session_manager.build_match_fingerprint(match)
-                if match.xml_filename == xml_filename
-                else None
-            )
-            manual_ec = (
-                self.session_manager.get_manual_running_economy(match_id, fingerprint)
-                if fingerprint
-                else None
+            manual_ec = _validated_manual_running_economy(
+                self.session_manager,
+                match,
+                match_id,
             )
             output = self.transformer.transform(xml_data, profile_data, manual_ec)
             
@@ -936,11 +943,10 @@ class XmlMatchTab(ctk.CTkFrame):
                     profile_data,
                 )
                 match_id = _match_id(profile_name, xml_filename)
-                fingerprint = self.session_manager.build_match_fingerprint(match)
-                manual_ec = (
-                    self.session_manager.get_manual_running_economy(match_id, fingerprint)
-                    if fingerprint
-                    else None
+                manual_ec = _validated_manual_running_economy(
+                    self.session_manager,
+                    match,
+                    match_id,
                 )
                 output = self.transformer.transform(xml_data, profile_data, manual_ec)
                 

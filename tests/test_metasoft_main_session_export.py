@@ -44,6 +44,7 @@ from core.metasoft_identity import metasoft_identity_check
 from core.session_manager import SessionManager
 from main_session import (
     _save_metasoft_audit_sidecar,
+    _validated_manual_running_economy,
     _validated_metasoft_export_markers,
 )
 
@@ -260,25 +261,58 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
             source_xml.write_text("<xml />", encoding="utf-8")
             xml_filename = manager.import_xml(str(source_xml))
             match = manager.create_match(profile_name, xml_filename)
-            fingerprint = manager.build_match_fingerprint(match)
             manual_ec = {
                 "source": "python.metasoft_analysis.manual_running_economy",
-                "rows": [{"stage_index": 1, "ec_j_kg_m": 4.23}],
+                "rows": [{
+                    "stage_index": 1,
+                    "ec_j_kg_m": 4.23,
+                    "sources": {"vo2max": "metasoft_marker.vo2_max"},
+                }],
             }
+            fingerprint = manager.build_manual_running_economy_fingerprint(match, manual_ec)
             manager.save_manual_running_economy("match", manual_ec, fingerprint)
-            stale = {**fingerprint, "xml": {**fingerprint["xml"], "size": 1}}
 
-            compatible = manager.get_manual_running_economy("match", fingerprint)
-            stale_payload = manager.get_manual_running_economy("match", stale)
-            output = DataTransformer().transform(
-                {"patient_data": {}, "filename_data": {}, "measurements": []},
-                {"email": "arthur@example.test", "stress_test_results": {}},
-                stale_payload,
-            )
+            compatible = manager.get_manual_running_economy("match", match)
+            manager.xml_path(xml_filename).write_text("<xml changed />", encoding="utf-8")
+            stale = manager.manual_running_economy_state("match", match)
 
         self.assertEqual(compatible, manual_ec)
-        self.assertIsNone(stale_payload)
-        self.assertNotIn("running_economy_manual", output)
+        self.assertEqual(stale["status"], "stale")
+
+    def test_export_blocks_stale_or_corrupt_manual_ec_before_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = SessionManager(tmp_dir)
+            manager.create_session("2026-07-08", "contas")
+            profile_name = manager.add_profile({
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+                "stress_test_results": {"measured_vo2max": 50},
+            })
+            source_xml = Path(tmp_dir) / "metasoft.xml"
+            source_xml.write_text("<xml />", encoding="utf-8")
+            xml_filename = manager.import_xml(str(source_xml))
+            match = manager.create_match(profile_name, xml_filename)
+            match_id = "match"
+            manual_ec = {
+                "source": "python.metasoft_analysis.manual_running_economy",
+                "rows": [{
+                    "stage_index": 1,
+                    "ec_j_kg_m": 4.23,
+                    "sources": {"vo2max": "profile.stress_test_results.measured_vo2max"},
+                }],
+            }
+            fingerprint = manager.build_manual_running_economy_fingerprint(match, manual_ec)
+            manager.save_manual_running_economy(match_id, manual_ec, fingerprint)
+            profile = manager.get_profile(profile_name)
+            profile["stress_test_results"]["measured_vo2max"] = 55
+            manager.update_profile(profile_name, profile)
+
+            with self.assertRaisesRegex(ValueError, "manual_running_economy_stale"):
+                _validated_manual_running_economy(manager, match, match_id)
+            path = manager.current_session_path / "running_economy_manual.json"
+            path.write_text("{broken", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "manual_running_economy_corrupt"):
+                _validated_manual_running_economy(manager, match, match_id)
+            self.assertEqual(list(Path(manager.get_output_dir()).iterdir()), [])
 
     def test_historical_export_saves_sidecar_without_markers_or_ui_warnings(self) -> None:
         session_manager = _SessionManager()
