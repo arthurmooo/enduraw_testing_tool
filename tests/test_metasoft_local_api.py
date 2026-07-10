@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -92,7 +93,7 @@ def _metasoft_xml(include_weight: bool = False, two_stages: bool = False) -> byt
 def _profile() -> dict:
     return {
         "email": "coach@example.test",
-        "identity": {"last_name": "Mo", "first_name": "Arthur"},
+        "identity": {"last_name": "VAN DER VEEN", "first_name": "Noor"},
         "body_composition": {"height_cm": 180, "current_weight": 62},
         "professional_life": {},
         "equipment_and_tracking": {},
@@ -153,8 +154,45 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(payload["profile"]["body_composition"]["current_weight"], 62)
         economy = payload["analysis"]["computed"]["running_economy"][0]
         self.assertEqual(economy["mass_kg"], 62)
-        self.assertEqual(payload["warnings"][0]["code"], "identity_mismatch")
+        self.assertEqual(payload["warnings"][0]["code"], "marker_provenance_missing")
+        self.assertTrue(payload["warnings"][0]["blocking"])
         self.assertEqual(payload["source_of_truth"]["markers"], "python.metasoft_markers")
+
+    def test_identity_mismatch_blocks_preview_and_report_without_profile_write(self) -> None:
+        profile = self.session_manager.get_profile(self.profile_name)
+        profile["identity"] = {"last_name": "Mo", "first_name": "Arthur"}
+        profile_path = self.session_manager.profile_path(self.profile_name)
+        profile_path.write_text(json.dumps(profile), encoding="utf-8")
+        original = self.session_manager.get_profile(self.profile_name)
+        match_id = self._match_id()
+
+        status, analysis = self._get(f"/api/matches/{match_id}/analysis")
+        self.assertEqual(status, 200)
+        self.assertEqual(analysis["warnings"][0]["code"], "identity_mismatch")
+        self.assertTrue(analysis["warnings"][0]["blocking"])
+
+        for suffix in ("report-preview", "report"):
+            status, payload = self._post(
+                f"/api/matches/{match_id}/profile/{suffix}",
+                {"marker_selections": []},
+            )
+            self.assertEqual(status, 409)
+            self.assertEqual(payload["error"]["code"], "identity_mismatch")
+        self.assertEqual(self.session_manager.get_profile(self.profile_name), original)
+
+    def test_missing_profile_identity_blocks_report_as_unverifiable(self) -> None:
+        profile = self.session_manager.get_profile(self.profile_name)
+        profile["identity"] = {}
+        profile_path = self.session_manager.profile_path(self.profile_name)
+        profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+        status, payload = self._post(
+            f"/api/matches/{self._match_id()}/profile/report",
+            {"marker_selections": []},
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "identity_unverifiable")
 
     def test_post_officialize_with_invalid_token_returns_403(self) -> None:
         match_id = self._match_id()
@@ -672,6 +710,138 @@ class MetaSoftLocalApiTest(unittest.TestCase):
             updated["stress_test_results"]["measured_vo2max"],
             marker["values"]["vo2_ml_kg_min"],
         )
+
+    def test_analysis_reloads_cumulative_confirmed_and_deleted_markers(self) -> None:
+        match_id = self._match_id()
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [
+                    {"name": "SV1", "mode": "point", "t_seconds": 60},
+                ],
+                "conflict_policy": "overwrite",
+            },
+        )
+        self.assertEqual(status, 200)
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [{"name": "VMA", "action": "delete"}],
+                "conflict_policy": "overwrite",
+            },
+        )
+        self.assertEqual(status, 200)
+
+        self.session_manager._load_matches()
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["confirmed_markers"]["SV1"]["values"]["fc_bpm"], 120)
+        self.assertEqual(payload["deleted_markers"], ["VMA"])
+        self.assertNotIn("VMA", payload["confirmed_markers"])
+
+    def test_marker_provenance_ignores_unrelated_profile_change_but_not_threshold_change(self) -> None:
+        match_id = self._match_id()
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [
+                    {"name": "SV1", "mode": "point", "t_seconds": 60},
+                ],
+                "conflict_policy": "overwrite",
+            },
+        )
+        self.assertEqual(status, 200)
+        match = self.session_manager.matches[0]
+
+        profile = self.session_manager.get_profile(self.profile_name)
+        profile["professional_life"]["occupation"] = "Coach"
+        self.session_manager.update_profile(self.profile_name, profile)
+        self.assertTrue(
+            self.session_manager.validate_metasoft_report(match, profile)["valid"]
+        )
+
+        profile["stress_test_results"]["thresholds"]["sv1"]["hr_bpm"] = 999
+        self.session_manager.update_profile(self.profile_name, profile)
+        validation = self.session_manager.validate_metasoft_report(match, profile)
+        self.assertFalse(validation["valid"])
+        self.assertEqual(validation["reason"], "profile_markers_changed")
+
+    def test_marker_provenance_becomes_stale_when_xml_changes(self) -> None:
+        match_id = self._match_id()
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [
+                    {"name": "SV1", "mode": "point", "t_seconds": 60},
+                ],
+                "conflict_policy": "overwrite",
+            },
+        )
+        self.assertEqual(status, 200)
+        xml_path = self.session_manager.xml_path(self.xml_filename)
+        xml_path.write_bytes(xml_path.read_bytes() + b"\n")
+
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+
+        self.assertEqual(status, 200)
+        warnings = {warning["code"]: warning for warning in payload["warnings"]}
+        self.assertEqual(warnings["marker_provenance_stale"]["reason"], "source_changed")
+        self.assertTrue(warnings["marker_provenance_stale"]["blocking"])
+        self.assertEqual(payload["confirmed_markers"], {})
+        self.assertEqual(payload["deleted_markers"], [])
+
+    def test_provenance_write_failure_returns_error_and_keeps_export_blocked(self) -> None:
+        match_id = self._match_id()
+        original_save = self.session_manager._save_matches
+        save_calls = 0
+
+        def fail_final_save():
+            nonlocal save_calls
+            save_calls += 1
+            if save_calls == 2:
+                raise OSError("disk full")
+            original_save()
+
+        with patch.object(
+            self.session_manager,
+            "_save_matches",
+            side_effect=fail_final_save,
+        ):
+            status, payload = self._post(
+                f"/api/matches/{match_id}/profile/report",
+                {
+                    "marker_selections": [
+                        {"name": "SV1", "mode": "point", "t_seconds": 60},
+                    ],
+                    "conflict_policy": "overwrite",
+                },
+            )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"]["code"], "metasoft_provenance_save_failed")
+        profile = self.session_manager.get_profile(self.profile_name)
+        self.assertEqual(profile["stress_test_results"]["thresholds"]["sv1"]["hr_bpm"], 120)
+        validation = self.session_manager.validate_metasoft_report(
+            self.session_manager.matches[0],
+            profile,
+        )
+        self.assertFalse(validation["valid"])
+        self.session_manager._load_matches()
+        persisted = self.session_manager.validate_metasoft_report(
+            self.session_manager.matches[0],
+            profile,
+        )
+        self.assertFalse(persisted["valid"])
+
+    def test_matches_without_metasoft_report_remain_loadable(self) -> None:
+        matches_path = self.session_manager.current_session_path / "matches.json"
+        raw = json.loads(matches_path.read_text(encoding="utf-8"))
+        self.assertNotIn("metasoft_report", raw[0])
+
+        self.session_manager._load_matches()
+
+        self.assertIsNone(self.session_manager.matches[0].metasoft_report)
 
     def test_report_conflict_does_not_persist_manual_running_economy(self) -> None:
         match_id = self._weighted_match_id()

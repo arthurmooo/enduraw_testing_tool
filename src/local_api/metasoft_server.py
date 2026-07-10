@@ -9,7 +9,6 @@ import json
 import mimetypes
 import secrets
 import threading
-import unicodedata
 import gc
 from contextlib import contextmanager
 from copy import deepcopy
@@ -20,10 +19,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from core.metasoft_analysis import build_manual_running_economy, build_metasoft_analysis
+from core.metasoft_identity import metasoft_identity_check
 from core.metasoft_markers import (
     apply_metasoft_stress_patch,
     build_metasoft_marker,
     build_metasoft_marker_deletion,
+    metasoft_unproven_profile_markers,
     metasoft_marker_to_stress_patch,
 )
 from utils.xml_parser import TCPXmlParser
@@ -191,7 +192,33 @@ class LocalMetaSoftServer:
         context = self._match_context(match_id)
         if not context["ok"]:
             return context
-        warnings = _identity_warnings(context["analysis"].get("athlete", {}), context["profile"])
+        identity = metasoft_identity_check(
+            context["analysis"].get("athlete", {}),
+            context["profile"],
+        )
+        warnings = [] if identity["ok"] else [_warning_from_check(identity)]
+        provenance = self.session_manager.validate_metasoft_report(
+            context["match_info"],
+            context["profile"],
+        )
+        markers = provenance["markers"] if provenance["valid"] else {}
+        provenance_warning = _metasoft_provenance_warning(
+            provenance,
+            context["match_info"],
+            context["profile"],
+        )
+        if provenance_warning:
+            warnings.append(provenance_warning)
+        confirmed_markers = {
+            name: marker
+            for name, marker in markers.items()
+            if isinstance(marker, dict) and marker.get("action") != "delete"
+        }
+        deleted_markers = [
+            name
+            for name, marker in markers.items()
+            if isinstance(marker, dict) and marker.get("action") == "delete"
+        ]
         return {
             "ok": True,
             "match": context["match"],
@@ -201,6 +228,8 @@ class LocalMetaSoftServer:
                 match_id,
                 context["fingerprint"],
             ),
+            "confirmed_markers": confirmed_markers,
+            "deleted_markers": deleted_markers,
             "warnings": warnings,
             "source_of_truth": {
                 "metrics": "python.metasoft_analysis",
@@ -309,6 +338,9 @@ class LocalMetaSoftServer:
         context = self._match_context(match_id)
         if not context["ok"]:
             return context
+        identity_error = _identity_error(context)
+        if identity_error:
+            return identity_error
         patch_result = self._patch_from_payload(context, payload)
         if not patch_result["ok"]:
             return patch_result
@@ -326,6 +358,9 @@ class LocalMetaSoftServer:
         context = self._match_context(match_id)
         if not context["ok"]:
             return context
+        identity_error = _identity_error(context)
+        if identity_error:
+            return identity_error
         patch_result = self._patch_from_payload(context, payload)
         if not patch_result["ok"]:
             return patch_result
@@ -342,6 +377,26 @@ class LocalMetaSoftServer:
         manual_result = self._manual_running_economy_for_report(context, match_id, payload, patch_result)
         if not manual_result["ok"]:
             return manual_result
+
+        previous_provenance = self.session_manager.validate_metasoft_report(
+            context["match_info"],
+            context["profile"],
+        )
+        canonical_markers = (
+            previous_provenance["markers"] if previous_provenance["valid"] else {}
+        )
+        canonical_markers.update(deepcopy(patch_result["markers"]))
+
+        try:
+            # Un crash ou une erreur apres la premiere ecriture ne doit jamais
+            # laisser l'ancienne provenance exportable au redemarrage.
+            self.session_manager.invalidate_metasoft_report(context["match_info"])
+        except Exception as exc:
+            return _error(
+                "metasoft_provenance_prepare_failed",
+                f"Report annule avant ecriture: provenance non invalidable: {exc}",
+                status=500,
+            )
 
         updated_paths = _patch_updated_paths(context["profile"], patch_result["patch_result"])
         profile = context["profile"]
@@ -367,6 +422,21 @@ class LocalMetaSoftServer:
                 match_id,
                 manual_running_economy,
                 final_fingerprint,
+            )
+
+        try:
+            # La provenance est volontairement la derniere ecriture du report:
+            # elle n'atteste que le profil et l'EC deja sauvegardes avec succes.
+            self.session_manager.record_metasoft_report(
+                context["match_info"],
+                profile,
+                canonical_markers,
+            )
+        except Exception as exc:
+            return _error(
+                "metasoft_provenance_save_failed",
+                f"Report profil effectue mais provenance MetaSoft non sauvegardee: {exc}",
+                status=500,
             )
 
         return {
@@ -954,37 +1024,49 @@ def _ui_analysis_payload(analysis):
     return ui_analysis
 
 
-def _identity_warnings(xml_athlete, profile):
-    xml_name = _identity_name(xml_athlete)
-    profile_name = _profile_name(profile)
-    if not xml_name or not profile_name:
-        return []
-    if _clean_identity(xml_name) == _clean_identity(profile_name):
-        return []
-    return [{
-        "code": "identity_mismatch",
-        "message": "Identite XML differente du profil local; export non bloque.",
-        "blocking": False,
-        "xml_athlete_name": xml_name,
-        "profile_athlete_name": profile_name,
-    }]
-
-
-def _identity_name(identity):
-    return (
-        identity.get("athlete_name")
-        or f"{identity.get('last_name', '')} {identity.get('first_name', '')}".strip()
+def _identity_error(context):
+    check = metasoft_identity_check(
+        context["analysis"].get("athlete", {}),
+        context["profile"],
     )
+    if check["ok"]:
+        return None
+    details = {key: value for key, value in check.items() if key not in {"ok", "message"}}
+    return _error(check["code"], check["message"], status=409, details=details)
 
 
-def _profile_name(profile):
-    return _identity_name(profile.get("identity", {}) or {})
+def _warning_from_check(check):
+    return {key: value for key, value in check.items() if key != "ok"}
 
 
-def _clean_identity(value):
-    normalized = unicodedata.normalize("NFKD", str(value).strip().lower())
-    ascii_value = "".join(char for char in normalized if not unicodedata.combining(char))
-    return " ".join(ascii_value.split())
+def _metasoft_provenance_warning(provenance, match, profile):
+    if provenance["valid"]:
+        unproven = metasoft_unproven_profile_markers(profile, provenance["markers"])
+        if not unproven:
+            return None
+        return {
+            "code": "marker_provenance_incomplete",
+            "message": "Valeurs marqueurs profil sans report MetaSoft prouve.",
+            "blocking": True,
+            "markers": unproven,
+        }
+    unproven = metasoft_unproven_profile_markers(profile, {})
+    if provenance["reason"] == "missing" and not unproven:
+        return None
+    code = (
+        "marker_provenance_missing"
+        if provenance["reason"] == "missing"
+        else "marker_provenance_stale"
+    )
+    return {
+        "code": code,
+        "message": "Provenance marqueurs MetaSoft absente ou perimee; export bloque.",
+        "blocking": True,
+        "reason": provenance["reason"],
+        "markers": unproven,
+        "profile_name": match.profile_name,
+        "xml_filename": match.xml_filename,
+    }
 
 
 def _profile_mass_kg(profile):

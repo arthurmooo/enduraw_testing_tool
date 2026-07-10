@@ -13,6 +13,58 @@ from typing import Optional
 
 
 MARKER_VALUE_KEYS = ("fc_bpm", "vo2_l_min", "vo2_ml_kg_min", "speed_kmh")
+MARKER_PROFILE_PATHS = {
+    "SV1": (
+        ("stress_test_results", "thresholds", "sv1", "hr_bpm"),
+        ("stress_test_results", "thresholds", "sv1", "pace_km_h"),
+        ("stress_test_results", "thresholds", "sv1", "vo2_ml_kg_min"),
+    ),
+    "SV2": (
+        ("stress_test_results", "thresholds", "sv2", "hr_bpm"),
+        ("stress_test_results", "thresholds", "sv2", "pace_km_h"),
+        ("stress_test_results", "thresholds", "sv2", "vo2_ml_kg_min"),
+    ),
+    "VO2_max": (
+        ("stress_test_results", "max_hr"),
+        ("stress_test_results", "measured_vo2max"),
+    ),
+    "VMA": (("stress_test_results", "vma"),),
+}
+
+
+def metasoft_profile_marker_snapshot(profile: dict) -> dict:
+    """Capture exactement les champs profil possedes par les marqueurs.
+
+    La presence de chaque cle est conservee separement de sa valeur afin qu'une
+    suppression ou l'ajout d'un `null` invalide aussi la provenance.
+    """
+    snapshot = {}
+    for paths in MARKER_PROFILE_PATHS.values():
+        for path in paths:
+            present, value = _read_path_with_presence(profile, path)
+            snapshot[".".join(path)] = {
+                "present": present,
+                "value": deepcopy(value) if present else None,
+            }
+    return snapshot
+
+
+def metasoft_unproven_profile_markers(profile: dict, markers: dict) -> list[str]:
+    """Liste les groupes profil non vides sans operation MetaSoft prouvee."""
+    unproven = []
+    for name, paths in MARKER_PROFILE_PATHS.items():
+        has_value = any(
+            present and value not in (None, "")
+            for present, value in (_read_path_with_presence(profile, path) for path in paths)
+        )
+        marker = markers.get(name) if isinstance(markers, dict) else None
+        if has_value and (
+            not isinstance(marker, dict)
+            or marker.get("action") == "delete"
+            or marker.get("status") != "ok"
+        ):
+            unproven.append(name)
+    return unproven
 
 
 def build_metasoft_marker(
@@ -354,6 +406,15 @@ def _flatten_values(data: dict, prefix=()):
             yield from _flatten_values(value, path)
         else:
             yield path, value
+
+
+def _read_path_with_presence(data: dict, path: tuple[str, ...]) -> tuple[bool, object]:
+    current = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return False, None
+        current = current[key]
+    return True, current
 
 
 def _delete_path(data: dict, path: list[str]) -> None:

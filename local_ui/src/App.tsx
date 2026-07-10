@@ -86,10 +86,20 @@ export default function App() {
         const result = await apiGet<LocalAnalysisPayload>(`/api/matches/${boot.matchId}/analysis`, boot.token);
         if (cancelled) return;
         const firstPoint = result.analysis.points[0] ?? null;
+        const confirmed = result.confirmed_markers ?? {};
+        const deleted = new Set(result.deleted_markers ?? []);
+        const initialMarkers = createInitialMarkers(result.analysis);
+        for (const name of MARKER_NAMES) {
+          const marker = confirmed[name];
+          if (marker) initialMarkers[name] = marker;
+          if (deleted.has(name)) {
+            initialMarkers[name] = buildDraftMarker(name, result.analysis.points, null, "point");
+          }
+        }
         setPayload(result);
-        setDraftMarkers(createInitialMarkers(result.analysis));
-        setConfirmedMarkers({});
-        setDeletedMarkers(new Set());
+        setDraftMarkers(initialMarkers);
+        setConfirmedMarkers(confirmed);
+        setDeletedMarkers(deleted);
         setDirtyMarkers(new Set());
         markerEditRevisionRef.current = 0;
         cursorPointRef.current = firstPoint;
@@ -457,7 +467,7 @@ export default function App() {
         conflicts={conflicts}
         markerSummary={markerReportSummary}
         manualEconomySummary={manualEconomyReportSummary}
-        warnings={analysis.warnings}
+        warnings={[...analysis.warnings, ...warnings]}
         onReport={() => void reportProfile(false)}
         onReportOverwrite={() => void reportProfile(true)}
       />

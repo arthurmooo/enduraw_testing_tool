@@ -13,6 +13,8 @@ from pathlib import Path
 
 from utils.xml_parser import TCPXmlParser
 from core.data_transformer import DataTransformer
+from core.metasoft_identity import metasoft_identity_check
+from core.metasoft_markers import metasoft_unproven_profile_markers
 from core.metasoft_audit_export import (
     build_metasoft_audit_export,
     metasoft_audit_filename,
@@ -38,8 +40,9 @@ def _save_metasoft_audit_sidecar(
     profile_data: Dict[str, Any],
     output_filename: str,
     profile_filename: str,
+    markers: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
-    """Sauve le sidecar MetaSoft historique sans marqueur manuel.
+    """Sauve le sidecar MetaSoft avec les marqueurs canoniques prouves.
 
     Source: analyse MetaSoft deja parse/recalculee par `DataTransformer`.
     Transformation: export audit pur, sans points bruts decimes ni warnings UI.
@@ -53,7 +56,7 @@ def _save_metasoft_audit_sidecar(
     sidecar = build_metasoft_audit_export(
         analysis,
         profile=profile_data,
-        markers={},
+        markers=markers or {},
         json_filename=output_filename,
         audit_filename=audit_filename,
         profile_filename=profile_filename,
@@ -61,6 +64,48 @@ def _save_metasoft_audit_sidecar(
         app_version=APP_VERSION,
     )
     return session_manager.save_output(audit_filename, sidecar)
+
+
+def _validated_metasoft_export_markers(
+    session_manager: SessionManager,
+    match,
+    xml_data: Dict[str, Any],
+    profile_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Bloque l'export si identite ou provenance marqueurs n'est pas prouvee."""
+    analysis = xml_data.get("metasoft_analysis")
+    if not isinstance(analysis, dict):
+        # Le garde-fou ne change pas le contrat des anciens flux non MetaSoft.
+        return {}
+    identity = metasoft_identity_check(analysis.get("athlete", {}), profile_data)
+    if not identity["ok"]:
+        raise ValueError(
+            f"{identity['code']}: {identity['message']} "
+            f"(XML={identity['xml_athlete_name']!r}, profil={identity['profile_athlete_name']!r})"
+        )
+
+    provenance = session_manager.validate_metasoft_report(match, profile_data)
+    profile_markers = metasoft_unproven_profile_markers(profile_data, {})
+    if not provenance["valid"]:
+        # Un report invalide explicite reste bloquant meme si le profil ne porte
+        # aucun seuil; `missing` reste compatible avec un profil historiquement vide.
+        if profile_markers or match.metasoft_report is not None:
+            raise ValueError(
+                "marker_provenance_stale: provenance MetaSoft absente ou perimee "
+                f"({provenance['reason']})."
+            )
+        return {}
+
+    unproven = metasoft_unproven_profile_markers(
+        profile_data,
+        provenance["markers"],
+    )
+    if unproven:
+        raise ValueError(
+            "marker_provenance_incomplete: champs profil sans marqueur MetaSoft "
+            f"prouve ({', '.join(unproven)})."
+        )
+    return provenance["markers"]
 
 
 def _match_id(profile_name: str, xml_filename: str) -> str:
@@ -797,13 +842,21 @@ class XmlMatchTab(ctk.CTkFrame):
             # Parse XML
             xml_path = self.session_manager.get_xml_path(xml_filename)
             xml_data = self.parser.parse_file(xml_path)
-            
-            # Transform using existing transformer
-            match_id = _match_id(profile_name, xml_filename)
             match = self.session_manager.get_match_for_profile(profile_name)
+            if not match or match.xml_filename != xml_filename:
+                raise ValueError("Association profil/XML introuvable pour l'export MetaSoft")
+            markers = _validated_metasoft_export_markers(
+                self.session_manager,
+                match,
+                xml_data,
+                profile_data,
+            )
+
+            # La transformation ne commence qu'apres tous les garde-fous bloquants.
+            match_id = _match_id(profile_name, xml_filename)
             fingerprint = (
                 self.session_manager.build_match_fingerprint(match)
-                if match and match.xml_filename == xml_filename
+                if match.xml_filename == xml_filename
                 else None
             )
             manual_ec = (
@@ -827,6 +880,7 @@ class XmlMatchTab(ctk.CTkFrame):
                 profile_data,
                 output_filename,
                 profile_name,
+                markers,
             )
             
             # Mark as exported
@@ -875,6 +929,12 @@ class XmlMatchTab(ctk.CTkFrame):
                     continue
                 
                 xml_data = self.parser.parse_file(xml_path)
+                markers = _validated_metasoft_export_markers(
+                    self.session_manager,
+                    match,
+                    xml_data,
+                    profile_data,
+                )
                 match_id = _match_id(profile_name, xml_filename)
                 fingerprint = self.session_manager.build_match_fingerprint(match)
                 manual_ec = (
@@ -896,6 +956,7 @@ class XmlMatchTab(ctk.CTkFrame):
                     profile_data,
                     output_filename,
                     profile_name,
+                    markers,
                 )
                 self.session_manager.mark_as_exported(profile_name)
                 success += 1

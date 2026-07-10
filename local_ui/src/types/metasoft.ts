@@ -217,6 +217,8 @@ export interface LocalAnalysisPayload {
   profile: Record<string, unknown>;
   analysis: MetaSoftAnalysis;
   manual_running_economy?: ManualRunningEconomyPayload | null;
+  confirmed_markers?: ConfirmedMarkers;
+  deleted_markers?: MetaSoftMarkerName[];
   warnings: MetaSoftWarning[];
   source_of_truth: Record<string, string>;
 }

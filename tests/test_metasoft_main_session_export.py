@@ -6,6 +6,7 @@ les temps et l'EC restent ceux de l'analyse MetaSoft; aucun marqueur UI n'est
 reconstruit dans ce flux.
 """
 from copy import deepcopy
+import json
 import sys
 import tempfile
 import types
@@ -39,8 +40,12 @@ except ModuleNotFoundError:
 
 from core.metasoft_analysis import build_metasoft_analysis
 from core.data_transformer import DataTransformer
+from core.metasoft_identity import metasoft_identity_check
 from core.session_manager import SessionManager
-from main_session import _save_metasoft_audit_sidecar
+from main_session import (
+    _save_metasoft_audit_sidecar,
+    _validated_metasoft_export_markers,
+)
 
 
 def _analysis() -> dict:
@@ -70,6 +75,28 @@ class _SessionManager:
 
 
 class MetaSoftMainSessionExportTest(unittest.TestCase):
+    def test_identity_normalises_accents_case_and_spaces(self) -> None:
+        result = metasoft_identity_check(
+            {"athlete_name": "  MÔ   Arthur "},
+            {"identity": {"last_name": "mo", "first_name": "ARTHUR"}},
+        )
+
+        self.assertTrue(result["ok"])
+
+    def test_non_metasoft_export_keeps_legacy_path_without_provenance(self) -> None:
+        class _LegacyManager:
+            def validate_metasoft_report(self, *_args):
+                raise AssertionError("La provenance MetaSoft ne doit pas etre lue")
+
+        markers = _validated_metasoft_export_markers(
+            _LegacyManager(),
+            object(),
+            {"patient_data": {"Nom": "Mo", "Prénom": "Arthur"}},
+            {"identity": {"last_name": "Mo", "first_name": "Arthur"}},
+        )
+
+        self.assertEqual(markers, {})
+
     def test_valentin_json_contract_stays_separate_from_audit(self) -> None:
         output = DataTransformer().transform(
             {
@@ -293,6 +320,144 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
 
         self.assertIsNone(path)
         self.assertEqual(session_manager.saved, {})
+
+    def test_export_guard_blocks_mismatch_unproven_and_stale_before_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = SessionManager(tmp_dir)
+            manager.create_session("2026-07-08", "contas")
+            profile = {
+                "email": "arthur@example.test",
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+                "stress_test_results": {
+                    "thresholds": {
+                        "sv1": {
+                            "hr_bpm": 143,
+                            "pace_km_h": 11,
+                            "vo2_ml_kg_min": 34.1,
+                        },
+                    },
+                },
+            }
+            profile_name = manager.add_profile(profile)
+            source_xml = Path(tmp_dir) / "metasoft.xml"
+            source_xml.write_text("<xml />", encoding="utf-8")
+            xml_filename = manager.import_xml(str(source_xml))
+            match = manager.create_match(profile_name, xml_filename)
+
+            with self.assertRaisesRegex(ValueError, "identity_mismatch"):
+                _validated_metasoft_export_markers(
+                    manager,
+                    match,
+                    {"metasoft_analysis": {"athlete": {"athlete_name": "Doe John"}}},
+                    profile,
+                )
+            with self.assertRaisesRegex(ValueError, "marker_provenance_stale"):
+                _validated_metasoft_export_markers(
+                    manager,
+                    match,
+                    {"metasoft_analysis": {"athlete": {"athlete_name": "Mo Arthur"}}},
+                    profile,
+                )
+
+            marker = {
+                "name": "SV1",
+                "action": "upsert",
+                "status": "ok",
+                "mode": "point",
+                "t_seconds": 60,
+                "window_start_seconds": None,
+                "window_end_seconds": None,
+                "point_count": 1,
+                "values": {
+                    "fc_bpm": 143,
+                    "vo2_ml_kg_min": 34.1,
+                    "speed_kmh": 11,
+                },
+            }
+            manager.record_metasoft_report(match, profile, {"SV1": marker})
+            profile["stress_test_results"]["thresholds"]["sv1"]["hr_bpm"] = 144
+            manager.update_profile(profile_name, profile)
+            with self.assertRaisesRegex(ValueError, "marker_provenance_stale"):
+                _validated_metasoft_export_markers(
+                    manager,
+                    match,
+                    {"metasoft_analysis": {"athlete": {"athlete_name": "Mo Arthur"}}},
+                    profile,
+                )
+
+            output_dir = Path(manager.get_output_dir())
+            self.assertEqual(list(output_dir.iterdir()), [])
+
+    def test_valid_export_uses_exact_proven_profile_and_sidecar_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = SessionManager(tmp_dir)
+            manager.create_session("2026-07-08", "contas")
+            profile = {
+                "email": "arthur@example.test",
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+                "stress_test_results": {
+                    "thresholds": {
+                        "sv1": {
+                            "hr_bpm": 143,
+                            "pace_km_h": 11,
+                            "vo2_ml_kg_min": 34.1,
+                        },
+                    },
+                },
+            }
+            profile_name = manager.add_profile(profile)
+            source_xml = Path(tmp_dir) / "metasoft.xml"
+            source_xml.write_text("<xml />", encoding="utf-8")
+            xml_filename = manager.import_xml(str(source_xml))
+            match = manager.create_match(profile_name, xml_filename)
+            marker = {
+                "name": "SV1",
+                "action": "upsert",
+                "status": "ok",
+                "mode": "point",
+                "t_seconds": 60,
+                "window_start_seconds": None,
+                "window_end_seconds": None,
+                "point_count": 1,
+                "values": {
+                    "fc_bpm": 143,
+                    "vo2_ml_kg_min": 34.1,
+                    "speed_kmh": 11,
+                },
+            }
+            manager.record_metasoft_report(match, profile, {"SV1": marker})
+            xml_data = {
+                "patient_data": {"Nom": "Mo", "Prénom": "Arthur"},
+                "filename_data": {"date": "2026-07-08"},
+                "measurements": [],
+                "metasoft_analysis": _analysis(),
+            }
+
+            markers = _validated_metasoft_export_markers(
+                manager,
+                match,
+                xml_data,
+                profile,
+            )
+            output = DataTransformer().transform(xml_data, profile)
+            _save_metasoft_audit_sidecar(
+                manager,
+                xml_data,
+                profile,
+                "Mo_Arthur_2026-07-08.json",
+                profile_name,
+                markers,
+            )
+            sidecar = json.loads(
+                (
+                    Path(manager.get_output_dir())
+                    / "Mo_Arthur_2026-07-08.metasoft_audit.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(output["seuils"]["SV1"]["fc"], 143)
+        self.assertEqual(output["seuils"]["SV1"]["allure"], 11)
+        self.assertEqual(sidecar["markers"]["SV1"]["values"], marker["values"])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import json
 import shutil
 import uuid
 import hashlib
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -42,9 +43,13 @@ class ProfileMatch:
     xml_filename: str
     matched_at: str = field(default_factory=lambda: datetime.now().isoformat())
     exported: bool = False
+    metasoft_report: Optional[Dict[str, Any]] = None
     
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if self.metasoft_report is None:
+            data.pop('metasoft_report')
+        return data
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ProfileMatch':
@@ -52,7 +57,12 @@ class ProfileMatch:
             profile_name=data.get('profile_name', ''),
             xml_filename=data.get('xml_filename', ''),
             matched_at=data.get('matched_at', datetime.now().isoformat()),
-            exported=data.get('exported', False)
+            exported=data.get('exported', False),
+            metasoft_report=(
+                deepcopy(data.get('metasoft_report'))
+                if isinstance(data.get('metasoft_report'), dict)
+                else None
+            ),
         )
 
 
@@ -499,13 +509,21 @@ class SessionManager:
             self.matches = []
     
     def _save_matches(self):
-        """Save matches to file"""
+        """Sauvegarde matches.json par remplacement atomique dans le meme dossier."""
         if not self.current_session_path:
             return
-        
+
         matches_file = self.current_session_path / self.MATCHES_FILE
-        with open(matches_file, 'w', encoding='utf-8') as f:
-            json.dump([m.to_dict() for m in self.matches], f, indent=2)
+        temporary_file = matches_file.with_suffix(matches_file.suffix + '.tmp')
+        try:
+            with open(temporary_file, 'w', encoding='utf-8') as f:
+                json.dump([m.to_dict() for m in self.matches], f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_file, matches_file)
+        finally:
+            if temporary_file.exists():
+                temporary_file.unlink()
     
     def create_match(self, profile_filename: str, xml_filename: str) -> ProfileMatch:
         """
@@ -638,6 +656,109 @@ class SessionManager:
                 "size": xml_size,
             },
         }
+
+    def build_metasoft_source_fingerprint(
+        self,
+        match: ProfileMatch,
+    ) -> Optional[Dict[str, Any]]:
+        """Fingerprint de source MetaSoft independant des autres champs profil.
+
+        Le nom du fichier profil identifie l'association. Le hash XML protege
+        contre un rematch ou une modification de mesures; le contenu complet du
+        profil n'entre pas ici car seuls les champs marqueurs sont snapshotes.
+        """
+        if not self.current_session_path or not self.current_session:
+            return None
+        if not self.profile_path(match.profile_name):
+            return None
+        xml_path = self.xml_path(match.xml_filename)
+        if not xml_path:
+            return None
+        try:
+            xml_size = xml_path.stat().st_size
+            xml_hash = self._file_sha256(xml_path)
+        except OSError:
+            return None
+        return {
+            "session": {
+                "name": self.current_session.name,
+                "created_at": self.current_session.created_at,
+            },
+            "profile_filename": match.profile_name,
+            "xml": {
+                "filename": match.xml_filename,
+                "sha256": xml_hash,
+                "size": xml_size,
+            },
+        }
+
+    def validate_metasoft_report(
+        self,
+        match: ProfileMatch,
+        profile: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Valide provenance source et snapshot des champs marqueurs profil."""
+        from core.metasoft_markers import metasoft_profile_marker_snapshot
+
+        report = match.metasoft_report
+        if not isinstance(report, dict):
+            return {"valid": False, "reason": "missing", "markers": {}}
+        if report.get("schema_version") != 1:
+            return {"valid": False, "reason": "schema", "markers": {}}
+        fingerprint = self.build_metasoft_source_fingerprint(match)
+        if not fingerprint:
+            return {"valid": False, "reason": "source_unavailable", "markers": {}}
+        if report.get("source_fingerprint") != fingerprint:
+            return {"valid": False, "reason": "source_changed", "markers": {}}
+        if report.get("profile_marker_snapshot") != metasoft_profile_marker_snapshot(profile):
+            return {"valid": False, "reason": "profile_markers_changed", "markers": {}}
+        markers = report.get("markers")
+        if not isinstance(markers, dict):
+            return {"valid": False, "reason": "invalid_markers", "markers": {}}
+        return {"valid": True, "reason": None, "markers": deepcopy(markers)}
+
+    def record_metasoft_report(
+        self,
+        match: ProfileMatch,
+        profile: Dict[str, Any],
+        markers: Dict[str, Any],
+    ) -> None:
+        """Enregistre en dernier l'etat canonique d'un report MetaSoft reussi."""
+        from core.metasoft_markers import metasoft_profile_marker_snapshot
+
+        fingerprint = self.build_metasoft_source_fingerprint(match)
+        if not fingerprint:
+            raise ValueError("Fingerprint source MetaSoft indisponible")
+        match.metasoft_report = {
+            "schema_version": 1,
+            "source_fingerprint": fingerprint,
+            "markers": deepcopy(markers),
+            "profile_marker_snapshot": metasoft_profile_marker_snapshot(profile),
+            "reported_at": datetime.now().isoformat(),
+        }
+        try:
+            self._save_matches()
+        except Exception:
+            # Sans ecriture matches.json confirmee, l'export courant doit rester
+            # bloque plutot que reutiliser une ancienne preuve en memoire.
+            match.metasoft_report = {
+                "schema_version": 1,
+                "status": "record_failed",
+            }
+            raise
+
+    def invalidate_metasoft_report(self, match: ProfileMatch) -> None:
+        """Persiste un etat non exportable avant les ecritures d'un report."""
+        previous = deepcopy(match.metasoft_report)
+        match.metasoft_report = {
+            "schema_version": 1,
+            "status": "report_in_progress",
+        }
+        try:
+            self._save_matches()
+        except Exception:
+            match.metasoft_report = previous
+            raise
 
     def clear_manual_running_economy(self, match_id: str) -> None:
         """Supprime l'EC manuelle sauvegardee pour ce match uniquement."""
