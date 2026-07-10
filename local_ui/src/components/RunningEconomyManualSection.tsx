@@ -187,7 +187,6 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
     ));
     return {
       manual_running_economy_selections: stableStages
-        .filter((stage) => (drafts[stage.stage_index] ?? initialEconomyDraft(stage)).enabled)
         .map((stage) => manualEconomySelection(
           stage,
           drafts[stage.stage_index] ?? initialEconomyDraft(stage),

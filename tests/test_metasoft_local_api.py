@@ -314,39 +314,65 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertAlmostEqual(row["percent_vo2max"], 100, places=2)
         self.assertEqual(row["sources"]["vo2max"], "metasoft_marker.vo2_max")
 
-    def test_manual_running_economy_stores_only_selected_subset(self) -> None:
+    def test_manual_running_economy_persists_disabled_stage_adjustments(self) -> None:
         match_id = self._weighted_two_stage_match_id()
+        stage_selections = [
+            {"stage_index": 1, "enabled": False},
+            {"stage_index": 2, "enabled": True},
+        ]
 
         status, payload = self._post(
             f"/api/matches/{match_id}/running-economy/manual",
             {
-                "selections": [{
-                    "stage_index": 2,
-                    "start_seconds": 180,
-                    "end_seconds": 210,
-                    "exclusions": [],
-                }],
-                "stage_selections": [
-                    {"stage_index": 1, "enabled": False},
-                    {"stage_index": 2, "enabled": True},
+                "selections": [
+                    {
+                        "stage_index": 1,
+                        "start_seconds": 60,
+                        "end_seconds": 90,
+                        "exclusions": [{"start_seconds": 70, "end_seconds": 80}],
+                    },
+                    {
+                        "stage_index": 2,
+                        "start_seconds": 180,
+                        "end_seconds": 210,
+                        "exclusions": [{"start_seconds": 190, "end_seconds": 200}],
+                    },
                 ],
+                "stage_selections": stage_selections,
             },
         )
 
         self.assertEqual(status, 200)
         rows = payload["manual_running_economy"]["rows"]
-        self.assertEqual([row["stage_index"] for row in rows], [2])
+        self.assertEqual([row["stage_index"] for row in rows], [1, 2])
+        self.assertEqual(rows[0]["start_seconds"], 60)
+        self.assertEqual(rows[0]["end_seconds"], 90)
+        self.assertEqual(
+            rows[0]["exclusions"],
+            [{"start_seconds": 70.0, "end_seconds": 80.0}],
+        )
+        self.assertEqual(rows[1]["start_seconds"], 180)
+        self.assertEqual(rows[1]["end_seconds"], 210)
+        self.assertEqual(
+            rows[1]["exclusions"],
+            [{"start_seconds": 190.0, "end_seconds": 200.0}],
+        )
+        self.assertEqual(
+            payload["manual_running_economy"]["stage_selections"],
+            stage_selections,
+        )
         fingerprint = self.session_manager.build_match_fingerprint(
             self.session_manager.matches[-1]
         )
         saved = self.session_manager.get_manual_running_economy(match_id, fingerprint)
-        self.assertEqual([row["stage_index"] for row in saved["rows"]], [2])
+        self.assertEqual(saved, payload["manual_running_economy"])
+
+        status, analysis_payload = self._get(f"/api/matches/{match_id}/analysis")
+
+        self.assertEqual(status, 200)
         self.assertEqual(
-            saved["stage_selections"],
-            [
-                {"stage_index": 1, "enabled": False},
-                {"stage_index": 2, "enabled": True},
-            ],
+            analysis_payload["manual_running_economy"],
+            payload["manual_running_economy"],
         )
 
     def test_manual_running_economy_rejects_invalid_bounds_without_writing(self) -> None:

@@ -5,6 +5,7 @@ Source: `xml_data["metasoft_analysis"]` deja calculee/recalculee. Unite:
 les temps et l'EC restent ceux de l'analyse MetaSoft; aucun marqueur UI n'est
 reconstruit dans ce flux.
 """
+from copy import deepcopy
 import sys
 import tempfile
 import types
@@ -126,11 +127,14 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
         self.assertEqual(output["seuils"]["VO2_max"]["fc_max"], 165)
         self.assertEqual(output["seuils"]["SV2"]["allure"], 13)
 
-    def test_valentin_json_includes_manual_running_economy_when_provided(self) -> None:
+    def test_valentin_json_keeps_all_legacy_manual_running_economy_rows(self) -> None:
         manual_ec = {
             "source": "python.metasoft_analysis.manual_running_economy",
             "match_id": "abc123",
-            "rows": [{"stage_index": 1, "ec_j_kg_m": 4.23}],
+            "rows": [
+                {"stage_index": 1, "ec_j_kg_m": 4.23},
+                {"stage_index": 2, "ec_j_kg_m": 4.67},
+            ],
         }
 
         output = DataTransformer().transform(
@@ -149,12 +153,56 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
 
         self.assertEqual(output["running_economy_manual"], manual_ec)
 
+    def test_valentin_json_exports_only_last_explicitly_enabled_stages(self) -> None:
+        manual_ec = {
+            "source": "python.metasoft_analysis.manual_running_economy",
+            "match_id": "abc123",
+            "rows": [
+                {"stage_index": 1, "ec_j_kg_m": 4.23},
+                {"stage_index": 2, "ec_j_kg_m": 4.67},
+            ],
+            "warnings": [{"code": "manual_warning"}],
+            "stage_selections": [
+                {"stage_index": 1, "enabled": True},
+                {"stage_index": 2, "enabled": False},
+                {"stage_index": 1, "enabled": False},
+                {"stage_index": 2, "enabled": True},
+            ],
+        }
+        original = deepcopy(manual_ec)
+
+        output = DataTransformer().transform(
+            {
+                "patient_data": {"Nom": "Mo", "Prénom": "Arthur"},
+                "filename_data": {"date": "2026-07-08"},
+                "measurements": [],
+            },
+            {
+                "email": "arthur@example.test",
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+                "stress_test_results": {},
+            },
+            manual_ec,
+        )
+
+        self.assertEqual(
+            output["running_economy_manual"],
+            {**manual_ec, "rows": [manual_ec["rows"][1]]},
+        )
+        self.assertEqual(manual_ec, original)
+
     def test_valentin_json_omits_manual_running_economy_when_all_stages_disabled(self) -> None:
         manual_ec = {
             "source": "python.metasoft_analysis.manual_running_economy",
             "match_id": "abc123",
-            "rows": [],
-            "stage_selections": [{"stage_index": 1, "enabled": False}],
+            "rows": [
+                {"stage_index": 1, "ec_j_kg_m": 4.23},
+                {"stage_index": 2, "ec_j_kg_m": 4.67},
+            ],
+            "stage_selections": [
+                {"stage_index": 1, "enabled": False},
+                {"stage_index": 2, "enabled": False},
+            ],
         }
 
         output = DataTransformer().transform(

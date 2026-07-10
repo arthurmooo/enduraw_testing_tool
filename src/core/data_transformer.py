@@ -84,7 +84,21 @@ class DataTransformer:
                 result.seuils
             )
         if manual_running_economy and manual_running_economy.get("rows"):
-            result.running_economy_manual = manual_running_economy
+            # Source sidecar EC; Valentin filtre `enabled: false`, sans statut legacy = actif.
+            enabled_by_stage = {
+                item.get("stage_index"): item.get("enabled")
+                for item in manual_running_economy.get("stage_selections") or []
+                if isinstance(item, dict)
+            }
+            rows = [
+                row for row in manual_running_economy["rows"]
+                if enabled_by_stage.get(row.get("stage_index"), True) is not False
+            ]
+            if rows:
+                result.running_economy_manual = {
+                    **manual_running_economy,
+                    "rows": rows,
+                }
         
         # Logos and partners (placeholders)
         result.logos = {
