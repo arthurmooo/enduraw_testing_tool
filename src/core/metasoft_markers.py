@@ -49,7 +49,16 @@ def build_metasoft_marker(
 
 
 def metasoft_marker_to_stress_patch(marker: dict) -> dict:
-    """Mappe un marqueur valide vers un patch partiel de profil stress_test_results."""
+    """Mappe une operation marqueur vers ses champs de profil possedes."""
+    if marker.get("action") == "delete" and marker.get("status") == "deleted":
+        delete_paths = _marker_delete_paths(marker.get("name"))
+        if delete_paths:
+            return {
+                "status": "ok",
+                "patch": {"stress_test_results": {}},
+                "delete_paths": delete_paths,
+                "warnings": [],
+            }
     if marker.get("status") != "ok":
         return {"status": "blocked", "patch": {}, "warnings": marker.get("warnings", [])}
 
@@ -58,20 +67,19 @@ def metasoft_marker_to_stress_patch(marker: dict) -> dict:
     stress = {}
 
     if name in ("sv1", "sv2"):
-        threshold = _without_none({
+        threshold = {
             "hr_bpm": _round_bpm(values.get("fc_bpm")),
             "pace_km_h": values.get("speed_kmh"),
             "vo2_ml_kg_min": values.get("vo2_ml_kg_min"),
-        })
-        if threshold:
-            stress["thresholds"] = {name: threshold}
+        }
+        stress["thresholds"] = {name: threshold}
     elif name == "vo2_max":
-        stress.update(_without_none({
+        stress.update({
             "max_hr": _round_bpm(values.get("fc_bpm")),
             "measured_vo2max": values.get("vo2_ml_kg_min"),
-        }))
+        })
     elif name == "vma":
-        stress.update(_without_none({"vma": values.get("speed_kmh")}))
+        stress["vma"] = values.get("speed_kmh")
     else:
         return {
             "status": "blocked",
@@ -82,24 +90,36 @@ def metasoft_marker_to_stress_patch(marker: dict) -> dict:
             }],
         }
 
-    if not stress:
+    missing_paths = [
+        ".".join(path)
+        for path, value in _flatten_values(stress)
+        if value is None
+    ]
+    if missing_paths:
         return {
             "status": "blocked",
             "patch": {},
             "warnings": [{
                 "code": "missing_marker_values",
-                "message": "Marqueur sans valeur exploitable pour le profil.",
+                "message": "Marqueur incomplet: tous ses champs profil sont requis.",
+                "fields": missing_paths,
             }],
         }
-    return {"status": "ok", "patch": {"stress_test_results": stress}, "warnings": []}
+    return {
+        "status": "ok",
+        "patch": {"stress_test_results": stress},
+        "delete_paths": [],
+        "warnings": [],
+    }
 
 
 def apply_metasoft_stress_patch(profile: dict, patch_result: dict) -> dict:
     """Applique un patch MetaSoft sur une copie du profil.
 
     Le patch ne contient que les valeurs issues des marqueurs officiels MetaSoft,
-    avec FC en bpm, vitesse en km/h et VO2 en ml/kg/min. Les seuils SV1/SV2 sont
-    fusionnes par sous-cle pour eviter qu'un patch partiel n'efface l'autre seuil.
+    avec FC en bpm, vitesse en km/h et VO2 en ml/kg/min. Chaque marqueur remplace
+    entierement ses champs possedes afin de ne jamais conserver une valeur issue
+    d'une ancienne selection.
     """
     updated_profile = deepcopy(profile)
     if patch_result.get("status") != "ok":
@@ -112,12 +132,14 @@ def apply_metasoft_stress_patch(profile: dict, patch_result: dict) -> dict:
     if thresholds_patch:
         thresholds = stress_results.setdefault("thresholds", {})
         for name, values in thresholds_patch.items():
-            current = thresholds.get(name, {})
-            thresholds[name] = {**current, **deepcopy(values)}
+            thresholds[name] = deepcopy(values)
 
     for key, value in stress_patch.items():
         if key != "thresholds":
             stress_results[key] = deepcopy(value)
+
+    for path in patch_result.get("delete_paths", []):
+        _delete_path(updated_profile, path)
 
     return updated_profile
 
@@ -174,10 +196,15 @@ def _build_point_marker(points: list[dict], name: str, t_seconds: float) -> dict
 
     return {
         "name": name,
+        "action": "upsert",
         "mode": "point",
         "status": "ok",
         "t_seconds": t_seconds,
         "selection_time_seconds": t_seconds,
+        "window_start_seconds": None,
+        "window_end_seconds": None,
+        "point_count": 1,
+        "phase": point.get("phase"),
         "source_point_t_seconds": point.get("t_seconds"),
         "values": _official_values(name, [point]),
         "warnings": [],
@@ -236,13 +263,34 @@ def _build_range_marker(
 
     return {
         "name": name,
+        "action": "upsert",
         "mode": "range",
         "status": "ok",
+        "t_seconds": (start + end) / 2,
         "selection_time_seconds": (start + end) / 2,
         "window_start_seconds": start,
         "window_end_seconds": end,
         "point_count": len(selected),
+        "phase": _common_phase(selected),
         "values": _official_values(name, selected),
+        "warnings": [],
+    }
+
+
+def build_metasoft_marker_deletion(name: str) -> dict:
+    """Retourne l'accuse canonique d'une suppression explicite."""
+    return {
+        "name": name,
+        "action": "delete",
+        "status": "deleted",
+        "mode": "point",
+        "t_seconds": None,
+        "selection_time_seconds": None,
+        "window_start_seconds": None,
+        "window_end_seconds": None,
+        "point_count": 0,
+        "phase": None,
+        "values": _official_values(name, []),
         "warnings": [],
     }
 
@@ -285,8 +333,42 @@ def _normalise_marker_name(name) -> str:
     return "vo2_max" if normalized == "vo2max" else normalized
 
 
-def _without_none(values: dict) -> dict:
-    return {key: value for key, value in values.items() if value is not None}
+def _marker_delete_paths(name) -> list[list[str]]:
+    normalized = _normalise_marker_name(name)
+    if normalized in ("sv1", "sv2"):
+        return [["stress_test_results", "thresholds", normalized]]
+    if normalized == "vo2_max":
+        return [
+            ["stress_test_results", "max_hr"],
+            ["stress_test_results", "measured_vo2max"],
+        ]
+    if normalized == "vma":
+        return [["stress_test_results", "vma"]]
+    return []
+
+
+def _flatten_values(data: dict, prefix=()):
+    for key, value in data.items():
+        path = (*prefix, key)
+        if isinstance(value, dict):
+            yield from _flatten_values(value, path)
+        else:
+            yield path, value
+
+
+def _delete_path(data: dict, path: list[str]) -> None:
+    parent = data
+    for key in path[:-1]:
+        if not isinstance(parent, dict) or key not in parent:
+            return
+        parent = parent[key]
+    if isinstance(parent, dict):
+        parent.pop(path[-1], None)
+
+
+def _common_phase(points: list[dict]):
+    phases = {point.get("phase") for point in points if point.get("phase") is not None}
+    return phases.pop() if len(phases) == 1 else None
 
 
 def _number(value) -> Optional[float]:

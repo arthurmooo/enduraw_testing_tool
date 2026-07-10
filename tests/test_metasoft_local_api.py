@@ -561,6 +561,118 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(self.server.consume_pending_profile_updates(), [payload["profile_name"]])
         self.assertEqual(self.server.consume_pending_profile_updates(), [])
 
+    def test_report_rejects_duplicate_marker_names_without_writing(self) -> None:
+        match_id = self._match_id()
+        original = self.session_manager.get_profile(self.profile_name)
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [
+                    {"name": "SV1", "action": "upsert", "mode": "point", "t_seconds": 60},
+                    {"name": "sv1", "action": "delete"},
+                ],
+                "conflict_policy": "overwrite",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "duplicate_marker_selection")
+        self.assertEqual(self.session_manager.get_profile(self.profile_name), original)
+        self.assertEqual(self.server.consume_pending_profile_updates(), [])
+
+    def test_report_is_atomic_when_one_marker_mapping_is_incomplete(self) -> None:
+        match_id = self._match_id()
+        context = self.server._match_context(match_id)
+        point = next(
+            item for item in context["analysis"]["points"]
+            if item["t_seconds"] == 60
+        )
+        point["values"]["fc_bpm"] = None
+        original = self.session_manager.get_profile(self.profile_name)
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [
+                    {"name": "SV1", "action": "upsert", "mode": "point", "t_seconds": 60},
+                    {"name": "VMA", "action": "upsert", "mode": "point", "t_seconds": 120},
+                ],
+                "conflict_policy": "overwrite",
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["error"]["code"], "marker_blocked")
+        self.assertEqual(self.session_manager.get_profile(self.profile_name), original)
+        self.assertEqual(self.server.consume_pending_profile_updates(), [])
+
+    def test_report_delete_requires_overwrite_and_removes_only_owned_fields(self) -> None:
+        match_id = self._match_id()
+        selection = {"name": "SV1", "action": "delete"}
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {"marker_selections": [selection]},
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "profile_conflict")
+        self.assertEqual(
+            payload["error"]["details"]["conflicts"][0]["path"],
+            "stress_test_results.thresholds.sv1",
+        )
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {"marker_selections": [selection], "conflict_policy": "overwrite"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["confirmed_markers"]["SV1"]["status"], "deleted")
+        self.assertEqual(payload["confirmed_markers"]["SV1"]["action"], "delete")
+        self.assertIn("stress_test_results.thresholds.sv1", payload["updated_paths"])
+        updated = self.session_manager.get_profile(self.profile_name)
+        self.assertNotIn("sv1", updated["stress_test_results"]["thresholds"])
+        self.assertEqual(
+            updated["stress_test_results"]["thresholds"]["sv2"],
+            _profile()["stress_test_results"]["thresholds"]["sv2"],
+        )
+        self.assertEqual(updated["stress_test_results"]["vma"], 16)
+
+    def test_report_returns_canonical_range_used_by_profile_and_ui(self) -> None:
+        match_id = self._match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [{
+                    "name": "VO2_max",
+                    "action": "upsert",
+                    "mode": "range",
+                    "t_seconds": 75,
+                    "window_start_seconds": 60,
+                    "window_end_seconds": 90,
+                }],
+                "conflict_policy": "overwrite",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        marker = payload["confirmed_markers"]["VO2_max"]
+        self.assertEqual(marker["action"], "upsert")
+        self.assertEqual(marker["mode"], "range")
+        self.assertEqual(marker["t_seconds"], 75)
+        self.assertEqual(marker["window_start_seconds"], 60)
+        self.assertEqual(marker["window_end_seconds"], 90)
+        self.assertEqual(marker["values"]["fc_bpm"], 122)
+        updated = self.session_manager.get_profile(self.profile_name)
+        self.assertEqual(updated["stress_test_results"]["max_hr"], 122)
+        self.assertEqual(
+            updated["stress_test_results"]["measured_vo2max"],
+            marker["values"]["vo2_ml_kg_min"],
+        )
+
     def test_report_conflict_does_not_persist_manual_running_economy(self) -> None:
         match_id = self._weighted_match_id()
         match = self.session_manager.matches[-1]
@@ -612,6 +724,10 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["manual_running_economy"]["rows"][0]["stage_index"], 1)
+        self.assertEqual(
+            payload["manual_running_economy"]["rows"][0]["sources"]["vo2max"],
+            "profile.stress_test_results.measured_vo2max",
+        )
         self.assertIsNone(
             self.session_manager.get_manual_running_economy(match_id, old_fingerprint)
         )

@@ -23,6 +23,7 @@ from core.metasoft_analysis import build_manual_running_economy, build_metasoft_
 from core.metasoft_markers import (
     apply_metasoft_stress_patch,
     build_metasoft_marker,
+    build_metasoft_marker_deletion,
     metasoft_marker_to_stress_patch,
 )
 from utils.xml_parser import TCPXmlParser
@@ -278,9 +279,10 @@ class LocalMetaSoftServer:
                 if not markers_result["ok"]:
                     return markers_result
                 markers = markers_result["markers"]
-            marker = markers.get("VO2_max", {})
-            value = _positive_number(marker.get("values", {}).get("vo2_ml_kg_min"))
-            return {"ok": True, "value": value, "source": "metasoft_marker.vo2_max"}
+            marker = markers.get("VO2_max")
+            if marker is not None:
+                value = _positive_number(marker.get("values", {}).get("vo2_ml_kg_min"))
+                return {"ok": True, "value": value, "source": "metasoft_marker.vo2_max"}
         return {
             "ok": True,
             "value": _positive_number(
@@ -341,8 +343,7 @@ class LocalMetaSoftServer:
         if not manual_result["ok"]:
             return manual_result
 
-        patch = patch_result["patch_result"].get("patch", {})
-        updated_paths = [".".join(path) for path, _value in _flatten_patch_values(patch)]
+        updated_paths = _patch_updated_paths(context["profile"], patch_result["patch_result"])
         profile = context["profile"]
         if updated_paths:
             profile = apply_metasoft_stress_patch(profile, patch_result["patch_result"])
@@ -422,14 +423,14 @@ class LocalMetaSoftServer:
         if markers_result["markers"] and patch_result.get("status") != "ok":
             return _error(
                 "marker_blocked",
-                "Aucun marqueur MetaSoft reportable.",
+                "Report refuse: un marqueur MetaSoft est incomplet ou non reportable.",
                 status=422,
-                details={"markers": markers_result["markers"]},
+                details={
+                    "markers": markers_result["markers"],
+                    "warnings": patch_result.get("warnings", []),
+                },
             )
-        updated_paths = [
-            ".".join(path)
-            for path, _value in _flatten_patch_values(patch_result.get("patch", {}))
-        ]
+        updated_paths = _patch_updated_paths(context["profile"], patch_result)
         return {
             "ok": True,
             "markers": markers_result["markers"],
@@ -439,6 +440,12 @@ class LocalMetaSoftServer:
         }
 
     def _officialize(self, context, payload):
+        if not isinstance(payload, dict):
+            return _error(
+                "invalid_marker_selection",
+                "Payload marqueurs invalide.",
+                status=400,
+            )
         selections = payload.get("marker_selections", [])
         if not isinstance(selections, list):
             return _error(
@@ -452,7 +459,15 @@ class LocalMetaSoftServer:
             marker = _marker_from_selection(context["analysis"].get("points", []), selection)
             if not marker["ok"]:
                 return marker
-            markers[marker["marker"]["name"]] = marker["marker"]
+            name = marker["marker"]["name"]
+            if name in markers:
+                return _error(
+                    "duplicate_marker_selection",
+                    f"Marqueur {name} present plusieurs fois dans le report.",
+                    status=400,
+                    details={"marker": name},
+                )
+            markers[name] = marker["marker"]
         return {"ok": True, "markers": markers, "warnings": _marker_warnings(markers)}
 
     def _match_context(self, match_id):
@@ -733,9 +748,15 @@ def _marker_from_selection(points, selection):
         return _error("invalid_marker_selection", "Selection marqueur invalide.", status=400)
 
     name = _normalise_marker_name(selection.get("name"))
+    action = selection.get("action", "upsert")
+    if name not in VALID_MARKERS or action not in {"upsert", "delete"}:
+        return _error("invalid_marker_selection", "Nom ou action marqueur invalide.", status=400)
+    if action == "delete":
+        return {"ok": True, "marker": build_metasoft_marker_deletion(name)}
+
     mode = selection.get("mode")
-    if name not in VALID_MARKERS or mode not in {"point", "range", "previous"}:
-        return _error("invalid_marker_selection", "Nom ou mode marqueur invalide.", status=400)
+    if mode not in {"point", "range", "previous"}:
+        return _error("invalid_marker_selection", "Mode marqueur invalide.", status=400)
 
     if mode == "point":
         t_seconds = _number(selection.get("t_seconds"))
@@ -745,9 +766,16 @@ def _marker_from_selection(points, selection):
     elif mode == "previous":
         t_seconds = _number(selection.get("t_seconds"))
         start = _number(selection.get("window_start_seconds"))
-        if t_seconds is None or start is None or start > t_seconds:
+        end = _number(selection.get("window_end_seconds", t_seconds))
+        if (
+            t_seconds is None
+            or start is None
+            or end is None
+            or start < 0
+            or start > t_seconds
+            or end != t_seconds
+        ):
             return _error("invalid_marker_selection", "Fenetre precedente incomplete.", status=400)
-        start = max(0, start)
         # Mode precedent: l'UI garde le temps clique, l'officiel moyenne la
         # fenetre brute inclusive [t-X, t] sans lire les valeurs preview React.
         marker = build_metasoft_marker(
@@ -764,7 +792,19 @@ def _marker_from_selection(points, selection):
     else:
         start = _number(selection.get("window_start_seconds"))
         end = _number(selection.get("window_end_seconds"))
-        if start is None or end is None:
+        default_time = (
+            (start + end) / 2
+            if start is not None and end is not None
+            else None
+        )
+        selection_time = _number(selection.get("t_seconds", default_time))
+        if (
+            start is None
+            or end is None
+            or selection_time is None
+            or selection_time < start
+            or selection_time > end
+        ):
             return _error("invalid_marker_selection", "Fenetre marqueur incomplete.", status=400)
         marker = build_metasoft_marker(
             points,
@@ -772,6 +812,10 @@ def _marker_from_selection(points, selection):
             window_start_seconds=start,
             window_end_seconds=end,
         )
+        marker.update({
+            "t_seconds": selection_time,
+            "selection_time_seconds": selection_time,
+        })
     if marker.get("status") != "ok":
         return _error(
             "marker_blocked",
@@ -783,17 +827,28 @@ def _marker_from_selection(points, selection):
 
 
 def _merge_patch_results(patch_results):
-    merged = {"status": "ok", "patch": {"stress_test_results": {}}, "warnings": []}
+    merged = {
+        "status": "ok",
+        "patch": {"stress_test_results": {}},
+        "delete_paths": [],
+        "warnings": [],
+    }
     for result in patch_results:
         if result.get("status") != "ok":
+            merged["status"] = "blocked"
             merged["warnings"].extend(result.get("warnings", []))
             continue
         _deep_merge(
             merged["patch"]["stress_test_results"],
             result.get("patch", {}).get("stress_test_results", {}),
         )
+        merged["delete_paths"].extend(deepcopy(result.get("delete_paths", [])))
         merged["warnings"].extend(result.get("warnings", []))
-    if not merged["patch"]["stress_test_results"]:
+    if (
+        patch_results
+        and not merged["patch"]["stress_test_results"]
+        and not merged["delete_paths"]
+    ):
         merged["status"] = "blocked"
     return merged
 
@@ -817,7 +872,29 @@ def _patch_conflicts(profile, patch_result):
             "current": current,
             "incoming": incoming,
         })
+    for path in patch_result.get("delete_paths", []):
+        current = _read_path(profile, path)
+        if _empty_value(current):
+            continue
+        conflicts.append({
+            "path": ".".join(path),
+            "current": current,
+            "incoming": None,
+        })
     return conflicts
+
+
+def _patch_updated_paths(profile, patch_result):
+    paths = [
+        ".".join(path)
+        for path, _value in _flatten_patch_values(patch_result.get("patch", {}))
+    ]
+    paths.extend(
+        ".".join(path)
+        for path in patch_result.get("delete_paths", [])
+        if not _empty_value(_read_path(profile, path))
+    )
+    return paths
 
 
 def _flatten_patch_values(data, prefix=()):

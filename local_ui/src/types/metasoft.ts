@@ -156,6 +156,9 @@ export interface MetaSoftAnalysis {
 
 export interface MetaSoftMarker {
   name: MetaSoftMarkerName;
+  action?: "upsert";
+  status?: "ok";
+  mode: MarkerMode;
   t_seconds: number | null;
   window_start_seconds: number | null;
   window_end_seconds: number | null;
@@ -180,9 +183,25 @@ export interface DraftMarker extends MetaSoftMarker {
 export type DraftMarkers = Record<MetaSoftMarkerName, DraftMarker>;
 export type ConfirmedMarkers = Partial<Record<MetaSoftMarkerName, MetaSoftMarker>>;
 
+export interface DeletedMarkerResult {
+  name: MetaSoftMarkerName;
+  action: "delete";
+  status: "deleted";
+  mode: "point";
+  t_seconds: null;
+  window_start_seconds: null;
+  window_end_seconds: null;
+  point_count: 0;
+  values: MetaSoftMarker["values"];
+}
+
+export type MarkerOperationResult = MetaSoftMarker | DeletedMarkerResult;
+export type MarkerOperationResults = Partial<Record<MetaSoftMarkerName, MarkerOperationResult>>;
+
 export interface MarkerSelectionPayload {
   name: MetaSoftMarkerName;
-  mode: MarkerMode;
+  action: "upsert" | "delete";
+  mode?: MarkerMode;
   t_seconds?: number | null;
   window_start_seconds?: number | null;
   window_end_seconds?: number | null;
@@ -210,7 +229,7 @@ export interface ProfileConflict {
 
 export interface OfficializeResponse {
   ok: true;
-  markers: ConfirmedMarkers;
+  markers: MarkerOperationResults;
   source?: string;
   warnings: MetaSoftWarning[];
 }
@@ -220,7 +239,7 @@ export interface ReportPreviewResponse {
   status: "ready" | "conflict";
   patch: Record<string, unknown>;
   conflicts: ProfileConflict[];
-  confirmed_markers: ConfirmedMarkers;
+  confirmed_markers: MarkerOperationResults;
   warnings: MetaSoftWarning[];
 }
 
@@ -228,7 +247,7 @@ export interface ReportResponse {
   ok: true;
   profile_name: string;
   updated_paths: string[];
-  confirmed_markers: ConfirmedMarkers;
+  confirmed_markers: MarkerOperationResults;
   manual_running_economy?: ManualRunningEconomyPayload | null;
   warnings: MetaSoftWarning[];
 }

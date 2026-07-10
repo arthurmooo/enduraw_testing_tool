@@ -21,6 +21,7 @@ from core.metasoft_analysis import build_manual_running_economy, build_metasoft_
 from core.metasoft_markers import (
     apply_metasoft_stress_patch,
     build_metasoft_marker,
+    build_metasoft_marker_deletion,
     metasoft_marker_to_stress_patch,
 )
 from utils.xml_parser import TCPXmlParser, add_derived_vco2, parse_metasoft_xml_bytes, parse_spreadsheet_rows
@@ -562,6 +563,7 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
 
     def test_apply_marker_patch_preserves_existing_stress_results(self) -> None:
         profile = _manual_profile()
+        profile["stress_test_results"]["thresholds"]["sv1"]["legacy"] = "stale"
         patch_result = metasoft_marker_to_stress_patch(build_metasoft_marker(
             [_marker_point(10, 150, 3.0, 45, 14)],
             "SV1",
@@ -582,6 +584,39 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         self.assertEqual(updated["stress_test_results"]["vma"], 16)
         self.assertEqual(updated["stress_test_results"]["measured_vo2max"], 50)
         self.assertEqual(profile["stress_test_results"]["thresholds"]["sv1"]["hr_bpm"], 124)
+
+    def test_marker_mapping_blocks_incomplete_owned_fields(self) -> None:
+        marker = build_metasoft_marker(
+            [_marker_point(10, None, 3.0, 45, 14)],
+            "SV1",
+            t_seconds=10,
+        )
+
+        patch_result = metasoft_marker_to_stress_patch(marker)
+        updated = apply_metasoft_stress_patch(_manual_profile(), patch_result)
+
+        self.assertEqual(patch_result["status"], "blocked")
+        self.assertEqual(
+            patch_result["warnings"][0]["fields"],
+            ["thresholds.sv1.hr_bpm"],
+        )
+        self.assertEqual(updated, _manual_profile())
+
+    def test_marker_delete_removes_only_owned_profile_fields(self) -> None:
+        profile = _manual_profile()
+        patch_result = metasoft_marker_to_stress_patch(
+            build_metasoft_marker_deletion("VO2_max")
+        )
+
+        updated = apply_metasoft_stress_patch(profile, patch_result)
+
+        self.assertNotIn("max_hr", updated["stress_test_results"])
+        self.assertNotIn("measured_vo2max", updated["stress_test_results"])
+        self.assertEqual(updated["stress_test_results"]["vma"], 16)
+        self.assertEqual(
+            updated["stress_test_results"]["thresholds"],
+            profile["stress_test_results"]["thresholds"],
+        )
 
     def test_apply_blocked_marker_patch_leaves_profile_unchanged(self) -> None:
         profile = _manual_profile()

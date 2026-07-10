@@ -6,17 +6,20 @@ export function MarkerPanel({
   draftMarkers,
   confirmedMarkers,
   dirtyMarkers,
+  deletedMarkers,
   profileVo2maxMlKgMin,
 }: {
   draftMarkers: DraftMarkers;
   confirmedMarkers: ConfirmedMarkers;
   dirtyMarkers: Set<MetaSoftMarkerName>;
+  deletedMarkers: Set<MetaSoftMarkerName>;
   profileVo2maxMlKgMin: number | null;
 }) {
   const displayedVo2maxMlKgMin = currentVo2maxMlKgMin(
     draftMarkers,
     confirmedMarkers,
     dirtyMarkers,
+    deletedMarkers,
     profileVo2maxMlKgMin,
   );
   const statusCounts = MARKER_NAMES.reduce((counts, name) => {
@@ -107,12 +110,21 @@ function currentVo2maxMlKgMin(
   draftMarkers: DraftMarkers,
   confirmedMarkers: ConfirmedMarkers,
   dirtyMarkers: Set<MetaSoftMarkerName>,
+  deletedMarkers: Set<MetaSoftMarkerName>,
   profileVo2maxMlKgMin: number | null,
 ): number | null {
-  const marker = dirtyMarkers.has("VO2_max")
-    ? draftMarkers.VO2_max
-    : confirmedMarkers.VO2_max ?? draftMarkers.VO2_max;
-  return marker.values.vo2_ml_kg_min ?? profileVo2maxMlKgMin;
+  if (dirtyMarkers.has("VO2_max")) {
+    return validVo2max(draftMarkers.VO2_max.values.vo2_ml_kg_min);
+  }
+  if (confirmedMarkers.VO2_max) {
+    return validVo2max(confirmedMarkers.VO2_max.values.vo2_ml_kg_min);
+  }
+  if (deletedMarkers.has("VO2_max")) return null;
+  return validVo2max(draftMarkers.VO2_max.values.vo2_ml_kg_min) ?? profileVo2maxMlKgMin;
+}
+
+function validVo2max(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function percentVo2Max(vo2: number | null | undefined, vo2Max: number | null | undefined): number | null {

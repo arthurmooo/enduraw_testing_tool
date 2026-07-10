@@ -24,6 +24,7 @@ import type {
   DraftMarkers,
   LocalAnalysisPayload,
   MarkerMode,
+  MarkerOperationResults,
   MetaSoftMarkerName,
   MetaSoftPoint,
   ProfileConflict,
@@ -48,6 +49,7 @@ export default function App() {
   const [payload, setPayload] = useState<LocalAnalysisPayload | null>(null);
   const [draftMarkers, setDraftMarkers] = useState<DraftMarkers | null>(null);
   const [confirmedMarkers, setConfirmedMarkers] = useState<ConfirmedMarkers>({});
+  const [deletedMarkers, setDeletedMarkers] = useState<Set<MetaSoftMarkerName>>(new Set());
   const [dirtyMarkers, setDirtyMarkers] = useState<Set<MetaSoftMarkerName>>(new Set());
   const [phaseFilter, setPhaseFilter] = useState("Tout");
   const [smoothingSeconds, setSmoothingSeconds] = useState(20);
@@ -72,6 +74,7 @@ export default function App() {
   const cursorFrameRef = useRef<number | null>(null);
   const cursorPointRef = useRef<MetaSoftPoint | null>(null);
   const pendingCursorPointRef = useRef<MetaSoftPoint | null>(null);
+  const markerEditRevisionRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,6 +88,10 @@ export default function App() {
         const firstPoint = result.analysis.points[0] ?? null;
         setPayload(result);
         setDraftMarkers(createInitialMarkers(result.analysis));
+        setConfirmedMarkers({});
+        setDeletedMarkers(new Set());
+        setDirtyMarkers(new Set());
+        markerEditRevisionRef.current = 0;
         cursorPointRef.current = firstPoint;
         pendingCursorPointRef.current = firstPoint;
         setCursorPoint(firstPoint);
@@ -181,6 +188,7 @@ export default function App() {
   }, []);
 
   const markDirty = useCallback((marker: MetaSoftMarkerName) => {
+    markerEditRevisionRef.current += 1;
     setDirtyMarkers((current) => new Set(current).add(marker));
     setReport(null);
     setConflicts([]);
@@ -244,6 +252,7 @@ export default function App() {
     draftMarkers,
     confirmedMarkers,
     dirtyMarkers,
+    deletedMarkers,
     profileVo2maxMlKgMin,
   );
   const selectedReadingGraph = READING_GRAPH_CONFIGS.find((graph) => graph.id === selectedReadingGraphId)
@@ -274,8 +283,9 @@ export default function App() {
 
   const reportProfile = async (overwrite = false) => {
     await runOfficialAction(overwrite ? "Overwrite" : "Report", async () => {
+      const markerEditRevision = markerEditRevisionRef.current;
       try {
-        const markerSelections = serializeMarkerSelections(draftMarkers);
+        const markerSelections = serializeMarkerSelections(draftMarkers, dirtyMarkers);
         const manualEconomyPayload = manualEconomyRef.current?.reportPayload();
         const response = await apiPost<ReportResponse>(
           `/api/matches/${match.match_id}/profile/report`,
@@ -286,10 +296,12 @@ export default function App() {
             ...(overwrite ? { conflict_policy: "overwrite" } : {}),
           },
         );
+        if (markerEditRevisionRef.current !== markerEditRevision) return;
         setReport(response);
         setConflicts([]);
         acceptConfirmedMarkers(response.confirmed_markers);
       } catch (err) {
+        if (markerEditRevisionRef.current !== markerEditRevision) return;
         const apiError = err instanceof ApiError ? err : null;
         const nextConflicts = conflictsFromDetails(apiError?.details);
         if (apiError?.status === 409 && nextConflicts.length) {
@@ -425,6 +437,7 @@ export default function App() {
           draftMarkers={draftMarkers}
           confirmedMarkers={confirmedMarkers}
           dirtyMarkers={dirtyMarkers}
+          deletedMarkers={deletedMarkers}
           profileVo2maxMlKgMin={profileVo2maxMlKgMin}
         />
       </section>
@@ -451,9 +464,43 @@ export default function App() {
     </main>
   );
 
-  function acceptConfirmedMarkers(markers: ConfirmedMarkers) {
-    setConfirmedMarkers(markers);
-    setDirtyMarkers(new Set());
+  function acceptConfirmedMarkers(markers: MarkerOperationResults) {
+    const names = Object.keys(markers) as MetaSoftMarkerName[];
+    if (!names.length) return;
+    setConfirmedMarkers((current) => {
+      const next = { ...current };
+      for (const name of names) {
+        const marker = markers[name];
+        if (!marker || marker.action === "delete") delete next[name];
+        else next[name] = marker;
+      }
+      return next;
+    });
+    setDeletedMarkers((current) => {
+      const next = new Set(current);
+      for (const name of names) {
+        if (markers[name]?.action === "delete") next.add(name);
+        else next.delete(name);
+      }
+      return next;
+    });
+    setDraftMarkers((current) => {
+      if (!current) return current;
+      const next = { ...current };
+      for (const name of names) {
+        const marker = markers[name];
+        if (!marker) continue;
+        next[name] = marker.action === "delete"
+          ? buildDraftMarker(name, analysis.points, null, "point")
+          : marker;
+      }
+      return next;
+    });
+    setDirtyMarkers((current) => {
+      const next = new Set(current);
+      names.forEach((name) => next.delete(name));
+      return next;
+    });
   }
 
   async function runOfficialAction(label: string, action: () => Promise<void>) {
@@ -485,13 +532,23 @@ function currentMarkerVo2maxMlKgMin(
   draftMarkers: DraftMarkers,
   confirmedMarkers: ConfirmedMarkers,
   dirtyMarkers: Set<MetaSoftMarkerName>,
+  deletedMarkers: Set<MetaSoftMarkerName>,
   fallback: number | null,
 ): number | null {
-  const marker = dirtyMarkers.has("VO2_max")
-    ? draftMarkers.VO2_max
-    : confirmedMarkers.VO2_max ?? draftMarkers.VO2_max;
+  if (dirtyMarkers.has("VO2_max")) {
+    return positiveNumber(draftMarkers.VO2_max.values.vo2_ml_kg_min);
+  }
+  if (confirmedMarkers.VO2_max) {
+    return positiveNumber(confirmedMarkers.VO2_max.values.vo2_ml_kg_min);
+  }
+  if (deletedMarkers.has("VO2_max")) return null;
+  const marker = draftMarkers.VO2_max;
   const value = marker.values.vo2_ml_kg_min;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function positiveNumber(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function buildMarkerReportSummary(

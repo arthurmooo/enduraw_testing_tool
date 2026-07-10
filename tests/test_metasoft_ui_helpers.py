@@ -240,6 +240,17 @@ class MetaSoftUiHelpersTest(unittest.TestCase):
             160,
         )
 
+        blocked_result = _merge_patch_results([
+            patch_result,
+            {
+                "status": "blocked",
+                "patch": {},
+                "warnings": [{"message": "Marqueur incomplet."}],
+            },
+        ])
+        self.assertEqual(blocked_result["status"], "blocked")
+        self.assertEqual(blocked_result["warnings"][0]["message"], "Marqueur incomplet.")
+
         profile = {
             "stress_test_results": {
                 "thresholds": {

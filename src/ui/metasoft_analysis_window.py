@@ -1166,6 +1166,7 @@ def _merge_patch_results(patch_results):
     merged = {"status": "ok", "patch": {"stress_test_results": {}}, "warnings": []}
     for result in patch_results:
         if result.get("status") != "ok":
+            merged["status"] = "blocked"
             merged["warnings"].extend(result.get("warnings", []))
             continue
         _deep_merge(
