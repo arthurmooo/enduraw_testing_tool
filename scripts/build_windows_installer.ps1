@@ -91,8 +91,8 @@ try {
     $AppVersion = $VersionMatch.Groups[1].Value
     New-Item (Join-Path $RepoRoot "artifacts") -ItemType Directory -Force | Out-Null
     Remove-Item $SetupPath -Force -ErrorAction SilentlyContinue
-    $VersionDefine = "/DMyAppVersion=`"$AppVersion`""
-    $SourceDefine = "/DSourceRoot=`"$RepoRoot`""
+    $VersionDefine = "/DMyAppVersion=$AppVersion"
+    $SourceDefine = "/DSourceRoot=$RepoRoot"
     & $InnoCompiler $VersionDefine $SourceDefine $IssPath
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup a echoue." }
     if (-not (Test-Path $SetupPath)) { throw "Le setup final attendu est absent." }
