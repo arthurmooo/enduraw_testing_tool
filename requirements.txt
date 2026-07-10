@@ -5,8 +5,8 @@ customtkinter>=5.2.0
 
 # Build tool (for creating .exe)
 pyinstaller>=6.0.0
-# MongoDB
-pymongo>=4.0.0
+# MongoDB (SRV requis par les URI mongodb+srv utilisees dans l'application)
+pymongo[srv]>=4.0.0
 
 # Data Validation
 pydantic>=2.0.0

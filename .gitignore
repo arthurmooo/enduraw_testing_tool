@@ -7,7 +7,9 @@ __pycache__/
 # PyInstaller
 build/
 dist/
+artifacts/
 *.spec
+!packaging/windows/*.spec
 *.app/
 
 # Frontend local
@@ -17,6 +19,7 @@ local_ui/dist/
 # Environnements virtuels
 venv/
 .venv/
+.venv-build-windows/
 env/
 
 # Secrets / config (NEVER commit)
