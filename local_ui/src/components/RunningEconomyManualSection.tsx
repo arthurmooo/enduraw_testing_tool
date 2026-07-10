@@ -281,6 +281,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
                 ))}
               </div>
               <ManualEconomyPlot
+                key={selectedStage.stage_index}
                 points={stagePoints}
                 draft={selectedDraft}
                 row={selectedRow}
@@ -552,7 +553,6 @@ const ManualEconomyPlot = memo(function ManualEconomyPlot({
     },
     yaxis: { title: "L/min", fixedrange: true, gridcolor: "rgba(255,255,255,0.055)" },
     yaxis2: { title: "VE", fixedrange: true, overlaying: "y", side: "right", gridcolor: "rgba(255,255,255,0)" },
-    uirevision: `manual-running-economy-${defaultRange[0]}-${defaultRange[1]}`,
   }), [annotations, currentRange, defaultRange, shapes, tickText, tickVals]);
   const handleRelayout = useCallback((event: Readonly<Record<string, unknown>>) => {
     const nextRange = xRangeFromRelayout(event);
