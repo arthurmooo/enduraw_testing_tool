@@ -214,6 +214,10 @@ export default function App() {
     markDirty(marker);
   }, [markDirty, payload]);
 
+  const handleFullscreenChange = useCallback((graphId: string, open: boolean) => {
+    setFullscreenGraphId(open ? graphId : null);
+  }, []);
+
   if (error && !payload) {
     return (
       <main className="app-shell">
@@ -253,14 +257,14 @@ export default function App() {
       graph={graph}
       markers={draftMarkers}
       phaseFilter={phaseFilter}
-      smoothingSeconds={smoothingSeconds}
-      showSpeedBands={showSpeedBands}
+      smoothingSeconds={graph.kind === "time" ? smoothingSeconds : 0}
+      showSpeedBands={graph.kind === "time" ? showSpeedBands : false}
       timeXRange={graph.kind === "time" ? timeXRange : null}
       timeZoomResetRevision={graph.kind === "time" ? timeZoomResetRevision : 0}
       cursorPoint={graph.kind === "time" ? cursorPoint : null}
       fullscreen={fullscreenGraphId === graph.id}
       height={height}
-      onFullscreenChange={(open) => setFullscreenGraphId(open ? graph.id : null)}
+      onFullscreenChange={handleFullscreenChange}
       onTimeXRangeChange={graph.kind === "time" ? handleTimeXRangeChange : undefined}
       onCursorPoint={handleCursorPoint}
       onPlaceMarker={placeMarker}

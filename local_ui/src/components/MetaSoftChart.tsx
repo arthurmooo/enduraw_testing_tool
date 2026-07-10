@@ -62,7 +62,7 @@ interface Props {
   cursorPoint: MetaSoftPoint | null;
   fullscreen: boolean;
   height?: number;
-  onFullscreenChange: (open: boolean) => void;
+  onFullscreenChange: (graphId: string, open: boolean) => void;
   onTimeXRangeChange?: (graphId: string, range: [number, number] | null) => void;
   onCursorPoint: (graphId: string, point: MetaSoftPoint | null) => void;
   onPlaceMarker: (
@@ -129,11 +129,11 @@ function MetaSoftChartComponent({
   useEffect(() => {
     if (!fullscreen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onFullscreenChange(false);
+      if (event.key === "Escape") onFullscreenChange(graph.id, false);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [fullscreen, onFullscreenChange]);
+  }, [fullscreen, graph.id, onFullscreenChange]);
   useEffect(() => {
     debugZoom("chart mounted", { graphId: graph.id, kind: graph.kind, timeZoomResetRevision, fullscreen });
     return () => debugZoom("chart unmounted", { graphId: graph.id, kind: graph.kind, timeZoomResetRevision, fullscreen });
@@ -212,7 +212,7 @@ function MetaSoftChartComponent({
         <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
         <button
           type="button"
-          onClick={() => onFullscreenChange(true)}
+          onClick={() => onFullscreenChange(graph.id, true)}
           className="icon-button push-right"
           aria-label={`Ouvrir ${graph.title} en plein ecran`}
           title="Plein ecran"
@@ -234,7 +234,7 @@ function MetaSoftChartComponent({
                 type="button"
                 ref={closeButtonRef}
                 className="icon-button push-right"
-                onClick={() => onFullscreenChange(false)}
+                onClick={() => onFullscreenChange(graph.id, false)}
                 aria-label="Fermer le plein ecran"
                 title="Fermer"
               >
