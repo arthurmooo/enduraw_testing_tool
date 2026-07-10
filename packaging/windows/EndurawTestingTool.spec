@@ -1,13 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Bundle Windows onedir autonome pour Enduraw Testing Tool."""
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 ROOT = Path(SPECPATH).resolve().parents[1]
+SRC = ROOT / "src"
 UI_DIST = ROOT / "local_ui" / "dist"
 ICON = ROOT / "icon.ico"
+
+# The application imports top-level packages from src/. Make them visible
+# while this spec is evaluated, then collect every project package explicitly.
+sys.path.insert(0, str(SRC))
 
 for required_path in (UI_DIST / "index.html", ICON):
     if not required_path.exists():
@@ -20,14 +26,19 @@ datas = collect_data_files("customtkinter") + [
     (str(ICON), "."),
 ]
 hiddenimports = sorted(set(
-    collect_submodules("dns")
+    ["config", "main_session"]
+    + collect_submodules("core")
+    + collect_submodules("local_api")
+    + collect_submodules("ui")
+    + collect_submodules("utils")
+    + collect_submodules("dns")
     + collect_submodules("email_validator")
     + collect_submodules("pymongo")
 ))
 
 a = Analysis(
     [str(ROOT / "main.py")],
-    pathex=[str(ROOT), str(ROOT / "src")],
+    pathex=[str(ROOT), str(SRC)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

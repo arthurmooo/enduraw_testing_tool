@@ -13,6 +13,7 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $UiRoot = Join-Path $RepoRoot "local_ui"
 $VenvRoot = Join-Path $RepoRoot ".venv-build-windows"
 $VenvPython = Join-Path $VenvRoot "Scripts\python.exe"
+$ArchiveViewer = Join-Path $VenvRoot "Scripts\pyi-archive_viewer.exe"
 $SpecPath = Join-Path $RepoRoot "packaging\windows\EndurawTestingTool.spec"
 $IssPath = Join-Path $RepoRoot "packaging\windows\EndurawTestingTool.iss"
 $AppDist = Join-Path $RepoRoot "dist\EndurawTestingTool"
@@ -82,6 +83,26 @@ try {
     if (-not (Test-Path (Join-Path $AppDist "EndurawTestingTool.exe"))) {
         throw "L'executable PyInstaller attendu est absent."
     }
+
+    $AppExecutable = Join-Path $AppDist "EndurawTestingTool.exe"
+    $ArchiveContents = (& $ArchiveViewer -b -r $AppExecutable 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw "Inspection de l'archive PyInstaller impossible." }
+
+    $SourceRoot = Join-Path $RepoRoot "src"
+    $MissingModules = @()
+    Get-ChildItem $SourceRoot -Recurse -File -Filter "*.py" |
+        Where-Object { $_.Name -ne "__init__.py" } |
+        ForEach-Object {
+            $RelativePath = $_.FullName.Substring($SourceRoot.Length + 1)
+            $Module = $RelativePath.Substring(0, $RelativePath.Length - 3).Replace("\", ".").Replace("/", ".")
+            if (-not $ArchiveContents.Contains($Module)) {
+                $MissingModules += $Module
+            }
+        }
+    if ($MissingModules.Count -gt 0) {
+        throw "Modules projet absents du bundle: $($MissingModules -join ', ')"
+    }
+    Write-Host "Archive verifiee: tous les modules Python de src sont embarques." -ForegroundColor Green
 
     Write-Host "[4/5] Installateur Inno Setup" -ForegroundColor Cyan
     $InnoCompiler = Find-InnoCompiler

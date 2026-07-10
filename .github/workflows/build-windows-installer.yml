@@ -71,7 +71,11 @@ jobs:
 
           $env:ENDURAW_DATA_DIR = $dataRoot
           $env:ENDURAW_STARTUP_SMOKE_TEST = "1"
-          $appProcess = Start-Process $app -Wait -PassThru
+          $appProcess = Start-Process $app -PassThru
+          if (-not $appProcess.WaitForExit(60000)) {
+            Stop-Process -Id $appProcess.Id -Force
+            throw "Packaged application startup timed out."
+          }
           if ($appProcess.ExitCode -ne 0) {
             throw "Packaged application startup failed with exit code $($appProcess.ExitCode)."
           }

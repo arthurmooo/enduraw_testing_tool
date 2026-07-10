@@ -11,7 +11,8 @@ _BOOTSTRAP_ROOT = Path(
     if _FROZEN
     else Path(__file__).parent
 )
-sys.path.insert(0, str(_BOOTSTRAP_ROOT / "src"))
+if not _FROZEN:
+    sys.path.insert(0, str(_BOOTSTRAP_ROOT / "src"))
 
 from config import APP_VERSION
 from core.app_paths import prepare_app_storage
