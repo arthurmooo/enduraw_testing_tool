@@ -174,7 +174,7 @@ export function buildSpeedStepLineShapes(analysis: MetaSoftAnalysis): PlotShape[
     xref: "x",
     yref: "paper",
     path: points.x.map((x, index) => `${index === 0 ? "M" : "L"} ${x},${yPaper(points.y[index])}`).join(" "),
-    line: { color: "rgba(255, 43, 214, 0.36)", width: 0.7 },
+    line: { color: "rgba(255, 43, 214, 0.74)", width: 1.1 },
     layer: "below",
     editable: false,
   }];
