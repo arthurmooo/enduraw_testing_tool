@@ -248,7 +248,7 @@ export default function App() {
 
   const renderReadingChart = (graph: (typeof READING_GRAPH_CONFIGS)[number], height?: number) => (
     <MetaSoftChart
-      key={graph.kind === "time" ? `${graph.id}-${timeRangeKey}` : graph.id}
+      key={`${readingViewMode}-${graph.kind === "time" ? `${graph.id}-${timeRangeKey}` : graph.id}`}
       analysis={analysis}
       graph={graph}
       markers={draftMarkers}
