@@ -46,6 +46,50 @@ jobs:
         shell: pwsh
         run: ./scripts/build_windows_installer.ps1
 
+      - name: Smoke test installed app and persistent data
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path $env:RUNNER_TEMP "EndurawTestingTool-smoke-install"
+          $dataRoot = Join-Path $env:RUNNER_TEMP "EndurawTestingTool-smoke-data"
+          $setup = Resolve-Path "artifacts\EndurawTestingTool-Setup.exe"
+          $setupArgs = @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/NOICONS",
+            "/DIR=$installRoot"
+          )
+          $setupProcess = Start-Process $setup -ArgumentList $setupArgs -Wait -PassThru
+          if ($setupProcess.ExitCode -ne 0) {
+            throw "Silent installation failed with exit code $($setupProcess.ExitCode)."
+          }
+
+          $app = Join-Path $installRoot "app\EndurawTestingTool.exe"
+          $reactIndex = Join-Path $installRoot "app\_internal\local_ui\dist\index.html"
+          if (-not (Test-Path $app)) { throw "Installed application executable is missing." }
+          if (-not (Test-Path $reactIndex)) { throw "Bundled React UI is missing." }
+
+          $env:ENDURAW_DATA_DIR = $dataRoot
+          $env:ENDURAW_STARTUP_SMOKE_TEST = "1"
+          $appProcess = Start-Process $app -Wait -PassThru
+          if ($appProcess.ExitCode -ne 0) {
+            throw "Packaged application startup failed with exit code $($appProcess.ExitCode)."
+          }
+
+          $schema = Join-Path $dataRoot "data_schema.json"
+          if (-not (Test-Path $schema)) { throw "Persistent data root was not initialized." }
+
+          $uninstaller = Join-Path $installRoot "unins000.exe"
+          $uninstallProcess = Start-Process $uninstaller -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART"
+          ) -Wait -PassThru
+          if ($uninstallProcess.ExitCode -ne 0) {
+            throw "Silent uninstall failed with exit code $($uninstallProcess.ExitCode)."
+          }
+          if (-not (Test-Path $schema)) { throw "Uninstall removed persistent user data." }
+
       - name: Upload setup
         uses: actions/upload-artifact@v4
         with:

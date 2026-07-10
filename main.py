@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 _FROZEN = bool(getattr(sys, "frozen", False))
+_STARTUP_SMOKE_TEST = os.environ.get("ENDURAW_STARTUP_SMOKE_TEST") == "1"
 _BOOTSTRAP_ROOT = Path(
     getattr(sys, "_MEIPASS", Path(sys.executable).parent)
     if _FROZEN
@@ -70,10 +71,15 @@ def main() -> int:
             data_root=storage["data_root"],
             resources=storage["resources"],
         )
+        if _STARTUP_SMOKE_TEST:
+            app.update_idletasks()
+            app.destroy()
+            return 0
         app.mainloop()
         return 0
     except Exception as error:
-        _show_startup_error(error)
+        if not _STARTUP_SMOKE_TEST:
+            _show_startup_error(error)
         return 1
 
 
