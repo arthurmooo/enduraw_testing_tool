@@ -724,6 +724,19 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(self.server.consume_pending_profile_updates(), [payload["profile_name"]])
         self.assertEqual(self.server.consume_pending_profile_updates(), [])
 
+    def test_profile_atomic_write_failure_preserves_existing_bytes(self) -> None:
+        profile_path = self.session_manager.profile_path(self.profile_name)
+        original_bytes = profile_path.read_bytes()
+        profile = self.session_manager.get_profile(self.profile_name)
+        profile["professional_life"]["occupation"] = "Coach"
+
+        with patch("core.session_manager.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.session_manager.update_profile(self.profile_name, profile)
+
+        self.assertEqual(profile_path.read_bytes(), original_bytes)
+        self.assertEqual(list(profile_path.parent.glob(f".{profile_path.name}.*.tmp")), [])
+
     def test_report_rejects_duplicate_marker_names_without_writing(self) -> None:
         match_id = self._match_id()
         original = self.session_manager.get_profile(self.profile_name)

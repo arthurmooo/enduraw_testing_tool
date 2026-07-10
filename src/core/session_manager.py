@@ -333,9 +333,20 @@ class SessionManager:
                 filepath.rename(new_filepath)
                 filepath = new_filepath
         
-        # Save updated data
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(profile_data, f, indent=2, ensure_ascii=False)
+        # Le profil est une source officielle: un crash ne doit jamais laisser
+        # un JSON tronque entre le report React et l'export Valentin.
+        temporary_path = filepath.with_name(
+            f".{filepath.name}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            with open(temporary_path, 'w', encoding='utf-8') as f:
+                json.dump(profile_data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_path, filepath)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
         
         return new_filename
     

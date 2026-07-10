@@ -35,6 +35,7 @@ interface Props {
   analysis: MetaSoftAnalysis;
   profileVo2maxMlKgMin: number | null;
   initialManualEconomy?: ManualRunningEconomyPayload | null;
+  onDraftChange: () => void;
   onReportSummaryChange?: (summary: ManualEconomyReportSummary | null) => void;
 }
 
@@ -63,6 +64,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
   analysis,
   profileVo2maxMlKgMin,
   initialManualEconomy,
+  onDraftChange,
   onReportSummaryChange,
 }: Props, ref) {
   const stableStages = useMemo(() => analysis.warmup_stages.filter(hasStageBounds), [analysis.warmup_stages]);
@@ -139,15 +141,20 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
     [analysis.points, selectedStage],
   );
 
+  const markStageDirty = useCallback((stageIndex: number) => {
+    setDirtyStageIndexes((current) => new Set(current).add(stageIndex));
+    onDraftChange();
+  }, [onDraftChange]);
+
   const updateSelectedDraft = useCallback((updater: (draft: ManualEconomyDraft, stage: MetaSoftWarmupStage) => ManualEconomyDraft) => {
     if (!selectedStage || !selectedDraft) return;
     setDrafts((current) => ({
       ...current,
       [selectedStage.stage_index]: clampDraftToStage(updater(selectedDraft, selectedStage), selectedStage),
     }));
-    setDirtyStageIndexes((current) => new Set(current).add(selectedStage.stage_index));
+    markStageDirty(selectedStage.stage_index);
     setSaveStatus(null);
-  }, [selectedDraft, selectedStage]);
+  }, [markStageDirty, selectedDraft, selectedStage]);
 
   const handlePlotClick = useCallback((event: Readonly<{ points?: Array<{ x?: unknown }> }>) => {
     if (!selectedStage || !selectedDraft) return;
@@ -166,11 +173,11 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
       ...current,
       [selectedStage.stage_index]: clampDraftToStage({ ...selectedDraft, exclusions }, selectedStage),
     }));
-    setDirtyStageIndexes((current) => new Set(current).add(selectedStage.stage_index));
+    markStageDirty(selectedStage.stage_index);
     setActiveExclusionIndex(Math.max(0, exclusions.findIndex((item) => start <= item.end_seconds && end >= item.start_seconds)));
     setExcludeMode(false);
     setSaveStatus(null);
-  }, [excludeMode, selectedDraft, selectedStage]);
+  }, [excludeMode, markStageDirty, selectedDraft, selectedStage]);
 
   const toggleStageEnabled = useCallback((stage: MetaSoftWarmupStage) => {
     const draft = drafts[stage.stage_index] ?? initialEconomyDraft(stage);
@@ -179,9 +186,9 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
       [stage.stage_index]: clampDraftToStage({ ...draft, enabled: !draft.enabled }, stage),
     }));
     setSelectedStageIndex(stage.stage_index);
-    setDirtyStageIndexes((current) => new Set(current).add(stage.stage_index));
+    markStageDirty(stage.stage_index);
     setSaveStatus(null);
-  }, [drafts]);
+  }, [drafts, markStageDirty]);
 
   const buildReportPayload = useCallback(() => {
     if (!stableStages.length) return null;

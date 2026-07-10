@@ -73,7 +73,7 @@ export default function App() {
   const cursorFrameRef = useRef<number | null>(null);
   const cursorPointRef = useRef<MetaSoftPoint | null>(null);
   const pendingCursorPointRef = useRef<MetaSoftPoint | null>(null);
-  const markerEditRevisionRef = useRef(0);
+  const reportEditRevisionRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,7 +100,7 @@ export default function App() {
         setConfirmedMarkers(confirmed);
         setDeletedMarkers(deleted);
         setDirtyMarkers(new Set());
-        markerEditRevisionRef.current = 0;
+        reportEditRevisionRef.current = 0;
         cursorPointRef.current = firstPoint;
         pendingCursorPointRef.current = firstPoint;
         setCursorPoint(firstPoint);
@@ -197,8 +197,15 @@ export default function App() {
   }, []);
 
   const markDirty = useCallback((marker: MetaSoftMarkerName) => {
-    markerEditRevisionRef.current += 1;
+    reportEditRevisionRef.current += 1;
     setDirtyMarkers((current) => new Set(current).add(marker));
+    setReport(null);
+    setConflicts([]);
+    setError(null);
+  }, []);
+
+  const markManualEconomyDirty = useCallback(() => {
+    reportEditRevisionRef.current += 1;
     setReport(null);
     setConflicts([]);
     setError(null);
@@ -297,7 +304,7 @@ export default function App() {
 
   const reportProfile = async (overwrite = false) => {
     await runOfficialAction(overwrite ? "Overwrite" : "Report", async () => {
-      const markerEditRevision = markerEditRevisionRef.current;
+      const reportEditRevision = reportEditRevisionRef.current;
       try {
         const markerSelections = serializeMarkerSelections(draftMarkers, dirtyMarkers);
         const manualEconomyPayload = manualEconomyRef.current?.reportPayload();
@@ -310,12 +317,12 @@ export default function App() {
             ...(overwrite ? { conflict_policy: "overwrite" } : {}),
           },
         );
-        if (markerEditRevisionRef.current !== markerEditRevision) return;
+        if (reportEditRevisionRef.current !== reportEditRevision) return;
         const canonical = await apiGet<LocalAnalysisPayload>(
           `/api/matches/${match.match_id}/analysis`,
           bootstrap?.token ?? "",
         );
-        if (markerEditRevisionRef.current !== markerEditRevision) return;
+        if (reportEditRevisionRef.current !== reportEditRevision) return;
         const canonicalConfirmed = canonical.confirmed_markers ?? {};
         const canonicalDeleted = new Set(canonical.deleted_markers ?? []);
         const canonicalDrafts = createInitialMarkers(canonical.analysis);
@@ -334,7 +341,7 @@ export default function App() {
         setReport(response);
         setConflicts([]);
       } catch (err) {
-        if (markerEditRevisionRef.current !== markerEditRevision) return;
+        if (reportEditRevisionRef.current !== reportEditRevision) return;
         const apiError = err instanceof ApiError ? err : null;
         const nextConflicts = conflictsFromDetails(apiError?.details);
         if (apiError?.status === 409 && nextConflicts.length) {
@@ -480,6 +487,7 @@ export default function App() {
         analysis={analysis}
         profileVo2maxMlKgMin={markerVo2maxMlKgMin}
         initialManualEconomy={payload.manual_running_economy}
+        onDraftChange={markManualEconomyDirty}
         onReportSummaryChange={setManualEconomyReportSummary}
       />
 
