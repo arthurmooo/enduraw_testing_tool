@@ -3,6 +3,7 @@ TCP Data Processor - Session-Based Main Application
 Tab-based UI with Sessions, Profiles, and XML Matching
 """
 import os
+import subprocess
 import sys
 import customtkinter as ctk
 from datetime import datetime
@@ -23,6 +24,11 @@ from utils.json_exporter import JsonExporter
 from core.session_manager import SessionManager
 from core.mongo_service import MongoService
 from core.protocol_store import ProtocolStore
+from core.app_paths import (
+    ensure_user_data_dirs,
+    resource_root as resolve_resource_root,
+    user_data_root,
+)
 from ui.app_tabs import SessionListItem, ProfileListItem, XmlListItem, MatchListItem
 from config import APP_NAME, APP_VERSION, SIDEBAR_COLORS, SIDEBAR_WIDTH
 
@@ -32,6 +38,16 @@ from ui.tabbed_form import TabbedInputForm
 # Set appearance
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+
+def _open_local_folder(path: Path) -> None:
+    """Ouvre un dossier local avec le gestionnaire natif, sans shell."""
+    path = Path(path)
+    if sys.platform.startswith("win"):
+        os.startfile(str(path))
+        return
+    command = "open" if sys.platform == "darwin" else "xdg-open"
+    subprocess.Popen([command, str(path)])
 
 
 def _save_metasoft_audit_sidecar(
@@ -158,10 +174,17 @@ class SessionTab(ctk.CTkFrame):
         
         self.open_btn = ctk.CTkButton(btn_frame, text="Ouvrir", command=self._open_session, state="disabled")
         self.open_btn.grid(row=0, column=1, padx=5)
+
+        self.folder_btn = ctk.CTkButton(
+            btn_frame,
+            text="Ouvrir dossier",
+            command=self._open_data_folder,
+        )
+        self.folder_btn.grid(row=0, column=2, padx=5)
         
         self.delete_btn = ctk.CTkButton(btn_frame, text="Supprimer", fg_color="#c0392b", 
                                         hover_color="#a93226", command=self._delete_session, state="disabled")
-        self.delete_btn.grid(row=0, column=2, padx=5)
+        self.delete_btn.grid(row=0, column=3, padx=5)
         
         # Session list
         self.session_list = ctk.CTkScrollableFrame(self)
@@ -240,6 +263,15 @@ class SessionTab(ctk.CTkFrame):
             messagebox.showinfo("Succès", "Session chargée!")
         except Exception as e:
             messagebox.showerror("Erreur", f"Erreur: {e}")
+
+    def _open_data_folder(self):
+        try:
+            _open_local_folder(self.session_manager.base_path)
+        except Exception as error:
+            messagebox.showerror(
+                "Dossier de données",
+                f"Ouverture impossible:\n{error}",
+            )
     
     def _delete_session(self):
         if not self.selected_item:
@@ -989,22 +1021,24 @@ class XmlMatchTab(ctk.CTkFrame):
 class TCPDataProcessorSession(ctk.CTk):
     """Main application with tabbed interface"""
     
-    def __init__(self):
+    def __init__(
+        self,
+        data_root: Optional[Path] = None,
+        resources: Optional[Path] = None,
+    ):
         super().__init__()
         
         self.title(f"{APP_NAME} v{APP_VERSION} - Session Mode")
         self.geometry("1200x800")
         self.minsize(1000, 700)
         
-        # Get base path (where the app is running)
-        if getattr(sys, 'frozen', False):
-            base_path = os.path.dirname(sys.executable)
-        else:
-            base_path = os.path.dirname(os.path.abspath(__file__))
-        
-        self.session_manager = SessionManager(os.path.dirname(base_path))
-        self.mongo_service = MongoService(os.path.dirname(base_path))
-        self.protocol_store = ProtocolStore(os.path.dirname(base_path))
+        self.data_root = user_data_root() if data_root is None else Path(data_root)
+        self.resources = resolve_resource_root() if resources is None else Path(resources)
+        ensure_user_data_dirs(self.data_root)
+
+        self.session_manager = SessionManager(str(self.data_root))
+        self.mongo_service = MongoService(str(self.data_root))
+        self.protocol_store = ProtocolStore(str(self.data_root))
         
         self._set_icon()
         self._create_ui()
@@ -1016,7 +1050,7 @@ class TCPDataProcessorSession(ctk.CTk):
     
     def _set_icon(self):
         try:
-            icon_path = Path(__file__).parent / "icon.ico"
+            icon_path = self.resources / "icon.ico"
             if icon_path.exists():
                 self.iconbitmap(str(icon_path))
         except Exception:

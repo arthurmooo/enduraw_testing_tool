@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from core.metasoft_analysis import build_manual_running_economy, build_metasoft_analysis
 from core.metasoft_identity import metasoft_identity_check
+from core.app_paths import resource_root
 from core.metasoft_markers import (
     apply_metasoft_stress_patch,
     build_metasoft_marker,
@@ -162,7 +163,7 @@ class LocalMetaSoftServer:
         return _error("match_not_found", "Route API locale inconnue.", status=404)
 
     def static_dist(self):
-        return Path(__file__).resolve().parents[2] / "local_ui" / "dist"
+        return resource_root() / "local_ui" / "dist"
 
     def _session_payload(self):
         session = getattr(self.session_manager, "current_session", None)
