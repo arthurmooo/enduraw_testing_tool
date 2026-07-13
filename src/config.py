@@ -4,7 +4,7 @@ Configuration constants for Enduraw Testing Tool
 
 # Application metadata
 APP_NAME = "Enduraw Testing Tool"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 # File patterns
 XML_FILENAME_PATTERN = r"TCP__([A-Z]+)_([A-Za-z]+)_(\d{4})\.(\d{2})\.(\d{2})_(\d{2})\.(\d{2})\.(\d{2})_\.xml"
