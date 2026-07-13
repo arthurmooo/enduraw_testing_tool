@@ -15,6 +15,7 @@ from core import app_paths
 from core.app_paths import (
     ensure_data_schema,
     ensure_user_data_dirs,
+    is_legacy_data_root,
     legacy_data_candidates,
     prepare_app_storage,
     resource_root,
@@ -132,6 +133,13 @@ class AppPathsTest(unittest.TestCase):
 
             self.assertEqual(candidates, [])
             self.assertEqual(storage["migration"]["status"], "noop")
+
+    def test_explicit_legacy_env_is_recognized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / ".env").write_text("MONGO_URI=mongodb://secret", encoding="utf-8")
+
+            self.assertTrue(is_legacy_data_root(root))
 
     def test_prepare_storage_migrates_only_explicit_dev_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

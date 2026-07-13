@@ -29,6 +29,7 @@ def _create_source(root: Path, session_value: str = "source") -> None:
     (session / "xml" / "test.xml").write_text("<xml />", encoding="utf-8")
     _write_json(root / "mongo_config.json", {"uri": "mongodb://secret-source"})
     _write_json(root / "protocols.json", [{"name": "Paliers"}])
+    (root / ".env").write_text("MONGO_URI=mongodb://secret-env", encoding="utf-8")
 
 
 class LegacyDataMigrationTest(unittest.TestCase):
@@ -53,6 +54,7 @@ class LegacyDataMigrationTest(unittest.TestCase):
             self.assertEqual(result["status"], "migrated")
             self.assertTrue((target / "sessions" / "2026-07-10_test" / "session.json").is_file())
             self.assertTrue((target / "mongo_config.json").is_file())
+            self.assertTrue((target / ".env").is_file())
             backups = list((target / "backups").glob("legacy-*"))
             self.assertEqual(len(backups), 1)
             self.assertTrue((backups[0] / "manifest.json").is_file())
@@ -61,6 +63,7 @@ class LegacyDataMigrationTest(unittest.TestCase):
             self.assertFalse((target / "migration.lock").exists())
             manifest = json.loads((backups[0] / "manifest.json").read_text(encoding="utf-8"))
             self.assertNotIn("mongodb://secret-source", json.dumps(manifest))
+            self.assertNotIn("mongodb://secret-env", json.dumps(manifest))
             self.assertEqual(
                 (source / "sessions" / "2026-07-10_test" / "session.json").read_bytes(),
                 source_before,
@@ -104,20 +107,23 @@ class LegacyDataMigrationTest(unittest.TestCase):
             _create_source(source)
             _write_json(target / "mongo_config.json", {"uri": "mongodb://target"})
             _write_json(target / "protocols.json", [{"name": "Target"}])
+            (target / ".env").write_text("MONGO_URI=mongodb://target-env", encoding="utf-8")
 
             result = migrate_legacy_data([source], target, timestamp=TIMESTAMP)
 
             mongo = json.loads((target / "mongo_config.json").read_text(encoding="utf-8"))
             protocols = json.loads((target / "protocols.json").read_text(encoding="utf-8"))
+            dotenv = (target / ".env").read_text(encoding="utf-8")
             self.assertEqual(mongo, {"uri": "mongodb://target"})
             self.assertEqual(protocols, [{"name": "Target"}])
+            self.assertEqual(dotenv, "MONGO_URI=mongodb://target-env")
             kept = [
                 item for item in result["operations"]
                 if item.get("action") == "kept_target"
             ]
             self.assertEqual({item["name"] for item in kept}, set((
                 "mongo_config.json",
-                "protocols.json",
+                "protocols.json", ".env",
             )))
 
     def test_existing_lock_blocks_migration_without_activating_data(self) -> None:

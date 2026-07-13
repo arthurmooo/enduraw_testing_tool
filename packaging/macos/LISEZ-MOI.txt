@@ -1,0 +1,19 @@
+ENDURAW TESTING TOOL — INSTALLATION MAC
+
+1. Faites glisser « Enduraw Testing Tool V2 » sur le dossier Applications.
+   Son nom différent empêche tout remplacement accidentel de l'ancienne app.
+2. Dans Applications, faites un clic droit sur l'app V2 puis « Ouvrir » au premier lancement.
+3. Si le Mac demande d'importer les anciennes données, répondez Oui et choisissez
+   l'ancien dossier Enduraw (celui qui contient le dossier sessions).
+
+L'import crée d'abord une sauvegarde vérifiée. Il ne supprime et ne déplace aucun
+ancien fichier. En cas de nom de session déjà présent, les deux versions sont gardées.
+
+Nouvelles données :
+~/Library/Application Support/EndurawTestingTool/
+
+Ne mettez pas l'ancienne app à la corbeille avant d'avoir vérifié les sessions,
+profils, XML, matches et exports dans cette nouvelle version.
+
+Cette image n'est pas notarisée par Apple. Le clic droit puis « Ouvrir » autorise
+explicitement son premier lancement sans utiliser le Terminal.

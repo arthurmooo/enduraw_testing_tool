@@ -10,6 +10,7 @@ dist/
 artifacts/
 *.spec
 !packaging/windows/*.spec
+!packaging/macos/*.spec
 *.app/
 
 # Frontend local
@@ -20,6 +21,7 @@ local_ui/dist/
 venv/
 .venv/
 .venv-build-windows/
+.venv-build-macos/
 env/
 
 # Secrets / config (NEVER commit)

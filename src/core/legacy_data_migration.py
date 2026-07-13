@@ -16,7 +16,7 @@ from typing import Iterable, Optional
 
 
 MIGRATION_SCHEMA_VERSION = 1
-PERSISTENT_FILES = ("mongo_config.json", "protocols.json")
+PERSISTENT_FILES = ("mongo_config.json", "protocols.json", ".env")
 STATE_FILENAME = "migration_state.json"
 
 

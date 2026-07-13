@@ -14,7 +14,7 @@ from typing import Mapping, Optional
 APP_DATA_DIRNAME = "EndurawTestingTool"
 DATA_SCHEMA_FILENAME = "data_schema.json"
 DATA_SCHEMA_VERSION = 1
-LEGACY_FILENAMES = ("mongo_config.json", "protocols.json")
+LEGACY_FILENAMES = ("mongo_config.json", "protocols.json", ".env")
 
 
 def resource_root() -> Path:
@@ -137,7 +137,7 @@ def legacy_data_candidates(
         candidate = candidate.resolve()
         if candidate == data_resolved or candidate in data_resolved.parents:
             continue
-        if _contains_legacy_data(candidate):
+        if is_legacy_data_root(candidate):
             result.append(candidate)
     return result
 
@@ -175,7 +175,8 @@ def prepare_app_storage(
     }
 
 
-def _contains_legacy_data(root: Path) -> bool:
+def is_legacy_data_root(root: Path) -> bool:
+    """Indique si `root` contient une ancienne installation importable."""
     if (root / "sessions").is_dir():
         return True
     return any((root / name).is_file() for name in LEGACY_FILENAMES)
