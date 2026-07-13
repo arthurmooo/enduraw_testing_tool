@@ -267,11 +267,14 @@ class DataTransformer:
                         mesure[key] = entry[key]
                 mesures.append(mesure)
         
-        return {
+        result = {
             "actif": len(mesures) > 0,
             "mesures": mesures,
-            "seuils": manual_input.get('stress_test_results', {}).get('lactate_thresholds', {}),
         }
+        thresholds = manual_input.get('stress_test_results', {}).get('lactate_thresholds', {})
+        if thresholds:
+            result["seuils"] = thresholds
+        return result
     
     def _build_patient_info(
         self,

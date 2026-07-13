@@ -148,7 +148,10 @@ export default function App() {
     if (!bootstrap || !payload || !draftMarkers || draftRevision === 0) return;
     let cancelled = false;
     const timeout = window.setTimeout(() => {
-      if (reportInProgressRef.current) return;
+      if (reportInProgressRef.current) {
+        setDraftRevision((revision) => revision + 1);
+        return;
+      }
       const markerSelections = serializeMarkerSelections(draftMarkers, dirtyMarkers);
       const manualEconomyPayload = manualEconomyRef.current?.reportPayload();
       const draft: MetaSoftDraftPayload = {
