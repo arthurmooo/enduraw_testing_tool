@@ -748,6 +748,13 @@ td {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.draft-save-status {
+  display: inline-flex;
+  margin: 0;
+  color: #76f4b7;
+  font-size: 12px;
+}
+
 .accent-cell {
   color: #76f4b7;
 }

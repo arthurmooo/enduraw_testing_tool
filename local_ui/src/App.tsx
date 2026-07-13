@@ -16,6 +16,7 @@ import {
   createInitialMarkers,
   formatNumber,
   MARKER_NAMES,
+  restoreDraftMarkerSelections,
   secondsToClock,
   serializeMarkerSelections,
 } from "./lib/markerUtils";
@@ -26,6 +27,7 @@ import type {
   LocalAnalysisPayload,
   MarkerMode,
   MetaSoftMarkerName,
+  MetaSoftDraftPayload,
   MetaSoftPoint,
   ProfileConflict,
   ReportResponse,
@@ -67,7 +69,11 @@ export default function App() {
   const [report, setReport] = useState<ReportResponse | null>(null);
   const [conflicts, setConflicts] = useState<ProfileConflict[]>([]);
   const [manualEconomyReportSummary, setManualEconomyReportSummary] = useState<ManualEconomyReportSummary | null>(null);
+  const [draftRevision, setDraftRevision] = useState(0);
+  const [draftSaveStatus, setDraftSaveStatus] = useState<string | null>(null);
   const manualEconomyRef = useRef<RunningEconomyManualHandle | null>(null);
+  const draftSavePromiseRef = useRef<Promise<unknown> | null>(null);
+  const reportInProgressRef = useRef(false);
   const ignoreTimeRelayoutUntilRef = useRef(0);
   const timeXRangeRef = useRef<[number, number] | null>(null);
   const cursorFrameRef = useRef<number | null>(null);
@@ -95,11 +101,18 @@ export default function App() {
             initialMarkers[name] = buildDraftMarker(name, result.analysis.points, null, "point");
           }
         }
+        const restoredDraft = restoreDraftMarkerSelections(
+          initialMarkers,
+          result.analysis.points,
+          result.metasoft_draft?.marker_selections ?? [],
+        );
         setPayload(result);
-        setDraftMarkers(initialMarkers);
+        setDraftMarkers(restoredDraft.markers);
         setConfirmedMarkers(confirmed);
         setDeletedMarkers(deleted);
-        setDirtyMarkers(new Set());
+        setDirtyMarkers(restoredDraft.dirty);
+        setDraftRevision(0);
+        setDraftSaveStatus(result.metasoft_draft ? "Brouillon local restaure" : null);
         reportEditRevisionRef.current = 0;
         cursorPointRef.current = firstPoint;
         pendingCursorPointRef.current = firstPoint;
@@ -125,6 +138,38 @@ export default function App() {
   useEffect(() => () => {
     if (cursorFrameRef.current !== null) window.cancelAnimationFrame(cursorFrameRef.current);
   }, []);
+
+  useEffect(() => {
+    if (!bootstrap || !payload || !draftMarkers || draftRevision === 0) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      if (reportInProgressRef.current) return;
+      const markerSelections = serializeMarkerSelections(draftMarkers, dirtyMarkers);
+      const manualEconomyPayload = manualEconomyRef.current?.reportPayload();
+      const draft: MetaSoftDraftPayload = {
+        marker_selections: markerSelections,
+        ...(manualEconomyPayload ?? {}),
+      };
+      setDraftSaveStatus("Sauvegarde du brouillon...");
+      const savePromise = apiPost<{ ok: true }>(
+        `/api/matches/${payload.match.match_id}/draft`,
+        bootstrap.token,
+        draft,
+      );
+      draftSavePromiseRef.current = savePromise;
+      void savePromise.then(() => {
+        if (!cancelled) setDraftSaveStatus("Brouillon sauvegarde localement");
+      }).catch((err) => {
+        if (!cancelled) setDraftSaveStatus(`Brouillon non sauvegarde: ${errorMessage(err)}`);
+      }).finally(() => {
+        if (draftSavePromiseRef.current === savePromise) draftSavePromiseRef.current = null;
+      });
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [bootstrap, dirtyMarkers, draftMarkers, draftRevision, payload]);
 
   const phases = useMemo(
     () => Array.from(new Set((payload?.analysis.phases ?? []).map((phase) => phase.phase))).filter(Boolean),
@@ -169,6 +214,7 @@ export default function App() {
 
   const markDirty = useCallback((marker: MetaSoftMarkerName) => {
     reportEditRevisionRef.current += 1;
+    setDraftRevision((revision) => revision + 1);
     setDirtyMarkers((current) => new Set(current).add(marker));
     setReport(null);
     setConflicts([]);
@@ -177,6 +223,7 @@ export default function App() {
 
   const markManualEconomyDirty = useCallback(() => {
     reportEditRevisionRef.current += 1;
+    setDraftRevision((revision) => revision + 1);
     setReport(null);
     setConflicts([]);
     setError(null);
@@ -300,55 +347,63 @@ export default function App() {
   );
 
   const reportProfile = async (overwrite = false) => {
-    await runOfficialAction(overwrite ? "Overwrite" : "Report", async () => {
-      const reportEditRevision = reportEditRevisionRef.current;
-      try {
-        const markerSelections = serializeMarkerSelections(draftMarkers, dirtyMarkers);
-        const manualEconomyPayload = manualEconomyRef.current?.reportPayload();
-        const response = await apiPost<ReportResponse>(
-          `/api/matches/${match.match_id}/profile/report`,
-          bootstrap?.token ?? "",
-          {
-            marker_selections: markerSelections,
-            ...(manualEconomyPayload ?? {}),
-            ...(overwrite ? { conflict_policy: "overwrite" } : {}),
-          },
-        );
-        if (reportEditRevisionRef.current !== reportEditRevision) return;
-        const canonical = await apiGet<LocalAnalysisPayload>(
-          `/api/matches/${match.match_id}/analysis`,
-          bootstrap?.token ?? "",
-        );
-        if (reportEditRevisionRef.current !== reportEditRevision) return;
-        const canonicalConfirmed = canonical.confirmed_markers ?? {};
-        const canonicalDeleted = new Set(canonical.deleted_markers ?? []);
-        const canonicalDrafts = createInitialMarkers(canonical.analysis);
-        for (const name of MARKER_NAMES) {
-          const marker = canonicalConfirmed[name];
-          if (marker) canonicalDrafts[name] = marker;
-          if (canonicalDeleted.has(name)) {
-            canonicalDrafts[name] = buildDraftMarker(name, canonical.analysis.points, null, "point");
+    reportInProgressRef.current = true;
+    try {
+      await runOfficialAction(overwrite ? "Overwrite" : "Report", async () => {
+        const reportEditRevision = reportEditRevisionRef.current;
+        try {
+          await draftSavePromiseRef.current?.catch(() => undefined);
+          const markerSelections = serializeMarkerSelections(draftMarkers, dirtyMarkers);
+          const manualEconomyPayload = manualEconomyRef.current?.reportPayload();
+          const response = await apiPost<ReportResponse>(
+            `/api/matches/${match.match_id}/profile/report`,
+            bootstrap?.token ?? "",
+            {
+              marker_selections: markerSelections,
+              ...(manualEconomyPayload ?? {}),
+              ...(overwrite ? { conflict_policy: "overwrite" } : {}),
+            },
+          );
+          if (reportEditRevisionRef.current !== reportEditRevision) return;
+          const canonical = await apiGet<LocalAnalysisPayload>(
+            `/api/matches/${match.match_id}/analysis`,
+            bootstrap?.token ?? "",
+          );
+          if (reportEditRevisionRef.current !== reportEditRevision) return;
+          const canonicalConfirmed = canonical.confirmed_markers ?? {};
+          const canonicalDeleted = new Set(canonical.deleted_markers ?? []);
+          const canonicalDrafts = createInitialMarkers(canonical.analysis);
+          for (const name of MARKER_NAMES) {
+            const marker = canonicalConfirmed[name];
+            if (marker) canonicalDrafts[name] = marker;
+            if (canonicalDeleted.has(name)) {
+              canonicalDrafts[name] = buildDraftMarker(name, canonical.analysis.points, null, "point");
+            }
           }
+          setPayload(canonical);
+          setDraftMarkers(canonicalDrafts);
+          setConfirmedMarkers(canonicalConfirmed);
+          setDeletedMarkers(canonicalDeleted);
+          setDirtyMarkers(new Set());
+          setDraftRevision(0);
+          setDraftSaveStatus("Brouillon officialise");
+          setReport(response);
+          setConflicts([]);
+        } catch (err) {
+          if (reportEditRevisionRef.current !== reportEditRevision) return;
+          const apiError = err instanceof ApiError ? err : null;
+          const nextConflicts = conflictsFromDetails(apiError?.details);
+          if (apiError?.status === 409 && nextConflicts.length) {
+            setConflicts(nextConflicts);
+            setError("Conflits profil: confirmez l'ecrasement pour reporter.");
+            return;
+          }
+          throw err;
         }
-        setPayload(canonical);
-        setDraftMarkers(canonicalDrafts);
-        setConfirmedMarkers(canonicalConfirmed);
-        setDeletedMarkers(canonicalDeleted);
-        setDirtyMarkers(new Set());
-        setReport(response);
-        setConflicts([]);
-      } catch (err) {
-        if (reportEditRevisionRef.current !== reportEditRevision) return;
-        const apiError = err instanceof ApiError ? err : null;
-        const nextConflicts = conflictsFromDetails(apiError?.details);
-        if (apiError?.status === 409 && nextConflicts.length) {
-          setConflicts(nextConflicts);
-          setError("Conflits profil: confirmez l'ecrasement pour reporter.");
-          return;
-        }
-        throw err;
-      }
-    });
+      });
+    } finally {
+      reportInProgressRef.current = false;
+    }
   };
 
   return (
@@ -492,6 +547,7 @@ export default function App() {
           deletedMarkers={deletedMarkers}
           profileVo2maxMlKgMin={profileVo2maxMlKgMin}
           onChangeWindowSeconds={resizeMarkerWindow}
+          draftSaveStatus={draftSaveStatus}
         />
       </section>
 
@@ -500,6 +556,7 @@ export default function App() {
         analysis={analysis}
         profileVo2maxMlKgMin={markerVo2maxMlKgMin}
         initialManualEconomy={payload.manual_running_economy}
+        initialDraft={payload.metasoft_draft}
         onDraftChange={markManualEconomyDirty}
         onReportSummaryChange={setManualEconomyReportSummary}
       />

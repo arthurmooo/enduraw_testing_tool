@@ -159,6 +159,59 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertTrue(payload["warnings"][0]["blocking"])
         self.assertEqual(payload["source_of_truth"]["markers"], "python.metasoft_markers")
 
+    def test_draft_survives_refresh_and_report_clears_it(self) -> None:
+        match_id = self._match_id()
+        draft = {
+            "marker_selections": [{
+                "name": "SV1",
+                "action": "upsert",
+                "mode": "previous",
+                "t_seconds": 90,
+                "window_start_seconds": 80,
+                "window_end_seconds": 90,
+            }],
+        }
+
+        status, payload = self._post(f"/api/matches/{match_id}/draft", draft)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["saved"])
+
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["metasoft_draft"], draft)
+        self.assertEqual(
+            self.session_manager.get_profile(self.profile_name),
+            _profile(),
+        )
+
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {"marker_selections": [], "conflict_policy": "overwrite"},
+        )
+        self.assertEqual(status, 200)
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["metasoft_draft"])
+
+    def test_draft_is_ignored_after_xml_source_changes(self) -> None:
+        match_id = self._match_id()
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/draft",
+            {"marker_selections": []},
+        )
+        self.assertEqual(status, 200)
+        xml_path = Path(self.session_manager.get_xml_path(self.xml_filename))
+        xml_path.write_bytes(xml_path.read_bytes() + b"\n")
+
+        status, payload = self._get(f"/api/matches/{match_id}/analysis")
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["metasoft_draft"])
+        self.assertTrue(any(
+            warning["code"] == "metasoft_draft_stale"
+            for warning in payload["warnings"]
+        ))
+
     def test_identity_mismatch_blocks_preview_and_report_without_profile_write(self) -> None:
         profile = self.session_manager.get_profile(self.profile_name)
         profile["identity"] = {"last_name": "Mo", "first_name": "Arthur"}

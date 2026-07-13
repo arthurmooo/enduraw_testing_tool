@@ -208,6 +208,19 @@ export interface MarkerSelectionPayload {
   window_end_seconds?: number | null;
 }
 
+export interface MetaSoftDraftPayload {
+  marker_selections?: MarkerSelectionPayload[];
+  manual_running_economy_selections?: Array<{
+    stage_index: number;
+    start_seconds: number;
+    end_seconds: number;
+    exclusions: ManualRunningEconomyExclusion[];
+  }>;
+  manual_running_economy_stage_selections?: Array<{ stage_index: number; enabled: boolean }>;
+  manual_running_economy_rest_selection?: Record<string, unknown>;
+  lactate_test?: Record<string, unknown>;
+}
+
 export interface LocalAnalysisPayload {
   ok: true;
   match: {
@@ -218,6 +231,7 @@ export interface LocalAnalysisPayload {
   profile: Record<string, unknown>;
   analysis: MetaSoftAnalysis;
   manual_running_economy?: ManualRunningEconomyPayload | null;
+  metasoft_draft?: MetaSoftDraftPayload | null;
   confirmed_markers?: ConfirmedMarkers;
   deleted_markers?: MetaSoftMarkerName[];
   warnings: MetaSoftWarning[];

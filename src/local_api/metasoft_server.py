@@ -147,7 +147,7 @@ class LocalMetaSoftServer:
 
     def route_post(self, path, payload):
         parts = _path_parts(path)
-        if len(parts) != 5 or parts[:2] != ["api", "matches"]:
+        if len(parts) < 4 or parts[:2] != ["api", "matches"]:
             return _error("match_not_found", "Route API locale inconnue.", status=404)
 
         match_id = parts[2]
@@ -156,6 +156,8 @@ class LocalMetaSoftServer:
             return self._officialize_payload(match_id, payload)
         if suffix == ["running-economy", "manual"]:
             return self._manual_running_economy_payload(match_id, payload)
+        if suffix == ["draft"]:
+            return self._draft_payload(match_id, payload)
         if suffix == ["profile", "report-preview"]:
             return self._report_preview_payload(match_id, payload)
         if suffix == ["profile", "report"]:
@@ -216,6 +218,16 @@ class LocalMetaSoftServer:
         )
         if manual_economy_state["status"] in {"stale", "corrupt"}:
             warnings.append(_manual_running_economy_warning(manual_economy_state))
+        draft_state = self.session_manager.metasoft_draft_state(
+            match_id,
+            context["match_info"],
+        )
+        if draft_state["status"] in {"stale", "corrupt"}:
+            warnings.append({
+                "code": f"metasoft_draft_{draft_state['status']}",
+                "message": "Brouillon local ignore car sa source profil/XML a change.",
+                "blocking": False,
+            })
         confirmed_markers = {
             name: marker
             for name, marker in markers.items()
@@ -236,6 +248,7 @@ class LocalMetaSoftServer:
                 if manual_economy_state["status"] == "ok"
                 else None
             ),
+            "metasoft_draft": draft_state["data"] if draft_state["status"] == "ok" else None,
             "confirmed_markers": confirmed_markers,
             "deleted_markers": deleted_markers,
             "warnings": warnings,
@@ -247,6 +260,49 @@ class LocalMetaSoftServer:
                 "smoothing": "react_visual_only",
             },
         }
+
+    def _draft_payload(self, match_id, payload):
+        """Persiste un brouillon borne; aucun calcul ni profil officiel n'est modifie."""
+        context = self._match_context(match_id)
+        if not context["ok"]:
+            return context
+        if not isinstance(payload, dict):
+            return _error("invalid_metasoft_draft", "Brouillon MetaSoft invalide.", status=400)
+        if payload.get("clear") is True:
+            self.session_manager.clear_metasoft_draft(match_id)
+            return {"ok": True, "cleared": True}
+        allowed_keys = {
+            "marker_selections",
+            "manual_running_economy_selections",
+            "manual_running_economy_stage_selections",
+            "manual_running_economy_rest_selection",
+            "lactate_test",
+        }
+        if set(payload) - allowed_keys:
+            return _error("invalid_metasoft_draft", "Champs brouillon inconnus.", status=400)
+        for key in (
+            "marker_selections",
+            "manual_running_economy_selections",
+            "manual_running_economy_stage_selections",
+        ):
+            value = payload.get(key, [])
+            if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+                return _error("invalid_metasoft_draft", f"{key} invalide.", status=400)
+        for key in ("manual_running_economy_rest_selection", "lactate_test"):
+            value = payload.get(key)
+            if value is not None and not isinstance(value, dict):
+                return _error("invalid_metasoft_draft", f"{key} invalide.", status=400)
+        if len(json.dumps(payload, ensure_ascii=False)) > 2_000_000:
+            return _error("invalid_metasoft_draft", "Brouillon MetaSoft trop volumineux.", status=413)
+        try:
+            self.session_manager.save_metasoft_draft(
+                match_id,
+                context["match_info"],
+                payload,
+            )
+        except (OSError, ValueError) as exc:
+            return _error("invalid_metasoft_draft", str(exc), status=409)
+        return {"ok": True, "saved": True}
 
     def _manual_running_economy_payload(self, match_id, payload):
         context = self._match_context(match_id)
@@ -485,6 +541,7 @@ class LocalMetaSoftServer:
                 canonical_markers,
                 manual_running_economy,
             )
+            self.session_manager.clear_metasoft_draft(match_id)
         except Exception as exc:
             rollback_errors = []
             try:

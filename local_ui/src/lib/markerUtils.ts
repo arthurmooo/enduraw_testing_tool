@@ -99,6 +99,35 @@ export function serializeMarkerSelections(
   });
 }
 
+export function restoreDraftMarkerSelections(
+  markers: DraftMarkers,
+  points: MetaSoftPoint[],
+  selections: MarkerSelectionPayload[],
+): { markers: DraftMarkers; dirty: Set<MetaSoftMarkerName> } {
+  const restored = { ...markers };
+  const dirty = new Set<MetaSoftMarkerName>();
+  for (const selection of selections) {
+    if (!MARKER_NAMES.includes(selection.name)) continue;
+    const name = selection.name;
+    if (selection.action === "delete") {
+      restored[name] = buildDraftMarker(name, points, null, "point");
+      dirty.add(name);
+      continue;
+    }
+    const mode = selection.mode ?? "point";
+    restored[name] = buildDraftMarker(
+      name,
+      points,
+      selection.t_seconds ?? null,
+      mode,
+      selection.window_start_seconds ?? null,
+      selection.window_end_seconds ?? null,
+    );
+    dirty.add(name);
+  }
+  return { markers: restored, dirty };
+}
+
 function defaultWindowStart(mode: MarkerMode, tSeconds: number | null): number | null {
   if (mode === "point" || tSeconds === null) return null;
   return tSeconds - (mode === "previous" ? DEFAULT_PREVIOUS_SECONDS : DEFAULT_WINDOW_SECONDS);

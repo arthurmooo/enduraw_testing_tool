@@ -26,6 +26,7 @@ import {
 import type {
   ManualRunningEconomyPayload,
   ManualRunningEconomyRow,
+  MetaSoftDraftPayload,
   MetaSoftAnalysis,
   MetaSoftPoint,
   MetaSoftWarmupStage,
@@ -35,6 +36,7 @@ interface Props {
   analysis: MetaSoftAnalysis;
   profileVo2maxMlKgMin: number | null;
   initialManualEconomy?: ManualRunningEconomyPayload | null;
+  initialDraft?: MetaSoftDraftPayload | null;
   onDraftChange: () => void;
   onReportSummaryChange?: (summary: ManualEconomyReportSummary | null) => void;
 }
@@ -64,6 +66,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
   analysis,
   profileVo2maxMlKgMin,
   initialManualEconomy,
+  initialDraft,
   onDraftChange,
   onReportSummaryChange,
 }: Props, ref) {
@@ -88,18 +91,33 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
     const savedStageSelections = new Map(
       (initialManualEconomy?.stage_selections ?? []).map((item) => [item.stage_index, item.enabled]),
     );
+    const draftSelections = new Map(
+      (initialDraft?.manual_running_economy_selections ?? []).map((item) => [item.stage_index, item]),
+    );
+    const draftStageSelections = new Map(
+      (initialDraft?.manual_running_economy_stage_selections ?? []).map((item) => [item.stage_index, item.enabled]),
+    );
     const hasSavedManualEconomy = Boolean(initialManualEconomy);
     const nextDrafts = Object.fromEntries(stableStages.map((stage) => {
       const saved = savedRows.get(stage.stage_index);
-      const draft = saved ? draftFromSavedRow(saved) : initialEconomyDraft(stage);
-      draft.enabled = savedStageSelections.get(stage.stage_index) ?? (saved ? true : !hasSavedManualEconomy);
+      const restoredDraft = draftSelections.get(stage.stage_index);
+      const draft = restoredDraft
+        ? draftFromSelection(restoredDraft)
+        : saved ? draftFromSavedRow(saved) : initialEconomyDraft(stage);
+      draft.enabled = draftStageSelections.get(stage.stage_index)
+        ?? savedStageSelections.get(stage.stage_index)
+        ?? (saved ? true : !hasSavedManualEconomy);
       return [stage.stage_index, clampDraftToStage(draft, stage)];
     }));
     setDrafts(nextDrafts);
+    setDirtyStageIndexes(new Set([
+      ...draftSelections.keys(),
+      ...draftStageSelections.keys(),
+    ]));
     setSelectedStageIndex(stableStages[0]?.stage_index ?? 0);
     setXRange(null);
     setActiveExclusionIndex(null);
-  }, [analysis.file.filename, initialManualEconomy, stableStages]);
+  }, [analysis.file.filename, initialDraft, initialManualEconomy, stableStages]);
 
   const previewRows = useMemo(
     () => stableStages.map((stage) => buildManualEconomyPreviewRow(
@@ -685,6 +703,21 @@ function draftFromSavedRow(row: ManualRunningEconomyRow): ManualEconomyDraft {
     startSeconds: row.start_seconds,
     endSeconds: row.end_seconds,
     exclusions: row.exclusions,
+  };
+}
+
+function draftFromSelection(selection: {
+  stage_index: number;
+  start_seconds: number;
+  end_seconds: number;
+  exclusions: ManualRunningEconomyRow["exclusions"];
+}): ManualEconomyDraft {
+  return {
+    stageIndex: selection.stage_index,
+    enabled: true,
+    startSeconds: selection.start_seconds,
+    endSeconds: selection.end_seconds,
+    exclusions: selection.exclusions,
   };
 }
 

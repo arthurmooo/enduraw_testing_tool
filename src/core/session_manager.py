@@ -77,6 +77,7 @@ class SessionManager:
     OUTPUT_DIR = "output"
     MATCHES_FILE = "matches.json"
     MANUAL_RUNNING_ECONOMY_FILE = "running_economy_manual.json"
+    METASOFT_DRAFTS_FILE = "metasoft_drafts.json"
     
     def __init__(self, base_path: str):
         """
@@ -92,6 +93,7 @@ class SessionManager:
         self.matches: List[ProfileMatch] = []
         self._matches_lock = threading.RLock()
         self._manual_running_economy_lock = threading.RLock()
+        self._metasoft_drafts_lock = threading.RLock()
     
     def _ensure_sessions_dir(self):
         """Ensure Sessions directory exists"""
@@ -817,6 +819,60 @@ class SessionManager:
             payload.pop(str(match_id), None)
             self._write_manual_running_economy_payload(payload)
 
+    def save_metasoft_draft(
+        self,
+        match_id: str,
+        match: ProfileMatch,
+        data: Dict[str, Any],
+    ) -> None:
+        """Sauvegarde un brouillon React sans modifier le profil officiel."""
+        if not self.current_session_path:
+            raise ValueError("No session loaded")
+        fingerprint = self.build_metasoft_source_fingerprint(match)
+        if not fingerprint:
+            raise ValueError("Fingerprint source MetaSoft indisponible")
+        with self._metasoft_drafts_lock:
+            payload = self._load_metasoft_drafts_payload()
+            payload[str(match_id)] = {
+                "fingerprint": {"schema_version": 1, "source": fingerprint},
+                "saved_at": datetime.now().isoformat(),
+                "data": deepcopy(data),
+            }
+            self._write_metasoft_drafts_payload(payload)
+
+    def clear_metasoft_draft(self, match_id: str) -> None:
+        """Supprime seulement le brouillon du match apres un report reussi."""
+        if not self.current_session_path:
+            raise ValueError("No session loaded")
+        with self._metasoft_drafts_lock:
+            payload = self._load_metasoft_drafts_payload()
+            payload.pop(str(match_id), None)
+            self._write_metasoft_drafts_payload(payload)
+
+    def metasoft_draft_state(
+        self,
+        match_id: str,
+        match: ProfileMatch,
+    ) -> Dict[str, Any]:
+        """Retourne un brouillon uniquement si son profil/XML source est inchange."""
+        loaded = self._read_metasoft_drafts_payload()
+        if loaded["status"] != "ok":
+            return {"status": loaded["status"], "data": None, "reason": loaded["reason"]}
+        item = loaded["payload"].get(str(match_id))
+        if item is None:
+            return {"status": "missing", "data": None, "reason": None}
+        if not isinstance(item, dict) or not isinstance(item.get("data"), dict):
+            return {"status": "corrupt", "data": None, "reason": "invalid_match_entry"}
+        expected = self.build_metasoft_source_fingerprint(match)
+        fingerprint = item.get("fingerprint")
+        if (
+            not isinstance(fingerprint, dict)
+            or fingerprint.get("schema_version") != 1
+            or fingerprint.get("source") != expected
+        ):
+            return {"status": "stale", "data": None, "reason": "source_changed"}
+        return {"status": "ok", "data": deepcopy(item["data"]), "reason": None}
+
     def save_manual_running_economy(
         self,
         match_id: str,
@@ -949,6 +1005,42 @@ class SessionManager:
 
     def _write_manual_running_economy_payload(self, payload: Dict[str, Any]) -> None:
         path = self.current_session_path / self.MANUAL_RUNNING_ECONOMY_FILE
+        temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(temporary_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+    def _load_metasoft_drafts_payload(self) -> Dict[str, Any]:
+        loaded = self._read_metasoft_drafts_payload()
+        if loaded["status"] == "missing":
+            return {}
+        if loaded["status"] == "corrupt":
+            raise ValueError(f"metasoft_drafts_corrupt: {loaded['reason']}")
+        return loaded["payload"]
+
+    def _read_metasoft_drafts_payload(self) -> Dict[str, Any]:
+        if not self.current_session_path:
+            return {"status": "missing", "payload": {}, "reason": None}
+        path = self.current_session_path / self.METASOFT_DRAFTS_FILE
+        if not path.exists():
+            return {"status": "missing", "payload": {}, "reason": None}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"status": "corrupt", "payload": None, "reason": str(exc)}
+        if not isinstance(data, dict):
+            return {"status": "corrupt", "payload": None, "reason": "invalid_root"}
+        return {"status": "ok", "payload": data, "reason": None}
+
+    def _write_metasoft_drafts_payload(self, payload: Dict[str, Any]) -> None:
+        path = self.current_session_path / self.METASOFT_DRAFTS_FILE
         temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         try:
             with open(temporary_path, 'w', encoding='utf-8') as f:
