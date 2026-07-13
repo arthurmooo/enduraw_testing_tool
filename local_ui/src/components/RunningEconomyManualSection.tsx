@@ -5,6 +5,7 @@ import {
   useEffect,
   useImperativeHandle,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
 } from "react";
@@ -12,6 +13,7 @@ import Plot from "react-plotly.js";
 import { Minus, Plus, RotateCcw, Scissors, Trash2 } from "lucide-react";
 import { formatNumber, secondsToClock } from "../lib/markerUtils";
 import { scaledAxisRange } from "../lib/metasoftChartHelpers";
+import { speedSegmentsForAnalysis } from "../lib/chartUtils";
 import {
   buildManualEconomyPreviewRow,
   buildManualRestPreview,
@@ -82,6 +84,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
   const restStage = useMemo(() => restSelectionStage(analysis), [analysis]);
   const [manualStages, setManualStages] = useState<MetaSoftWarmupStage[]>([]);
   const stableStages = useMemo(() => [...detectedStages, ...manualStages], [detectedStages, manualStages]);
+  const selectableStages = useMemo(() => speedSegmentsForAnalysis(analysis).filter(isSelectableEconomyStage), [analysis]);
   const workStages = useMemo(
     () => restStage ? [restStage, ...stableStages] : stableStages,
     [restStage, stableStages],
@@ -91,6 +94,10 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
   const [activeExclusionIndex, setActiveExclusionIndex] = useState<number | null>(null);
   const [excludeMode, setExcludeMode] = useState(false);
   const [xRange, setXRange] = useState<[number, number] | null>(null);
+  const [plotResetRevision, setPlotResetRevision] = useState(0);
+  const ignoreRelayoutUntilRef = useRef(0);
+  const [stagePickerOpen, setStagePickerOpen] = useState(false);
+  const [selectedStageKeys, setSelectedStageKeys] = useState<Set<string>>(new Set());
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [savedManualEconomy, setSavedManualEconomy] = useState<ManualRunningEconomyPayload | null>(initialManualEconomy ?? null);
   const [dirtyStageIndexes, setDirtyStageIndexes] = useState<Set<number>>(new Set());
@@ -155,6 +162,8 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
     setSelectedStageIndex(restStage?.stage_index ?? economyStages[0]?.stage_index ?? 0);
     setXRange(null);
     setActiveExclusionIndex(null);
+    setStagePickerOpen(false);
+    setSelectedStageKeys(new Set());
   }, [analysis, detectedStages, initialDraft, initialManualEconomy, restStage]);
 
   const manualRestBaseline = useMemo<ManualRunningEconomyRestBaseline | null>(() => {
@@ -258,7 +267,18 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
     setSaveStatus(null);
   }, [drafts, markStageDirty]);
 
-  const addManualStage = useCallback(() => {
+  const handleXRangeChange = useCallback((range: [number, number] | null) => {
+    if (Date.now() < ignoreRelayoutUntilRef.current) return;
+    setXRange(range);
+  }, []);
+
+  const resetPlotZoom = useCallback(() => {
+    ignoreRelayoutUntilRef.current = Date.now() + 600;
+    setXRange(null);
+    setPlotResetRevision((current) => current + 1);
+  }, []);
+
+  const addFreeManualStage = useCallback(() => {
     const stageIndex = nextManualStageIndex(stableStages);
     const stage = manualSelectionStage(analysis, { stage_index: stageIndex });
     const draft = initialManualZoneDraft(analysis, stage);
@@ -268,6 +288,32 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
     markStageDirty(stageIndex);
     setXRange(null);
   }, [analysis, markStageDirty, stableStages]);
+
+  const addSelectedStages = useCallback(() => {
+    const candidates = selectableStages.filter((stage) => (
+      selectedStageKeys.has(economyStageKey(stage))
+      && !stableStages.some((current) => sameEconomyStage(current, stage))
+    ));
+    if (!candidates.length) return;
+    const firstIndex = nextManualStageIndex(stableStages);
+    const additions = candidates.map((stage, index) => ({
+      ...stage,
+      stage_index: firstIndex + index,
+      source: "manual" as const,
+    }));
+    setManualStages((current) => [...current, ...additions]);
+    setDrafts((current) => ({
+      ...current,
+      ...Object.fromEntries(additions.map((stage) => [stage.stage_index, initialEconomyDraft(stage)])),
+    }));
+    setDirtyStageIndexes((current) => new Set([...current, ...additions.map((stage) => stage.stage_index)]));
+    onDraftChange();
+    setSelectedStageIndex(additions[0].stage_index);
+    setSelectedStageKeys(new Set());
+    setStagePickerOpen(false);
+    setXRange(null);
+    setSaveStatus(null);
+  }, [onDraftChange, selectableStages, selectedStageKeys, stableStages]);
 
   const removeManualStage = useCallback((stage: MetaSoftWarmupStage) => {
     setManualStages((current) => current.filter((item) => item.stage_index !== stage.stage_index));
@@ -341,7 +387,15 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
           <div className="panel-title-row">
             <h2>Bornes et artefacts</h2>
             <div className="ec-actions">
-              <button type="button" className="secondary-button" onClick={addManualStage}>
+              <button
+                type="button"
+                className={stagePickerOpen ? "secondary-button active-action" : "secondary-button"}
+                aria-expanded={stagePickerOpen}
+                onClick={() => {
+                  setStagePickerOpen((current) => !current);
+                  setSelectedStageKeys(new Set());
+                }}
+              >
                 <Plus size={15} /> Ajouter une zone EC
               </button>
               {selectedStage?.source === "manual" && (
@@ -364,6 +418,87 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
               {excludeMode && <span className="interaction-hint">Cliquez dans le graphe pour placer l'artefact.</span>}
             </div>
           </div>
+          {stagePickerOpen && (
+            <div className="ec-stage-picker">
+              <div className="ec-stage-picker-head">
+                <div>
+                  <strong>Choisir les paliers a analyser</strong>
+                  <p>Selectionnez un ou plusieurs paliers. Chaque zone gardera ses propres bornes et exclusions.</p>
+                </div>
+                <button
+                  type="button"
+                  className="table-icon-button"
+                  onClick={() => setSelectedStageKeys(new Set(
+                    selectableStages
+                      .filter((stage) => !stableStages.some((current) => sameEconomyStage(current, stage)))
+                      .map(economyStageKey),
+                  ))}
+                >
+                  Tout selectionner
+                </button>
+              </div>
+              <div className="ec-stage-options">
+                {selectableStages.map((stage) => {
+                  const key = economyStageKey(stage);
+                  const alreadyAdded = stableStages.some((current) => sameEconomyStage(current, stage));
+                  const selected = alreadyAdded || selectedStageKeys.has(key);
+                  return (
+                    <label className={[
+                      "ec-stage-option",
+                      selected ? "selected" : "",
+                      alreadyAdded ? "already-added" : "",
+                    ].filter(Boolean).join(" ")} key={key}>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={alreadyAdded}
+                        onChange={() => setSelectedStageKeys((current) => {
+                          const next = new Set(current);
+                          if (next.has(key)) next.delete(key);
+                          else next.add(key);
+                          return next;
+                        })}
+                      />
+                      <span>
+                        <strong>{formatNumber(stage.speed_kmh, 1)} km/h</strong>
+                        <small>{stage.phase || "Phase non renseignee"} · {secondsToClock(stage.start_seconds)} - {secondsToClock(stage.end_seconds)}</small>
+                      </span>
+                      {alreadyAdded && <em>Deja ajoute</em>}
+                    </label>
+                  );
+                })}
+                {!selectableStages.length && <p className="panel-note">Aucun palier stable d'au moins 30 s detecte dans ce test.</p>}
+              </div>
+              <div className="ec-stage-picker-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    addFreeManualStage();
+                    setStagePickerOpen(false);
+                    setSelectedStageKeys(new Set());
+                  }}
+                >
+                  Ajouter une zone libre
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setStagePickerOpen(false);
+                    setSelectedStageKeys(new Set());
+                  }}
+                >
+                  Annuler
+                </button>
+                <button type="button" className="primary-button" disabled={!selectedStageKeys.size} onClick={addSelectedStages}>
+                  {selectedStageKeys.size
+                    ? `Ajouter ${selectedStageKeys.size} ${selectedStageKeys.size > 1 ? "paliers" : "palier"}`
+                    : "Selectionnez des paliers"}
+                </button>
+              </div>
+            </div>
+          )}
           {selectedStage && selectedDraft && (
             <>
               <div className="stage-strip">
@@ -385,12 +520,13 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
                 ))}
               </div>
               <ManualEconomyPlot
-                key={selectedStage.stage_index}
+                key={`${selectedStage.stage_index}-${plotResetRevision}`}
                 points={stagePoints}
                 draft={selectedDraft}
                 row={selectedRow}
                 xRange={xRange}
-                onXRangeChange={setXRange}
+                onXRangeChange={handleXRangeChange}
+                onResetZoom={resetPlotZoom}
                 onClick={excludeMode ? handlePlotClick : undefined}
               />
               {selectedStage.stage_index === 0 && (
@@ -571,6 +707,7 @@ const ManualEconomyPlot = memo(function ManualEconomyPlot({
   row,
   xRange,
   onXRangeChange,
+  onResetZoom,
   onClick,
 }: {
   points: MetaSoftPoint[];
@@ -578,6 +715,7 @@ const ManualEconomyPlot = memo(function ManualEconomyPlot({
   row: ManualRunningEconomyRow | null;
   xRange: [number, number] | null;
   onXRangeChange: (range: [number, number] | null) => void;
+  onResetZoom: () => void;
   onClick?: (event: Readonly<{ points?: Array<{ x?: unknown }> }>) => void;
 }) {
   const [yScaleFactor, setYScaleFactor] = useState(1);
@@ -687,7 +825,7 @@ const ManualEconomyPlot = memo(function ManualEconomyPlot({
         <button type="button" onClick={() => setYScaleFactor(1)}>Auto</button>
         <button type="button" onClick={() => setYScaleFactor((value) => Math.max(0.35, value * 0.8))}><Plus size={14} /></button>
         {xRange && (
-          <button type="button" className="zoom-reset-button" onClick={() => onXRangeChange(null)} title="Reinitialiser le zoom temporel">
+          <button type="button" className="zoom-reset-button" onClick={onResetZoom} title="Reinitialiser le zoom temporel">
             <RotateCcw size={14} /> Reinitialiser
           </button>
         )}
@@ -863,10 +1001,22 @@ function manualSelectionStage(
   if (!times.length) {
     return { stage_index: selection.stage_index, speed_kmh: 0, start_seconds: 0, end_seconds: 0, point_count: 0, source: "manual" };
   }
+  const start = selection.start_seconds ?? Math.min(...times);
+  const end = selection.end_seconds ?? Math.max(...times);
+  const detectedStage = speedSegmentsForAnalysis(analysis).find((stage) => (
+    isSelectableEconomyStage(stage)
+    && typeof stage.start_seconds === "number"
+    && typeof stage.end_seconds === "number"
+    && stage.start_seconds <= start + 2
+    && stage.end_seconds >= end - 2
+  ));
+  if (detectedStage) {
+    return { ...detectedStage, stage_index: selection.stage_index, source: "manual" };
+  }
   const selectedPoints = analysis.points.filter((point) => (
     typeof point.t_seconds === "number"
-    && point.t_seconds >= (selection.start_seconds ?? Math.min(...times))
-    && point.t_seconds <= (selection.end_seconds ?? Math.max(...times))
+    && point.t_seconds >= start
+    && point.t_seconds <= end
   ));
   const speeds = selectedPoints
     .map((point) => numeric(point.values.speed_kmh))
@@ -874,11 +1024,40 @@ function manualSelectionStage(
   return {
     stage_index: selection.stage_index,
     speed_kmh: speeds.length ? speeds.reduce((sum, value) => sum + value, 0) / speeds.length : 0,
-    start_seconds: Math.min(...times),
-    end_seconds: Math.max(...times),
+    start_seconds: start,
+    end_seconds: end,
     point_count: selectedPoints.length,
     source: "manual",
   };
+}
+
+function isSelectableEconomyStage(stage: MetaSoftWarmupStage): boolean {
+  const phase = normalisePhase(stage.phase);
+  return typeof stage.start_seconds === "number"
+    && typeof stage.end_seconds === "number"
+    && stage.end_seconds - stage.start_seconds >= 30
+    && stage.speed_kmh > 0
+    && !phase.includes("repos")
+    && !phase.includes("recuper")
+    && !phase.includes("retabl");
+}
+
+function economyStageKey(stage: MetaSoftWarmupStage): string {
+  return `${stage.start_seconds}-${stage.end_seconds}-${stage.speed_kmh}`;
+}
+
+function sameEconomyStage(left: MetaSoftWarmupStage, right: MetaSoftWarmupStage): boolean {
+  return typeof left.start_seconds === "number"
+    && typeof left.end_seconds === "number"
+    && typeof right.start_seconds === "number"
+    && typeof right.end_seconds === "number"
+    && Math.abs(left.start_seconds - right.start_seconds) <= 2
+    && Math.abs(left.end_seconds - right.end_seconds) <= 2
+    && Math.abs(left.speed_kmh - right.speed_kmh) <= 0.2;
+}
+
+function normalisePhase(value?: string | null): string {
+  return (value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
 function initialManualZoneDraft(analysis: MetaSoftAnalysis, stage: MetaSoftWarmupStage): ManualEconomyDraft {

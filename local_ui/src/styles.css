@@ -888,6 +888,83 @@ td {
   flex-wrap: wrap;
 }
 
+.ec-stage-picker {
+  display: grid;
+  gap: 12px;
+  margin: 10px 0 12px;
+  padding: 12px;
+  border: 1px solid rgba(16, 211, 143, 0.2);
+  border-radius: 8px;
+  background: rgba(16, 211, 143, 0.035);
+}
+
+.ec-stage-picker-head,
+.ec-stage-picker-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ec-stage-picker-head p {
+  margin: 4px 0 0;
+  color: rgba(226, 232, 240, 0.54);
+  font-size: 11px;
+}
+
+.ec-stage-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 7px;
+  max-height: 230px;
+  overflow: auto;
+}
+
+.ec-stage-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: rgba(226, 232, 240, 0.72);
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+}
+
+.ec-stage-option.selected {
+  border-color: rgba(16, 211, 143, 0.38);
+  color: #f8fafc;
+  background: rgba(16, 211, 143, 0.09);
+}
+
+.ec-stage-option span {
+  display: grid;
+  gap: 3px;
+}
+
+.ec-stage-option small,
+.ec-stage-option em {
+  color: rgba(226, 232, 240, 0.48);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.ec-stage-option.already-added {
+  cursor: default;
+  opacity: 0.64;
+}
+
+.ec-stage-picker-actions {
+  justify-content: flex-end;
+}
+
+.ec-stage-picker-actions .secondary-button:first-child {
+  margin-right: auto;
+}
+
 .ec-plot-wrap {
   position: relative;
 }
@@ -972,6 +1049,26 @@ td {
   cursor: grabbing;
 }
 
+.lactate-workspace tbody tr {
+  transition: transform 140ms ease, background-color 140ms ease, opacity 140ms ease;
+}
+
+.lactate-dragging-row {
+  opacity: 0.38;
+}
+
+.lactate-drop-before {
+  transform: translateY(4px);
+  box-shadow: inset 0 2px 0 #10d38f;
+  background: rgba(16, 211, 143, 0.06);
+}
+
+.lactate-drop-after {
+  transform: translateY(-4px);
+  box-shadow: inset 0 -2px 0 #10d38f;
+  background: rgba(16, 211, 143, 0.06);
+}
+
 .fixed-order-mark {
   display: inline-block;
   width: 28px;
@@ -1015,10 +1112,7 @@ td {
 }
 
 .lactate-threshold-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto;
-  gap: 8px;
-  align-items: end;
+  display: block;
 }
 
 .lactate-threshold-row label {

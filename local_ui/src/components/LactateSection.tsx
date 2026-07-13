@@ -1,6 +1,6 @@
 import { memo, useMemo, useState, type DragEvent } from "react";
 import Plot from "react-plotly.js";
-import { GripVertical, Plus, Trash2 } from "lucide-react";
+import { GripVertical, Plus } from "lucide-react";
 import { speedSegmentsForAnalysis } from "../lib/chartUtils";
 import type {
   LactateMeasurementDraft,
@@ -26,8 +26,8 @@ export const LactateSection = memo(function LactateSection({
   draft: LactateTestDraft;
   onChange: (draft: LactateTestDraft) => void;
 }) {
-  const [thresholdToPlace, setThresholdToPlace] = useState<"sl1" | "sl2" | null>(null);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
 
   const updateMeasurement = (index: number, patch: Partial<LactateMeasurementDraft>) => {
     const measurements = draft.measurements.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item);
@@ -65,14 +65,6 @@ export const LactateSection = memo(function LactateSection({
       }],
     });
   };
-  const removeMeasurement = (index: number) => {
-    const measurements = draft.measurements.filter((_item, itemIndex) => itemIndex !== index);
-    onChange({
-      ...draft,
-      measurements,
-      thresholds: remapThresholdsAfterRemoval(draft.thresholds, index),
-    });
-  };
   const moveStage = (from: number, to: number) => {
     if (from === to || draft.measurements[from]?.type !== "stage" || draft.measurements[to]?.type !== "stage") return;
     const moved = draft.measurements[from];
@@ -90,13 +82,6 @@ export const LactateSection = memo(function LactateSection({
       thresholds: { sl1: remap(draft.thresholds.sl1), sl2: remap(draft.thresholds.sl2) },
     });
   };
-  const placeThreshold = (index: number) => {
-    const item = draft.measurements[index];
-    if (!thresholdToPlace || !isValidStage(item)) return;
-    onChange({ ...draft, thresholds: { ...draft.thresholds, [thresholdToPlace]: index } });
-    setThresholdToPlace(null);
-  };
-
   const graphItems = useMemo(() => draft.measurements.flatMap((item, index) => (
     item.enabled !== false && numeric(item.lactate_mmol_l) !== null
       ? [{ item, index, label: `${index + 1}. ${measurementLabel(item, index)}` }]
@@ -156,7 +141,6 @@ export const LactateSection = memo(function LactateSection({
                   onClick={() => {
                     if (!window.confirm("Remplacer les paliers lactate par ceux detectes dans le XML courant ?")) return;
                     onChange(buildDetectedLactateDraft(analysis, true));
-                    setThresholdToPlace(null);
                   }}
                 >
                   Re-detecter depuis le XML
@@ -173,20 +157,33 @@ export const LactateSection = memo(function LactateSection({
               <div className="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Ordre</th><th>Statut</th><th>Repere</th><th>Vitesse</th><th>Delai</th><th>Lactate</th><th /></tr>
+                    <tr><th>Ordre</th><th>Statut</th><th>Repere</th><th>Vitesse</th><th>Delai</th><th>Lactate</th></tr>
                   </thead>
                   <tbody>
                     {draft.measurements.map((item, index) => (
                       <tr
                         key={`${item.type}-${item.stage_index ?? "manual"}-${index}`}
-                        className={item.enabled === false ? "muted-row" : ""}
+                        className={[
+                          item.enabled === false ? "muted-row" : "",
+                          draggedIndex === index ? "lactate-dragging-row" : "",
+                          dropIndex === index && draggedIndex !== null && draggedIndex !== index
+                            ? draggedIndex < index ? "lactate-drop-after" : "lactate-drop-before"
+                            : "",
+                        ].filter(Boolean).join(" ")}
+                        onDragEnter={() => {
+                          if (item.type === "stage" && draggedIndex !== null && draggedIndex !== index) setDropIndex(index);
+                        }}
                         onDragOver={(event) => {
-                          if (item.type === "stage" && draggedIndex !== null) event.preventDefault();
+                          if (item.type === "stage" && draggedIndex !== null) {
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = "move";
+                          }
                         }}
                         onDrop={(event) => {
                           event.preventDefault();
                           if (draggedIndex !== null) moveStage(draggedIndex, index);
                           setDraggedIndex(null);
+                          setDropIndex(null);
                         }}
                       >
                         <td>
@@ -198,8 +195,12 @@ export const LactateSection = memo(function LactateSection({
                               onDragStart={(event: DragEvent<HTMLButtonElement>) => {
                                 event.dataTransfer.effectAllowed = "move";
                                 setDraggedIndex(index);
+                                setDropIndex(null);
                               }}
-                              onDragEnd={() => setDraggedIndex(null)}
+                              onDragEnd={() => {
+                                setDraggedIndex(null);
+                                setDropIndex(null);
+                              }}
                               aria-label={`Deplacer ${measurementLabel(item, index)}`}
                               title="Glisser pour changer l'ordre"
                             >
@@ -273,13 +274,6 @@ export const LactateSection = memo(function LactateSection({
                             mmol/L
                           </label>
                         </td>
-                        <td>
-                          {(item.source === "manual" || item.type === "recovery" || item.type === "rest_after") && (
-                            <button type="button" className="table-icon-button" onClick={() => removeMeasurement(index)} aria-label="Supprimer la ligne">
-                              <Trash2 size={13} />
-                            </button>
-                          )}
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -289,7 +283,7 @@ export const LactateSection = memo(function LactateSection({
                 <div className="lactate-threshold-panel">
                   <div>
                     <strong>Seuils lactiques</strong>
-                    <p>Choisissez directement un palier, ou activez un seuil puis cliquez sur son point dans le graphe.</p>
+                    <p>Choisissez directement le palier correspondant a chaque seuil.</p>
                   </div>
                   {(["sl1", "sl2"] as const).map((name) => (
                     <div className="lactate-threshold-row" key={name}>
@@ -312,19 +306,10 @@ export const LactateSection = memo(function LactateSection({
                           ))}
                         </select>
                       </label>
-                      <button
-                        type="button"
-                        className={thresholdToPlace === name ? "secondary-button active-action" : "secondary-button"}
-                        disabled={!validStages.length}
-                        onClick={() => setThresholdToPlace((current) => current === name ? null : name)}
-                      >
-                        {thresholdToPlace === name ? "Cliquez sur le point..." : "Placer sur le graphe"}
-                      </button>
                     </div>
                   ))}
                   {!validStages.length && <p className="interaction-hint">Renseignez au moins une valeur lactate sur un palier inclus pour placer SL1 ou SL2.</p>}
                 </div>
-                {thresholdToPlace && <p className="interaction-hint">Cliquez sur un point de palier inclus pour placer {thresholdToPlace.toUpperCase()}.</p>}
                 {graphItems.length ? (
                   <Plot
                     data={[
@@ -334,7 +319,6 @@ export const LactateSection = memo(function LactateSection({
                         name: "Lactate",
                         x: graphItems.map((entry) => entry.label),
                         y: graphItems.map((entry) => entry.item.lactate_mmol_l),
-                        customdata: graphItems.map((entry) => entry.index),
                         line: { color: "#ff5f6d", width: 2 },
                         marker: { color: "#ff5f6d", size: 8 },
                       },
@@ -363,10 +347,6 @@ export const LactateSection = memo(function LactateSection({
                     config={{ responsive: true, displayModeBar: false, doubleClick: false }}
                     style={{ width: "100%", height: 360 }}
                     useResizeHandler
-                    onClick={(event: Readonly<{ points?: Array<{ customdata?: unknown }> }>) => {
-                      const index = numeric(event.points?.[0]?.customdata);
-                      if (index !== null) placeThreshold(index);
-                    }}
                   />
                 ) : (
                   <div className="lactate-graph-empty">
@@ -631,20 +611,11 @@ function measurementLabel(item: LactateMeasurementDraft | undefined, index: numb
   return item.label?.trim() || (item.speed !== null ? `${item.speed} km/h` : `Palier ${index + 1}`);
 }
 
-function isValidStage(item: LactateMeasurementDraft | undefined): boolean {
-  return Boolean(item && item.type === "stage" && item.enabled !== false && numeric(item.lactate_mmol_l) !== null);
-}
-
 function clearThresholdAt(thresholds: LactateTestDraft["thresholds"], index: number) {
   return {
     sl1: thresholds.sl1 === index ? null : thresholds.sl1,
     sl2: thresholds.sl2 === index ? null : thresholds.sl2,
   };
-}
-
-function remapThresholdsAfterRemoval(thresholds: LactateTestDraft["thresholds"], index: number) {
-  const remap = (value?: number | null) => value === index ? null : typeof value === "number" && value > index ? value - 1 : value;
-  return { sl1: remap(thresholds.sl1), sl2: remap(thresholds.sl2) };
 }
 
 function lactateThresholdShapes(draft: LactateTestDraft, labels: Record<number, string>) {
