@@ -1,5 +1,6 @@
 import { AlertTriangle, Send } from "lucide-react";
 import type { ManualEconomyReportSummary } from "./RunningEconomyManualSection";
+import type { LactateReportSummary } from "./LactateSection";
 import type {
   MetaSoftWarning,
   ProfileConflict,
@@ -23,6 +24,7 @@ export function AnalysisExportSection({
   conflicts,
   markerSummary,
   manualEconomySummary,
+  lactateSummary,
   warnings,
   onReport,
   onReportOverwrite,
@@ -33,6 +35,7 @@ export function AnalysisExportSection({
   conflicts: ProfileConflict[];
   markerSummary: MarkerReportSummaryItem[];
   manualEconomySummary: ManualEconomyReportSummary | null;
+  lactateSummary: LactateReportSummary | null;
   warnings: MetaSoftWarning[];
   onReport: () => void;
   onReportOverwrite: () => void;
@@ -41,7 +44,7 @@ export function AnalysisExportSection({
     <section id="metasoft-analysis-export" className="section-block">
       <div className="section-head">
         <h2>Analyse</h2>
-        <p>Reporter au profil sauvegarde automatiquement les marqueurs et l'EC manuelle.</p>
+        <p>Reporter au profil officialise ensemble les marqueurs, l'EC manuelle et les prises de lactate.</p>
       </div>
       <div className="analysis-grid report-only-grid">
         <section id="metasoft-profile-report" className="panel action-panel">
@@ -52,6 +55,7 @@ export function AnalysisExportSection({
           <ReportSummary
             markerSummary={markerSummary}
             manualEconomySummary={manualEconomySummary}
+            lactateSummary={lactateSummary}
             warnings={warnings}
           />
           <div className="action-stack">
@@ -93,10 +97,12 @@ export function AnalysisExportSection({
 function ReportSummary({
   markerSummary,
   manualEconomySummary,
+  lactateSummary,
   warnings,
 }: {
   markerSummary: MarkerReportSummaryItem[];
   manualEconomySummary: ManualEconomyReportSummary | null;
+  lactateSummary: LactateReportSummary | null;
   warnings: MetaSoftWarning[];
 }) {
   const blockingWarnings = warnings.filter((warning) => warning.blocking === true);
@@ -122,6 +128,28 @@ function ReportSummary({
             </div>
           ))}
         </div>
+      </div>
+      <div className="summary-block">
+        <div className="summary-block-head">
+          <strong>Prises de lactate</strong>
+          <span className={lactateSummary?.active ? "status-ok" : "status-muted"}>
+            {lactateSummary?.active ? `${lactateSummary.validCount}/${lactateSummary.includedCount} renseignees` : "Non utilise"}
+          </span>
+        </div>
+        {lactateSummary?.active ? (
+          <div className="summary-list compact">
+            <div className="summary-row">
+              <div>
+                <strong>Mesures</strong>
+                <span>{lactateSummary.includedCount} incluses / {lactateSummary.excludedCount} ecartees</span>
+              </div>
+              <div>
+                <span>SL1 {lactateSummary.sl1}</span>
+                <span>SL2 {lactateSummary.sl2}</span>
+              </div>
+            </div>
+          </div>
+        ) : <p className="panel-note">Aucune donnee lactate ne sera reportee.</p>}
       </div>
       <div className="summary-block">
         <div className="summary-block-head">

@@ -71,6 +71,7 @@ export interface MetaSoftWarmupStage {
   point_count: number;
   native_de?: Record<string, { value: number; unit: string; source: string }>;
   source?: "detected" | "manual";
+  phase?: string | null;
 }
 
 export interface MetaSoftRunningEconomy {
@@ -135,9 +136,16 @@ export interface ManualRunningEconomyRestBaseline extends ManualRunningEconomyRe
 }
 
 export interface LactateMeasurementDraft {
-  type: "rest_before" | "stage" | "rest_after";
+  type: "rest_before" | "post_warmup" | "stage" | "recovery" | "rest_after";
   speed: number | null;
   lactate_mmol_l: number | null;
+  enabled?: boolean;
+  source?: "detected" | "manual";
+  label?: string | null;
+  stage_index?: number | null;
+  phase?: string | null;
+  time_seconds?: number | null;
+  delay_minutes?: number | null;
 }
 
 export interface LactateTestDraft {

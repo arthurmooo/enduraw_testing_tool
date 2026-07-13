@@ -256,6 +256,7 @@ class LocalMetaSoftServer:
                 "metrics": "python.metasoft_analysis",
                 "markers": "python.metasoft_markers",
                 "running_economy_manual": "python.metasoft_analysis.manual_running_economy",
+                "lactate": "python.metasoft_server.validated_profile_patch",
                 "export": "tkinter.export_button_json_valentin",
                 "smoothing": "react_visual_only",
             },
@@ -981,27 +982,63 @@ def _lactate_patch(payload):
             },
         }
     measurements = data.get("measurements")
-    if not isinstance(measurements, list) or len(measurements) < 3:
+    if not isinstance(measurements, list) or len(measurements) < 2:
         return _error("invalid_lactate_test", "Mesures lactate incompletes.", status=400)
     normalised = []
-    allowed_types = {"rest_before", "stage", "rest_after"}
+    allowed_types = {"rest_before", "post_warmup", "stage", "recovery", "rest_after"}
     for index, item in enumerate(measurements):
         if not isinstance(item, dict) or item.get("type") not in allowed_types:
             return _error("invalid_lactate_test", "Ligne lactate invalide.", status=400)
+        enabled = item.get("enabled", True)
+        if not isinstance(enabled, bool):
+            return _error("invalid_lactate_test", "Statut de mesure lactate invalide.", status=400)
         speed = _number(item.get("speed"))
         lactate = _number(item.get("lactate_mmol_l"))
-        if speed is None or not 0 <= speed <= 40 or lactate is None or not 0 <= lactate <= 30:
+        if speed is not None and not 0 <= speed <= 40:
             return _error("invalid_lactate_test", "Vitesse ou lactate hors bornes.", status=400)
-        if item["type"] == "stage" and speed <= 0:
+        if lactate is not None and not 0 <= lactate <= 30:
+            return _error("invalid_lactate_test", "Vitesse ou lactate hors bornes.", status=400)
+        if enabled and (speed is None or lactate is None):
+            return _error(
+                "invalid_lactate_test",
+                "Chaque mesure lactate incluse doit avoir une vitesse et une valeur.",
+                status=400,
+            )
+        if item["type"] == "stage" and speed is not None and speed <= 0:
             return _error("invalid_lactate_test", "Une vitesse de palier doit etre positive.", status=400)
-        normalised.append({
+        measurement = {
             "type": item["type"],
             "order": index,
-            "speed": round(speed, 3),
-            "lactate_mmol_l": round(lactate, 3),
-        })
-    if normalised[0]["type"] != "rest_before" or normalised[-1]["type"] != "rest_after":
-        return _error("invalid_lactate_test", "Le protocole doit commencer et finir au repos.", status=400)
+            "enabled": enabled,
+            "speed": round(speed, 3) if speed is not None else None,
+            "lactate_mmol_l": round(lactate, 3) if lactate is not None else None,
+        }
+        source = item.get("source")
+        if source is not None and source not in {"detected", "manual"}:
+            return _error("invalid_lactate_test", "Source de mesure lactate invalide.", status=400)
+        for key in ("label", "phase", "source"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                if len(value) > 120:
+                    return _error("invalid_lactate_test", "Libelle de mesure lactate trop long.", status=400)
+                measurement[key] = value.strip()
+        stage_index = _integer(item.get("stage_index"))
+        if item.get("stage_index") is not None and (stage_index is None or stage_index < 1):
+            return _error("invalid_lactate_test", "Index de palier lactate invalide.", status=400)
+        if stage_index is not None:
+            measurement["stage_index"] = stage_index
+        for key, maximum in (("time_seconds", 100_000), ("delay_minutes", 180)):
+            value = _number(item.get(key))
+            if value is not None:
+                if not 0 <= value <= maximum:
+                    return _error("invalid_lactate_test", "Temps de mesure lactate invalide.", status=400)
+                measurement[key] = round(value, 3)
+        normalised.append(measurement)
+    if normalised[0]["type"] != "rest_before":
+        return _error("invalid_lactate_test", "Le protocole doit commencer par une mesure de repos.", status=400)
+    included = [item for item in normalised if item["enabled"]]
+    if len(included) < 2 or not any(item["type"] == "stage" for item in included):
+        return _error("invalid_lactate_test", "Au moins un palier lactate doit etre inclus.", status=400)
     thresholds = data.get("thresholds", {})
     if not isinstance(thresholds, dict):
         return _error("invalid_lactate_test", "Seuils lactate invalides.", status=400)
@@ -1013,7 +1050,7 @@ def _lactate_patch(payload):
         index = _integer(value)
         if index is None or index < 0 or index >= len(normalised):
             return _error("invalid_lactate_test", f"{name.upper()} lactate invalide.", status=400)
-        if normalised[index]["type"] != "stage":
+        if normalised[index]["type"] != "stage" or not normalised[index]["enabled"]:
             return _error("invalid_lactate_test", f"{name.upper()} doit viser un palier.", status=400)
         resolved_thresholds[name] = {
             "measurement_index": index,

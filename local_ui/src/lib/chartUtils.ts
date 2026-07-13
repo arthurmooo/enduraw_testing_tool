@@ -197,7 +197,7 @@ function speedSegmentsFromPoints(points: MetaSoftPoint[]): MetaSoftWarmupStage[]
     const speed = point.values.speed_kmh;
     if (typeof speed !== "number" || typeof point.t_seconds !== "number") continue;
     const rounded = Math.round(speed * 10) / 10;
-    if (current && current.speed_kmh === rounded) {
+    if (current && current.speed_kmh === rounded && current.phase === point.phase) {
       current.end_seconds = point.t_seconds;
       current.point_count += 1;
       continue;
@@ -209,6 +209,7 @@ function speedSegmentsFromPoints(points: MetaSoftPoint[]): MetaSoftWarmupStage[]
       start_seconds: point.t_seconds,
       end_seconds: point.t_seconds,
       point_count: 1,
+      phase: point.phase ?? null,
     };
   }
   if (current && hasBounds(current)) segments.push(current);

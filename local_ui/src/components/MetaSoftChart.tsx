@@ -50,8 +50,10 @@ import type {
 } from "../types/metasoft";
 
 const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
-const MARKER_POPOVER_WIDTH = 420;
-const MARKER_POPOVER_HEIGHT = 240;
+const MARKER_POPOVER_WIDTH = 360;
+const MARKER_POPOVER_HEIGHT = 252;
+const MARKER_MENU_WIDTH = 280;
+const MARKER_MENU_HEIGHT = 174;
 type ScaleMode = "common" | "series";
 
 interface Props {
@@ -78,6 +80,7 @@ interface Props {
     windowEndSeconds?: number | null,
   ) => void;
   onDeleteMarker: (marker: MetaSoftMarkerName) => void;
+  onChangeMarkerWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
 }
 
 function MetaSoftChartComponent({
@@ -98,6 +101,7 @@ function MetaSoftChartComponent({
   onCursorPoint,
   onPlaceMarker,
   onDeleteMarker,
+  onChangeMarkerWindowSeconds,
 }: Props) {
   const [localXRange, setLocalXRange] = useState<[number, number] | null>(null);
   const [plotRevision, setPlotRevision] = useState(0);
@@ -245,6 +249,7 @@ function MetaSoftChartComponent({
       onCursorPoint={onCursorPoint}
       onPlaceMarker={onPlaceMarker}
       onDeleteMarker={onDeleteMarker}
+      onChangeMarkerWindowSeconds={onChangeMarkerWindowSeconds}
     />
   );
 
@@ -263,6 +268,7 @@ function MetaSoftChartComponent({
           onZoomOut={() => changeYScale(1.25)}
           onAuto={resetYScale}
           onResetZoom={() => handleXRangeChange(null)}
+          showResetZoom={xRange !== null}
         />
         <button
           type="button"
@@ -294,6 +300,7 @@ function MetaSoftChartComponent({
                 onZoomOut={() => changeYScale(1.25)}
                 onAuto={resetYScale}
                 onResetZoom={() => handleXRangeChange(null)}
+                showResetZoom={xRange !== null}
               />
               <button
                 type="button"
@@ -334,6 +341,7 @@ function ScaleControls({
   onZoomOut,
   onAuto,
   onResetZoom,
+  showResetZoom,
 }: {
   series: MetaSoftSeriesConfig[];
   mode: ScaleMode;
@@ -344,6 +352,7 @@ function ScaleControls({
   onZoomOut: () => void;
   onAuto: () => void;
   onResetZoom: () => void;
+  showResetZoom: boolean;
 }) {
   return (
     <div className="scale-controls" aria-label="Regler l'echelle verticale">
@@ -372,9 +381,11 @@ function ScaleControls({
       <button type="button" onClick={onZoomIn} title="Resserrer l'echelle verticale" aria-label="Resserrer l'echelle verticale">
         <Plus size={14} />
       </button>
-      <button type="button" onClick={onResetZoom} title="Reinitialiser le zoom temporel" aria-label="Reinitialiser le zoom temporel">
-        <RotateCcw size={14} />
-      </button>
+      {showResetZoom && (
+        <button type="button" className="zoom-reset-button" onClick={onResetZoom} title="Reinitialiser le zoom temporel">
+          <RotateCcw size={14} /> Reinitialiser
+        </button>
+      )}
     </div>
   );
 }
@@ -472,7 +483,6 @@ function RunningEconomyChart({
         const nextRange = xRangeFromRelayout(event);
         if (nextRange !== undefined) onXRangeChange(nextRange);
       }}
-      onDoubleClick={() => onXRangeChange(null)}
     />
   );
 }
@@ -499,6 +509,7 @@ function PointChartBody({
   onCursorPoint,
   onPlaceMarker,
   onDeleteMarker,
+  onChangeMarkerWindowSeconds,
 }: {
   analysis: import("../types/metasoft").MetaSoftAnalysis;
   graph: MetaSoftGraphConfig;
@@ -527,6 +538,7 @@ function PointChartBody({
     windowEndSeconds?: number | null,
   ) => void;
   onDeleteMarker: (marker: MetaSoftMarkerName) => void;
+  onChangeMarkerWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const clickTimerRef = useRef<number | null>(null);
@@ -543,6 +555,12 @@ function PointChartBody({
     mode: MarkerMode;
     rangeDuration: string;
     previousDuration: string;
+  } | null>(null);
+  const [markerMenu, setMarkerMenu] = useState<{
+    left: number;
+    top: number;
+    marker: MetaSoftMarkerName;
+    duration: string;
   } | null>(null);
   const [markerHover, setMarkerHover] = useState<MarkerDragTarget | null>(null);
   const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
@@ -737,23 +755,6 @@ function PointChartBody({
     clickTimerRef.current = null;
   }, []);
 
-  const resetZoomFromDoubleClick = useCallback((event?: ReactMouseEvent<HTMLDivElement>) => {
-    if (!canEditTimeMarkers) return;
-    debugZoom("double click reset requested", {
-      graphId: graph.id,
-      xRange,
-      effectiveRange,
-      defaultRange,
-      detail: event?.detail,
-    });
-    event?.stopPropagation();
-    clickBlockUntilRef.current = window.performance.now() + 450;
-    suppressClickRef.current = true;
-    clearPendingClick();
-    setProposal(null);
-    onXRangeChange(null);
-  }, [canEditTimeMarkers, clearPendingClick, defaultRange, effectiveRange, graph.id, onXRangeChange, xRange]);
-
   const updateMarkerHover = useCallback((target: MarkerDragTarget | null) => {
     if (sameMarkerTarget(markerHoverRef.current, target)) return;
     markerHoverRef.current = target;
@@ -805,9 +806,11 @@ function PointChartBody({
     clearPendingClick();
     clickTimerRef.current = window.setTimeout(() => {
       clickTimerRef.current = null;
+      const popoverWidth = Math.min(MARKER_POPOVER_WIDTH, Math.max(1, bounds.width - 16));
+      setMarkerMenu(null);
       setProposal({
-        left: clamp(mouseEvent.clientX - bounds.left, 8, Math.max(8, bounds.width - MARKER_POPOVER_WIDTH - 8)),
-        top: clamp(mouseEvent.clientY - bounds.top, 8, Math.max(8, bounds.height - MARKER_POPOVER_HEIGHT - 8)),
+        left: clamp(mouseEvent.clientX - bounds.left, popoverWidth / 2 + 8, Math.max(popoverWidth / 2 + 8, bounds.width - popoverWidth / 2 - 8)),
+        top: clamp(mouseEvent.clientY - bounds.top - 10, MARKER_POPOVER_HEIGHT + 8, Math.max(MARKER_POPOVER_HEIGHT + 8, bounds.height - 8)),
         tSeconds: clamp(tSeconds, 0, maxTime),
         mode: processingMode === "blocks" ? "range" : "point",
         rangeDuration: processingMode === "blocks" ? "0:05" : "4:00",
@@ -821,14 +824,26 @@ function PointChartBody({
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     if (!target) return;
     event.preventDefault();
-    if (!window.confirm(`Supprimer le marqueur ${markerDisplayName(target.marker)} ?`)) return;
+    const bounds = wrapperRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const marker = markers[target.marker];
+    const menuWidth = Math.min(MARKER_MENU_WIDTH, Math.max(1, bounds.width - 16));
+    const duration = marker.mode !== "point" && marker.window_start_seconds !== null && marker.window_end_seconds !== null
+      ? secondsToDuration(marker.window_end_seconds - marker.window_start_seconds)
+      : "";
     setProposal(null);
-    onDeleteMarker(target.marker);
-  }, [canEditTimeMarkers, defaultRange, effectiveRange, markers, onDeleteMarker, plotMargins]);
+    setMarkerMenu({
+      marker: target.marker,
+      duration,
+      left: clamp(event.clientX - bounds.left, menuWidth / 2 + 8, Math.max(menuWidth / 2 + 8, bounds.width - menuWidth / 2 - 8)),
+      top: clamp(event.clientY - bounds.top - 10, MARKER_MENU_HEIGHT + 8, Math.max(MARKER_MENU_HEIGHT + 8, bounds.height - 8)),
+    });
+  }, [canEditTimeMarkers, defaultRange, effectiveRange, markers, plotMargins]);
 
   const handleMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
     if (event.button !== 0) return;
+    setMarkerMenu(null);
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     const xSeconds = target
       ? timeFromClientX(event.clientX, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins)
@@ -914,7 +929,6 @@ function PointChartBody({
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onDoubleClickCapture={resetZoomFromDoubleClick}
       onMouseLeave={(event) => {
         updateMarkerHover(null);
         handleMouseUp(event);
@@ -999,6 +1013,65 @@ function PointChartBody({
                 {marker === "VO2_max" ? "VO2max" : marker}
               </button>
             ))}
+          </div>
+        </div>
+      )}
+      {markerMenu && (
+        <div
+          className="marker-popover marker-action-menu"
+          style={{ left: markerMenu.left, top: markerMenu.top }}
+          role="dialog"
+          aria-label={`Modifier ${markerDisplayName(markerMenu.marker)}`}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onMouseUp={(event) => event.stopPropagation()}
+        >
+          <div className="popover-head">
+            <div>
+              <p>Marqueur</p>
+              <strong>{markerDisplayName(markerMenu.marker)}</strong>
+            </div>
+            <button type="button" onClick={() => setMarkerMenu(null)} aria-label="Fermer">
+              <X size={16} />
+            </button>
+          </div>
+          {markers[markerMenu.marker].mode !== "point" && (
+            <label className="field small-field">
+              Longueur de la fenetre
+              <input
+                value={markerMenu.duration}
+                onChange={(event) => setMarkerMenu({ ...markerMenu, duration: event.target.value })}
+                placeholder="0:20"
+              />
+            </label>
+          )}
+          <div className="marker-menu-actions">
+            {markers[markerMenu.marker].mode !== "point" && (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={durationToSeconds(markerMenu.duration) === null}
+                onClick={() => {
+                  const seconds = durationToSeconds(markerMenu.duration);
+                  if (seconds === null) return;
+                  onChangeMarkerWindowSeconds(markerMenu.marker, seconds);
+                  setMarkerMenu(null);
+                }}
+              >
+                Modifier la longueur
+              </button>
+            )}
+            <button
+              type="button"
+              className="danger-button"
+              onClick={() => {
+                onDeleteMarker(markerMenu.marker);
+                setMarkerMenu(null);
+              }}
+            >
+              Supprimer
+            </button>
           </div>
         </div>
       )}

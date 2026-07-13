@@ -455,6 +455,30 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(stress["lactate_profile"][0]["type"], "rest_before")
         self.assertEqual(stress["lactate_thresholds"]["sl2"]["speed"], 12)
 
+    def test_report_keeps_excluded_lactate_stage_without_requiring_a_value(self) -> None:
+        match_id = self._match_id()
+        lactate_test = {
+            "active": True,
+            "measurements": [
+                {"type": "rest_before", "enabled": True, "speed": 0, "lactate_mmol_l": 1.1},
+                {"type": "stage", "enabled": False, "label": "Bandelette ratee", "speed": 10, "lactate_mmol_l": None},
+                {"type": "stage", "enabled": True, "label": "Palier cible", "speed": 12, "lactate_mmol_l": 3.5},
+                {"type": "recovery", "enabled": False, "speed": 0, "lactate_mmol_l": None, "delay_minutes": 3},
+            ],
+            "thresholds": {"sl1": 2},
+        }
+
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {"marker_selections": [], "lactate_test": lactate_test},
+        )
+
+        self.assertEqual(status, 200)
+        stress = self.session_manager.get_profile(self.profile_name)["stress_test_results"]
+        self.assertFalse(stress["lactate_profile"][1]["enabled"])
+        self.assertIsNone(stress["lactate_profile"][1]["lactate_mmol_l"])
+        self.assertEqual(stress["lactate_thresholds"]["sl1"]["label"], "Palier cible")
+
     def test_manual_running_economy_persists_disabled_stage_adjustments(self) -> None:
         match_id = self._weighted_two_stage_match_id()
         stage_selections = [

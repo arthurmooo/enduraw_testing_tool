@@ -886,9 +886,15 @@ class TabbedInputForm(ctk.CTkFrame):
             try:
                 sv = entry['speed'].get().replace(',', '.')
                 lv = entry['lactate'].get().replace(',', '.')
-                if sv and lv:
-                    measurement = {'speed': float(sv), 'lactate_mmol_l': float(lv)}
-                    for key in ('type', 'order'):
+                if (sv and lv) or entry.get('enabled') is False:
+                    measurement = {
+                        'speed': float(sv) if sv else None,
+                        'lactate_mmol_l': float(lv) if lv else None,
+                    }
+                    for key in (
+                        'type', 'order', 'enabled', 'source', 'label',
+                        'stage_index', 'phase', 'time_seconds', 'delay_minutes',
+                    ):
                         if entry.get(key) is not None:
                             measurement[key] = entry[key]
                     measurements.append(measurement)
@@ -907,7 +913,10 @@ class TabbedInputForm(ctk.CTkFrame):
                 self.lactate_entries[idx]['speed'].insert(0, str(m['speed']))
             if m.get('lactate_mmol_l') is not None:
                 self.lactate_entries[idx]['lactate'].insert(0, str(m['lactate_mmol_l']))
-            for key in ('type', 'order'):
+            for key in (
+                'type', 'order', 'enabled', 'source', 'label',
+                'stage_index', 'phase', 'time_seconds', 'delay_minutes',
+            ):
                 if m.get(key) is not None:
                     self.lactate_entries[idx][key] = m[key]
 

@@ -4,7 +4,11 @@ import { AnalysisExportSection, type MarkerReportSummaryItem } from "./component
 import { CursorRail } from "./components/CursorRail";
 import { MarkerPanel } from "./components/MarkerPanel";
 import { MetaSoftChart } from "./components/MetaSoftChart";
-import { LactateSection } from "./components/LactateSection";
+import {
+  buildLactateDraft,
+  LactateSection,
+  lactateReportSummary,
+} from "./components/LactateSection";
 import {
   RunningEconomyManualSection,
   type ManualEconomyReportSummary,
@@ -75,6 +79,7 @@ export default function App() {
   const [draftRevision, setDraftRevision] = useState(0);
   const [draftSaveStatus, setDraftSaveStatus] = useState<string | null>(null);
   const [lactateDraft, setLactateDraft] = useState<LactateTestDraft | null>(null);
+  const [lactateDirty, setLactateDirty] = useState(false);
   const manualEconomyRef = useRef<RunningEconomyManualHandle | null>(null);
   const draftSavePromiseRef = useRef<Promise<unknown> | null>(null);
   const reportInProgressRef = useRef(false);
@@ -116,7 +121,8 @@ export default function App() {
         setDeletedMarkers(deleted);
         setDirtyMarkers(restoredDraft.dirty);
         setDraftRevision(0);
-        setLactateDraft(result.metasoft_draft?.lactate_test ?? null);
+        setLactateDraft(buildLactateDraft(result.profile, result.analysis, result.metasoft_draft?.lactate_test));
+        setLactateDirty(Boolean(result.metasoft_draft?.lactate_test));
         setDraftSaveStatus(result.metasoft_draft ? "Brouillon local restaure" : null);
         reportEditRevisionRef.current = 0;
         cursorPointRef.current = firstPoint;
@@ -157,7 +163,7 @@ export default function App() {
       const draft: MetaSoftDraftPayload = {
         marker_selections: markerSelections,
         ...(manualEconomyPayload ?? {}),
-        ...(lactateDraft ? { lactate_test: lactateDraft } : {}),
+        ...(lactateDraft && lactateDirty ? { lactate_test: lactateDraft } : {}),
       };
       setDraftSaveStatus("Sauvegarde du brouillon...");
       const savePromise = apiPost<{ ok: true }>(
@@ -178,7 +184,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [bootstrap, dirtyMarkers, draftMarkers, draftRevision, lactateDraft, payload]);
+  }, [bootstrap, dirtyMarkers, draftMarkers, draftRevision, lactateDirty, lactateDraft, payload]);
 
   const phases = useMemo(
     () => Array.from(new Set((payload?.analysis.phases ?? []).map((phase) => phase.phase))).filter(Boolean),
@@ -352,6 +358,7 @@ export default function App() {
       onCursorPoint={handleCursorPoint}
       onPlaceMarker={placeMarker}
       onDeleteMarker={deleteMarker}
+      onChangeMarkerWindowSeconds={resizeMarkerWindow}
     />
   );
 
@@ -369,8 +376,8 @@ export default function App() {
             bootstrap?.token ?? "",
             {
               marker_selections: markerSelections,
-            ...(manualEconomyPayload ?? {}),
-            ...(lactateDraft ? { lactate_test: lactateDraft } : {}),
+              ...(manualEconomyPayload ?? {}),
+              ...(lactateDraft && lactateDirty ? { lactate_test: lactateDraft } : {}),
               ...(overwrite ? { conflict_policy: "overwrite" } : {}),
             },
           );
@@ -397,7 +404,8 @@ export default function App() {
           setDirtyMarkers(new Set());
           setDraftRevision(0);
           setDraftSaveStatus("Brouillon officialise");
-          setLactateDraft(null);
+          setLactateDraft(buildLactateDraft(canonical.profile, canonical.analysis));
+          setLactateDirty(false);
           setReport(response);
           setConflicts([]);
         } catch (err) {
@@ -574,14 +582,17 @@ export default function App() {
         onReportSummaryChange={setManualEconomyReportSummary}
       />
 
-      <LactateSection
-        profile={payload.profile}
-        initialDraft={lactateDraft}
-        onChange={(next) => {
-          setLactateDraft(next);
-          markManualEconomyDirty();
-        }}
-      />
+      {lactateDraft && (
+        <LactateSection
+          analysis={analysis}
+          draft={lactateDraft}
+          onChange={(next) => {
+            setLactateDraft(next);
+            setLactateDirty(true);
+            markManualEconomyDirty();
+          }}
+        />
+      )}
 
       <AnalysisExportSection
         busy={busy}
@@ -590,6 +601,7 @@ export default function App() {
         conflicts={conflicts}
         markerSummary={markerReportSummary}
         manualEconomySummary={manualEconomyReportSummary}
+        lactateSummary={lactateDraft ? lactateReportSummary(lactateDraft) : null}
         warnings={[...analysis.warnings, ...warnings]}
         onReport={() => void reportProfile(false)}
         onReportOverwrite={() => void reportProfile(true)}

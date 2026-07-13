@@ -125,7 +125,7 @@ export function MarkerPanel({
         </table>
       </div>
       <p className="panel-note">
-        Reporter au profil officialise les marqueurs. Un drag/click repasse le marqueur en A reporter.
+        Reporter au profil officialise les marqueurs. Clic secondaire sur un marqueur : modifier sa longueur ou le supprimer.
       </p>
       {draftSaveStatus && <p className="draft-save-status">{draftSaveStatus}</p>}
     </section>

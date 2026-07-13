@@ -126,8 +126,23 @@ class Thresholds(BaseModel):
     sv2: ThresholdData = Field(default_factory=ThresholdData)
 
 class LactatePoint(BaseModel):
-    speed: float
-    lactate_mmol_l: float
+    speed: Optional[float] = Field(None, ge=0, le=40)
+    lactate_mmol_l: Optional[float] = Field(None, ge=0, le=30)
+    enabled: bool = True
+    type: Optional[str] = None
+    order: Optional[int] = None
+    source: Optional[str] = None
+    label: Optional[str] = None
+    stage_index: Optional[int] = None
+    phase: Optional[str] = None
+    time_seconds: Optional[float] = None
+    delay_minutes: Optional[float] = None
+
+    @model_validator(mode='after')
+    def validate_included_measurement(self):
+        if self.enabled and (self.speed is None or self.lactate_mmol_l is None):
+            raise ValueError("Une mesure lactate incluse doit etre complete")
+        return self
 
 class StressTestResults(BaseModel):
     thresholds: Thresholds = Field(default_factory=Thresholds)

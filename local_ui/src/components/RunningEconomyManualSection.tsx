@@ -686,9 +686,11 @@ const ManualEconomyPlot = memo(function ManualEconomyPlot({
         <button type="button" onClick={() => setYScaleFactor((value) => Math.min(4, value * 1.25))}><Minus size={14} /></button>
         <button type="button" onClick={() => setYScaleFactor(1)}>Auto</button>
         <button type="button" onClick={() => setYScaleFactor((value) => Math.max(0.35, value * 0.8))}><Plus size={14} /></button>
-        <button type="button" onClick={() => onXRangeChange(null)} title="Reinitialiser le zoom temporel">
-          <RotateCcw size={14} />
-        </button>
+        {xRange && (
+          <button type="button" className="zoom-reset-button" onClick={() => onXRangeChange(null)} title="Reinitialiser le zoom temporel">
+            <RotateCcw size={14} /> Reinitialiser
+          </button>
+        )}
       </div>
       <Plot
         data={data}
@@ -698,7 +700,6 @@ const ManualEconomyPlot = memo(function ManualEconomyPlot({
         useResizeHandler
         onClick={onClick}
         onRelayout={handleRelayout}
-        onDoubleClick={() => onXRangeChange(null)}
       />
     </div>
   );

@@ -471,6 +471,26 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         self.assertEqual(payload["test_lactate"]["mesures"][0]["type"], "rest_before")
         self.assertEqual(payload["test_lactate"]["seuils"]["sl1"]["speed"], 10)
 
+    def test_lactate_export_omits_excluded_rows_and_remaps_threshold_index(self) -> None:
+        profile = _manual_profile()
+        profile["stress_test_results"]["lactate_profile"] = [
+            {"type": "rest_before", "order": 0, "enabled": True, "speed": 0, "lactate_mmol_l": 1.1},
+            {"type": "stage", "order": 1, "enabled": False, "speed": 10, "lactate_mmol_l": None},
+            {"type": "stage", "order": 2, "enabled": True, "label": "Palier 12", "speed": 12, "lactate_mmol_l": 3.5},
+            {"type": "stage", "order": 3, "enabled": True, "source": "manual", "label": "Palier 11 ajoute", "speed": 11, "lactate_mmol_l": 2.8},
+        ]
+        profile["stress_test_results"]["lactate_thresholds"] = {
+            "sl1": {"measurement_index": 2, "speed": 12, "lactate_mmol_l": 3.5},
+        }
+
+        payload = DataTransformer().transform({}, profile)
+
+        self.assertEqual(len(payload["test_lactate"]["mesures"]), 3)
+        self.assertEqual(payload["test_lactate"]["mesures"][1]["label"], "Palier 12")
+        self.assertEqual(payload["test_lactate"]["mesures"][2]["label"], "Palier 11 ajoute")
+        self.assertEqual(payload["test_lactate"]["mesures"][2]["order"], 2)
+        self.assertEqual(payload["test_lactate"]["seuils"]["sl1"]["measurement_index"], 1)
+
     def test_vco2_derives_from_ve_ratio_when_vo2_rer_is_unavailable(self) -> None:
         points = [{
             "values": {"ve_l_min": 44.0, "ve_vco2": 22.0},

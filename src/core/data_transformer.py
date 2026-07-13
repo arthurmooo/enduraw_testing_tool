@@ -254,24 +254,40 @@ class DataTransformer:
     def _build_test_lactate(self, manual_input: Dict[str, Any]) -> Dict[str, Any]:
         """Construit le bloc lactate depuis la saisie locale."""
         lactate_profile = manual_input.get('stress_test_results', {}).get('lactate_profile', [])
-        
+
         mesures = []
-        for entry in lactate_profile:
+        exported_indexes = {}
+        for profile_index, entry in enumerate(lactate_profile):
+            if entry.get('enabled') is False:
+                continue
             if entry.get('speed') is not None and entry.get('lactate_mmol_l') is not None:
                 mesure = {
                     "vitesse": entry['speed'],
-                    "lactate": entry['lactate_mmol_l']
+                    "lactate": entry['lactate_mmol_l'],
+                    "order": len(mesures),
                 }
-                for key in ('type', 'order'):
+                for key in ('type', 'label', 'stage_index', 'phase', 'time_seconds', 'delay_minutes', 'source'):
                     if entry.get(key) is not None:
                         mesure[key] = entry[key]
+                exported_indexes[profile_index] = len(mesures)
                 mesures.append(mesure)
-        
+
         result = {
             "actif": len(mesures) > 0,
             "mesures": mesures,
         }
-        thresholds = manual_input.get('stress_test_results', {}).get('lactate_thresholds', {})
+        raw_thresholds = manual_input.get('stress_test_results', {}).get('lactate_thresholds', {})
+        thresholds = {}
+        for name, threshold in raw_thresholds.items():
+            if not isinstance(threshold, dict):
+                continue
+            profile_index = threshold.get('measurement_index')
+            if profile_index not in exported_indexes:
+                continue
+            thresholds[name] = {
+                **threshold,
+                "measurement_index": exported_indexes[profile_index],
+            }
         if thresholds:
             result["seuils"] = thresholds
         return result
