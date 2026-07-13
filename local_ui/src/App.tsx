@@ -211,7 +211,9 @@ export default function App() {
     if (range === null) {
       // Un seul reset React pilote tous les graphes; Plotly ne remet plus une
       // ancienne plage en concurrence via son propre double-clic.
-      ignoreTimeRelayoutUntilRef.current = now + 120;
+      // ponytail: le graphe source Plotly peut encore emettre son ancien
+      // relayout pendant sa destruction, surtout sur les PC lents.
+      ignoreTimeRelayoutUntilRef.current = now + 600;
       debugZoom("accept reset", { graphId, previousRange: timeXRangeRef.current });
       timeXRangeRef.current = null;
       setTimeZoomResetRevision((revision) => revision + 1);
@@ -340,7 +342,7 @@ export default function App() {
 
   const renderReadingChart = (graph: (typeof READING_GRAPH_CONFIGS)[number], height?: number) => (
     <MetaSoftChart
-      key={`${readingViewMode}-${graph.id}`}
+      key={`${readingViewMode}-${graph.id}-${graph.kind === "time" ? timeZoomResetRevision : 0}`}
       analysis={analysis}
       graph={graph}
       markers={draftMarkers}

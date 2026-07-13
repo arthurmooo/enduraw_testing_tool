@@ -150,6 +150,17 @@ export const LactateSection = memo(function LactateSection({
                 <p className="panel-note">Glissez les paliers pour les reordonner. Les lignes ecartees restent sauvegardees mais sont masquees du graphe et du JSON officiel.</p>
               </div>
               <div className="ec-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    if (!window.confirm("Remplacer les paliers lactate par ceux detectes dans le XML courant ?")) return;
+                    onChange(buildDetectedLactateDraft(analysis, true));
+                    setThresholdToPlace(null);
+                  }}
+                >
+                  Re-detecter depuis le XML
+                </button>
                 <button type="button" className="secondary-button" onClick={addStage}>
                   <Plus size={15} /> Ajouter un palier
                 </button>
@@ -275,19 +286,43 @@ export const LactateSection = memo(function LactateSection({
                 </table>
               </div>
               <div className="lactate-graph">
-                <div className="lactate-threshold-actions">
+                <div className="lactate-threshold-panel">
+                  <div>
+                    <strong>Seuils lactiques</strong>
+                    <p>Choisissez directement un palier, ou activez un seuil puis cliquez sur son point dans le graphe.</p>
+                  </div>
                   {(["sl1", "sl2"] as const).map((name) => (
-                    <button
-                      key={name}
-                      type="button"
-                      className={thresholdToPlace === name ? "secondary-button active-action" : "secondary-button"}
-                      disabled={!validStages.length}
-                      onClick={() => setThresholdToPlace((current) => current === name ? null : name)}
-                    >
-                      Placer {name.toUpperCase()}
-                      {typeof draft.thresholds[name] === "number" ? ` (${measurementLabel(draft.measurements[draft.thresholds[name]!], draft.thresholds[name]!)})` : ""}
-                    </button>
+                    <div className="lactate-threshold-row" key={name}>
+                      <label>
+                        <span>{name.toUpperCase()}</span>
+                        <select
+                          value={validStages.some(({ index }) => index === draft.thresholds[name]) ? String(draft.thresholds[name]) : ""}
+                          disabled={!validStages.length}
+                          onChange={(event) => onChange({
+                            ...draft,
+                            thresholds: {
+                              ...draft.thresholds,
+                              [name]: event.target.value === "" ? null : Number(event.target.value),
+                            },
+                          })}
+                        >
+                          <option value="">Non place</option>
+                          {validStages.map(({ item, index }) => (
+                            <option key={index} value={index}>{measurementLabel(item, index)}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className={thresholdToPlace === name ? "secondary-button active-action" : "secondary-button"}
+                        disabled={!validStages.length}
+                        onClick={() => setThresholdToPlace((current) => current === name ? null : name)}
+                      >
+                        {thresholdToPlace === name ? "Cliquez sur le point..." : "Placer sur le graphe"}
+                      </button>
+                    </div>
                   ))}
+                  {!validStages.length && <p className="interaction-hint">Renseignez au moins une valeur lactate sur un palier inclus pour placer SL1 ou SL2.</p>}
                 </div>
                 {thresholdToPlace && <p className="interaction-hint">Cliquez sur un point de palier inclus pour placer {thresholdToPlace.toUpperCase()}.</p>}
                 {graphItems.length ? (
@@ -352,7 +387,7 @@ export function buildLactateDraft(
   analysis: MetaSoftAnalysis,
   initialDraft?: LactateTestDraft | null,
 ): LactateTestDraft {
-  if (initialDraft) return normaliseDraft(initialDraft, analysis);
+  if (initialDraft) return mergeLactateDraft(initialDraft, analysis);
   const stress = profile.stress_test_results && typeof profile.stress_test_results === "object"
     ? profile.stress_test_results as Record<string, unknown>
     : {};
@@ -362,14 +397,21 @@ export function buildLactateDraft(
   const thresholds = stress.lactate_thresholds && typeof stress.lactate_thresholds === "object"
     ? stress.lactate_thresholds as Record<string, { measurement_index?: unknown }>
     : {};
-  return normaliseDraft({
+  const profileDraft = {
     active: measurements.length > 0,
-    measurements: measurements.length ? measurements : detectedMeasurements(analysis),
+    measurements,
     thresholds: {
       sl1: numeric(thresholds.sl1?.measurement_index),
       sl2: numeric(thresholds.sl2?.measurement_index),
     },
-  }, analysis);
+  };
+  return measurements.length && profileMatchesAnalysis(measurements, analysis)
+    ? mergeLactateDraft(profileDraft, analysis)
+    : buildDetectedLactateDraft(analysis, false);
+}
+
+export function buildDetectedLactateDraft(analysis: MetaSoftAnalysis, active = false): LactateTestDraft {
+  return { active, measurements: detectedMeasurements(analysis), thresholds: { sl1: null, sl2: null } };
 }
 
 export function lactateReportSummary(draft: LactateTestDraft): LactateReportSummary {
@@ -387,16 +429,71 @@ export function lactateReportSummary(draft: LactateTestDraft): LactateReportSumm
   };
 }
 
-function normaliseDraft(draft: LactateTestDraft, analysis: MetaSoftAnalysis): LactateTestDraft {
-  const measurements = draft.measurements.length ? draft.measurements.map((item) => ({
+function mergeLactateDraft(draft: LactateTestDraft, analysis: MetaSoftAnalysis): LactateTestDraft {
+  const saved = draft.measurements.map((item) => ({
     ...item,
     enabled: item.enabled !== false,
     source: item.source ?? (item.type === "stage" ? "manual" : "detected"),
-  })) : detectedMeasurements(analysis);
-  if (measurements[0]?.type !== "rest_before") {
-    measurements.unshift({ type: "rest_before", source: "detected", enabled: true, speed: 0, lactate_mmol_l: null });
+  }));
+  const detected = detectedMeasurements(analysis);
+  const detectedStages = detected.filter((item) => item.type === "stage");
+  const usedSaved = new Set<number>();
+  const savedMatchByDetected = new Map<LactateMeasurementDraft, number>();
+  detectedStages.forEach((stage) => {
+    const index = bestSavedStageMatch(saved, stage, usedSaved);
+    if (index >= 0) {
+      usedSaved.add(index);
+      savedMatchByDetected.set(stage, index);
+    }
+  });
+
+  const allDetectedAlreadyPresent = detectedStages.length > 0 && savedMatchByDetected.size === detectedStages.length;
+  let entries: Array<{ item: LactateMeasurementDraft; savedIndex: number | null }>;
+  if (allDetectedAlreadyPresent) {
+    const detectedBySaved = new Map(Array.from(savedMatchByDetected, ([stage, index]) => [index, stage]));
+    entries = saved.map((item, index) => {
+      const current = detectedBySaved.get(index);
+      return {
+        savedIndex: index,
+        item: current ? mergeDetectedStage(current, item) : item,
+      };
+    });
+    for (const structural of detected.filter((item) => item.type !== "stage")) {
+      if (hasStructuralMeasurement(entries.map((entry) => entry.item), structural)) continue;
+      const entry = { item: structural, savedIndex: null };
+      if (structural.type === "rest_before") entries.unshift(entry);
+      else if (structural.type === "post_warmup") entries.splice(entries[0]?.item.type === "rest_before" ? 1 : 0, 0, entry);
+      else entries.push(entry);
+    }
+  } else {
+    entries = detected.map((item) => {
+      if (item.type !== "stage") {
+        const index = saved.findIndex((candidate, savedIndex) => !usedSaved.has(savedIndex) && sameStructuralMeasurement(candidate, item));
+        if (index >= 0) usedSaved.add(index);
+        return { item: index >= 0 ? { ...item, ...saved[index], source: item.source } : item, savedIndex: index >= 0 ? index : null };
+      }
+      const index = savedMatchByDetected.get(item);
+      return { item: index === undefined ? item : mergeDetectedStage(item, saved[index]), savedIndex: index ?? null };
+    });
+    const manual = saved.flatMap((item, index) => (
+      !usedSaved.has(index) && (item.type === "stage" || item.source === "manual")
+        ? [{ item, savedIndex: index }]
+        : []
+    ));
+    const recoveryIndex = entries.findIndex((entry) => entry.item.type === "recovery" || entry.item.type === "rest_after");
+    entries.splice(recoveryIndex < 0 ? entries.length : recoveryIndex, 0, ...manual);
   }
-  return { ...draft, measurements };
+
+  const remap = (value?: number | null) => {
+    if (typeof value !== "number") return value ?? null;
+    const index = entries.findIndex((entry) => entry.savedIndex === value);
+    return index >= 0 ? index : null;
+  };
+  return {
+    ...draft,
+    measurements: entries.map((entry) => entry.item),
+    thresholds: { sl1: remap(draft.thresholds.sl1), sl2: remap(draft.thresholds.sl2) },
+  };
 }
 
 function detectedMeasurements(analysis: MetaSoftAnalysis): LactateMeasurementDraft[] {
@@ -437,6 +534,74 @@ function detectedMeasurements(analysis: MetaSoftAnalysis): LactateMeasurementDra
     { type: "recovery", source: "detected", enabled: false, speed: 0, lactate_mmol_l: null, delay_minutes: 15 },
   );
   return measurements;
+}
+
+function bestSavedStageMatch(
+  saved: LactateMeasurementDraft[],
+  detected: LactateMeasurementDraft,
+  used: Set<number>,
+): number {
+  let bestIndex = -1;
+  let bestScore = Number.POSITIVE_INFINITY;
+  saved.forEach((candidate, index) => {
+    if (used.has(index) || candidate.type !== "stage") return;
+    const sameIndex = candidate.source === "detected"
+      && candidate.stage_index === detected.stage_index;
+    const sameTime = candidate.source === "detected"
+      && numeric(candidate.time_seconds) !== null
+      && numeric(detected.time_seconds) !== null
+      && Math.abs(numeric(candidate.time_seconds)! - numeric(detected.time_seconds)!) <= 2;
+    const sameSpeed = numeric(candidate.speed) !== null
+      && numeric(detected.speed) !== null
+      && Math.abs(numeric(candidate.speed)! - numeric(detected.speed)!) <= 0.11;
+    const score = sameIndex ? 0 : sameTime ? 1 : sameSpeed ? (candidate.source === "detected" ? 2 : 3) : 99;
+    if (score < bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+  return bestScore < 99 ? bestIndex : -1;
+}
+
+function mergeDetectedStage(
+  detected: LactateMeasurementDraft,
+  saved: LactateMeasurementDraft,
+): LactateMeasurementDraft {
+  return {
+    ...detected,
+    ...saved,
+    source: "detected",
+    stage_index: detected.stage_index,
+    phase: detected.phase,
+    time_seconds: detected.time_seconds,
+  };
+}
+
+function sameStructuralMeasurement(left: LactateMeasurementDraft, right: LactateMeasurementDraft): boolean {
+  if (left.type !== right.type) return false;
+  if (left.type !== "recovery" && left.type !== "rest_after") return true;
+  return numeric(left.delay_minutes) === numeric(right.delay_minutes);
+}
+
+function hasStructuralMeasurement(items: LactateMeasurementDraft[], target: LactateMeasurementDraft): boolean {
+  return items.some((item) => sameStructuralMeasurement(item, target));
+}
+
+function profileMatchesAnalysis(measurements: LactateMeasurementDraft[], analysis: MetaSoftAnalysis): boolean {
+  const detectedStages = detectedMeasurements(analysis).filter((item) => item.type === "stage");
+  if (!detectedStages.length) return true;
+  const profileStages = measurements.filter((item) => (
+    item.type === "stage"
+    && item.source === "detected"
+    && numeric(item.time_seconds) !== null
+  ));
+  const used = new Set<number>();
+  return detectedStages.every((stage) => {
+    const index = bestSavedStageMatch(profileStages, stage, used);
+    if (index < 0) return false;
+    used.add(index);
+    return Math.abs(numeric(profileStages[index].time_seconds)! - numeric(stage.time_seconds)!) <= 2;
+  });
 }
 
 function profileMeasurement(item: Record<string, unknown>): LactateMeasurementDraft {

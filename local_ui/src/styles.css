@@ -445,10 +445,10 @@ select:focus-visible {
 }
 
 .marker-popover {
-  position: absolute;
-  z-index: 10;
-  width: min(360px, calc(100% - 16px));
-  max-height: calc(100% - 16px);
+  position: fixed;
+  z-index: 1001;
+  width: min(336px, calc(100vw - 24px));
+  max-height: min(300px, calc(100vh - 24px));
   overflow: auto;
   transform: translate(-50%, -100%);
   padding: 12px;
@@ -456,6 +456,10 @@ select:focus-visible {
   border-radius: 10px;
   background: #07182a;
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.42);
+}
+
+.marker-popover-below {
+  transform: translate(-50%, 0);
 }
 
 .marker-action-menu {
@@ -994,10 +998,44 @@ td {
   background: rgba(255, 255, 255, 0.04);
 }
 
-.lactate-threshold-actions {
-  display: flex;
+.lactate-threshold-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.lactate-threshold-panel p {
+  margin: 4px 0 0;
+  color: rgba(226, 232, 240, 0.54);
+  font-size: 11px;
+}
+
+.lactate-threshold-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
   gap: 8px;
-  flex-wrap: wrap;
+  align-items: end;
+}
+
+.lactate-threshold-row label {
+  display: grid;
+  gap: 5px;
+  color: rgba(226, 232, 240, 0.68);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lactate-threshold-row select {
+  min-height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 0 9px;
+  color: #f8fafc;
+  background: #0b1d30;
 }
 
 @media (max-width: 1050px) {
@@ -1292,6 +1330,10 @@ td {
   .lactate-empty-state {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .lactate-threshold-row {
+    grid-template-columns: 1fr;
   }
 
   .graph-picker {

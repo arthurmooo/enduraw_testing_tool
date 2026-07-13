@@ -50,7 +50,7 @@ import type {
 } from "../types/metasoft";
 
 const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
-const MARKER_POPOVER_WIDTH = 360;
+const MARKER_POPOVER_WIDTH = 336;
 const MARKER_POPOVER_HEIGHT = 252;
 const MARKER_MENU_WIDTH = 280;
 const MARKER_MENU_HEIGHT = 174;
@@ -555,12 +555,14 @@ function PointChartBody({
     mode: MarkerMode;
     rangeDuration: string;
     previousDuration: string;
+    opensBelow: boolean;
   } | null>(null);
   const [markerMenu, setMarkerMenu] = useState<{
     left: number;
     top: number;
     marker: MetaSoftMarkerName;
     duration: string;
+    opensBelow: boolean;
   } | null>(null);
   const [markerHover, setMarkerHover] = useState<MarkerDragTarget | null>(null);
   const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
@@ -806,15 +808,17 @@ function PointChartBody({
     clearPendingClick();
     clickTimerRef.current = window.setTimeout(() => {
       clickTimerRef.current = null;
-      const popoverWidth = Math.min(MARKER_POPOVER_WIDTH, Math.max(1, bounds.width - 16));
+      const popoverWidth = Math.min(MARKER_POPOVER_WIDTH, Math.max(1, window.innerWidth - 24));
+      const opensBelow = mouseEvent.clientY < MARKER_POPOVER_HEIGHT + 16;
       setMarkerMenu(null);
       setProposal({
-        left: clamp(mouseEvent.clientX - bounds.left, popoverWidth / 2 + 8, Math.max(popoverWidth / 2 + 8, bounds.width - popoverWidth / 2 - 8)),
-        top: clamp(mouseEvent.clientY - bounds.top - 10, MARKER_POPOVER_HEIGHT + 8, Math.max(MARKER_POPOVER_HEIGHT + 8, bounds.height - 8)),
+        left: clamp(mouseEvent.clientX, popoverWidth / 2 + 12, window.innerWidth - popoverWidth / 2 - 12),
+        top: opensBelow ? mouseEvent.clientY + 10 : mouseEvent.clientY - 10,
         tSeconds: clamp(tSeconds, 0, maxTime),
         mode: processingMode === "blocks" ? "range" : "point",
         rangeDuration: processingMode === "blocks" ? "0:05" : "4:00",
         previousDuration: "0:10",
+        opensBelow,
       });
     }, 320);
   }, [canEditTimeMarkers, clearPendingClick, defaultRange, effectiveRange, maxTime, plotMargins, processingMode]);
@@ -827,7 +831,8 @@ function PointChartBody({
     const bounds = wrapperRef.current?.getBoundingClientRect();
     if (!bounds) return;
     const marker = markers[target.marker];
-    const menuWidth = Math.min(MARKER_MENU_WIDTH, Math.max(1, bounds.width - 16));
+    const menuWidth = Math.min(MARKER_MENU_WIDTH, Math.max(1, window.innerWidth - 24));
+    const opensBelow = event.clientY < MARKER_MENU_HEIGHT + 16;
     const duration = marker.mode !== "point" && marker.window_start_seconds !== null && marker.window_end_seconds !== null
       ? secondsToDuration(marker.window_end_seconds - marker.window_start_seconds)
       : "";
@@ -835,8 +840,9 @@ function PointChartBody({
     setMarkerMenu({
       marker: target.marker,
       duration,
-      left: clamp(event.clientX - bounds.left, menuWidth / 2 + 8, Math.max(menuWidth / 2 + 8, bounds.width - menuWidth / 2 - 8)),
-      top: clamp(event.clientY - bounds.top - 10, MARKER_MENU_HEIGHT + 8, Math.max(MARKER_MENU_HEIGHT + 8, bounds.height - 8)),
+      left: clamp(event.clientX, menuWidth / 2 + 12, window.innerWidth - menuWidth / 2 - 12),
+      top: opensBelow ? event.clientY + 10 : event.clientY - 10,
+      opensBelow,
     });
   }, [canEditTimeMarkers, defaultRange, effectiveRange, markers, plotMargins]);
 
@@ -950,7 +956,7 @@ function PointChartBody({
       />
       {proposal && (
         <div
-          className="marker-popover"
+          className={proposal.opensBelow ? "marker-popover marker-popover-below" : "marker-popover"}
           style={{ left: proposal.left, top: proposal.top }}
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.stopPropagation()}
@@ -1018,7 +1024,7 @@ function PointChartBody({
       )}
       {markerMenu && (
         <div
-          className="marker-popover marker-action-menu"
+          className={`marker-popover marker-action-menu${markerMenu.opensBelow ? " marker-popover-below" : ""}`}
           style={{ left: markerMenu.left, top: markerMenu.top }}
           role="dialog"
           aria-label={`Modifier ${markerDisplayName(markerMenu.marker)}`}
