@@ -38,6 +38,7 @@ from ui.metasoft_analysis_window import (
     _parse_time_seconds,
     _patch_conflicts,
 )
+from ui.profile_metasoft_summary import build_profile_metasoft_summary
 
 
 class MetaSoftUiHelpersTest(unittest.TestCase):
@@ -270,6 +271,114 @@ class MetaSoftUiHelpersTest(unittest.TestCase):
                 "new": 160,
             }],
         )
+
+    def test_profile_summary_reads_lactates_and_ec_without_recalculation(self) -> None:
+        profile = {
+            "stress_test_results": {
+                "lactate_profile": [
+                    {
+                        "type": "rest_before",
+                        "enabled": True,
+                        "speed": 0,
+                        "lactate_mmol_l": 1.1,
+                    },
+                    {
+                        "type": "stage",
+                        "enabled": False,
+                        "label": "Bandelette ratée",
+                        "speed": 10,
+                        "lactate_mmol_l": None,
+                    },
+                    {
+                        "type": "stage",
+                        "enabled": True,
+                        "label": "Palier 12 km/h",
+                        "speed": 12,
+                        "lactate_mmol_l": 3.5,
+                        "stage_index": 2,
+                    },
+                ],
+                "lactate_thresholds": {
+                    "sl1": {"measurement_index": 2},
+                },
+            },
+        }
+        economy_state = {
+            "status": "ok",
+            "data": {
+                "rows": [
+                    {
+                        "stage_index": 1,
+                        "speed_kmh": 10,
+                        "start_seconds": 60,
+                        "end_seconds": 90,
+                        "ec_j_kg_m": 3.8,
+                        "vo2_l_min": 2.1,
+                        "vco2_l_min": 2.0,
+                        "percent_vo2max": 62.5,
+                        "point_count": 12,
+                        "exclusions": [],
+                        "sources": {"selection": "manual_stable_stage"},
+                    },
+                    {
+                        "stage_index": 2,
+                        "speed_kmh": 12,
+                        "start_seconds": 180,
+                        "end_seconds": 210,
+                        "ec_j_kg_m": 4.532,
+                        "vo2_l_min": 2.9,
+                        "vco2_l_min": 2.828,
+                        "percent_vo2max": 100,
+                        "point_count": 18,
+                        "exclusions": [{"start_seconds": 190, "end_seconds": 200}],
+                        "sources": {"selection": "manual_stable_stage"},
+                    },
+                ],
+                "stage_selections": [
+                    {"stage_index": 1, "enabled": False},
+                    {"stage_index": 2, "enabled": True},
+                ],
+                "rest_baseline": {
+                    "start_seconds": 0,
+                    "end_seconds": 30,
+                    "point_count": 8,
+                    "exclusions": [],
+                },
+            },
+        }
+
+        summary = build_profile_metasoft_summary(profile, economy_state, matched=True)
+
+        self.assertEqual(summary["lactate"]["status"], "2 incluse(s) · 1 écartée(s)")
+        self.assertIn(
+            "[Incluse] Palier 12 km/h — 12 km/h · 3,5 mmol/L · SL1",
+            summary["lactate"]["lines"],
+        )
+        self.assertEqual(summary["running_economy"]["status"], "1 inclus · 1 écarté(s)")
+        self.assertIn(
+            "[Incluse] Palier 2 — 12 km/h · 3:00–3:30 · EC 4,532 J/kg/m",
+            summary["running_economy"]["lines"],
+        )
+        self.assertIn(
+            "Repos — 0:00–0:30 · 8 pts · 0 exclusion(s)",
+            summary["running_economy"]["lines"],
+        )
+
+    def test_profile_summary_surfaces_unmatched_and_stale_ec_states(self) -> None:
+        unmatched = build_profile_metasoft_summary(
+            {},
+            {"status": "missing"},
+            matched=False,
+        )
+        stale = build_profile_metasoft_summary(
+            {},
+            {"status": "stale", "reason": "source_changed"},
+            matched=True,
+        )
+
+        self.assertEqual(unmatched["running_economy"]["status"], "Aucun XML associé")
+        self.assertEqual(stale["running_economy"]["status"], "À recalculer")
+        self.assertEqual(stale["running_economy"]["tone"], "danger")
 
 
 if __name__ == "__main__":

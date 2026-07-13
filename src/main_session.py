@@ -50,6 +50,21 @@ def _open_local_folder(path: Path) -> None:
     subprocess.Popen([command, str(path)])
 
 
+def _open_metasoft_match(session_manager: SessionManager, match_info: Dict[str, Any]) -> None:
+    """Ouvre l'analyse React locale du match dans le navigateur par défaut."""
+    import webbrowser
+
+    from local_api.metasoft_server import LocalMetaSoftServer
+
+    try:
+        server = LocalMetaSoftServer.ensure_started(session_manager)
+        url = server.url_for_match(match_info)
+        if not webbrowser.open(url):
+            messagebox.showinfo("Analyse MetaSoft", f"URL locale:\n{url}")
+    except Exception as error:
+        messagebox.showerror("Analyse MetaSoft", f"Ouverture impossible:\n{error}")
+
+
 def _save_metasoft_audit_sidecar(
     session_manager: SessionManager,
     xml_data: Dict[str, Any],
@@ -394,8 +409,23 @@ class ProfileTab(ctk.CTkFrame):
                                        font=ctk.CTkFont(size=16, weight="bold"))
         self.form_title.grid(row=0, column=0, sticky="w")
         
-        self.save_btn = ctk.CTkButton(form_header, text="Sauvegarder", command=self._save_profile, state="disabled")
-        self.save_btn.grid(row=0, column=1)
+        self.analysis_btn = ctk.CTkButton(
+            form_header,
+            text="Ouvrir l'analyse MetaSoft",
+            command=self._open_metasoft_analysis,
+            state="disabled",
+            fg_color="#167d5b",
+            hover_color="#12694d",
+        )
+        self.analysis_btn.grid(row=0, column=1, padx=(0, 8))
+
+        self.save_btn = ctk.CTkButton(
+            form_header,
+            text="Sauvegarder",
+            command=self._save_profile,
+            state="disabled",
+        )
+        self.save_btn.grid(row=0, column=2)
         
         # Form (tabbed: Profil/Perso, Mesures Test, Analyse)
         self.form = TabbedInputForm(right_panel, on_db_lookup=self._on_db_lookup, protocol_store=self.protocol_store)
@@ -410,7 +440,9 @@ class ProfileTab(ctk.CTkFrame):
         self.current_filename = None
         
         if not self.session_manager.current_session:
+            self.form.clear()
             self.form_title.configure(text="Aucune session active")
+            self._update_buttons()
             return
         
         profiles = self.session_manager.list_profiles()
@@ -450,6 +482,7 @@ class ProfileTab(ctk.CTkFrame):
         data = self.session_manager.get_profile(self.current_filename)
         if data:
             self.form.set_data(data)
+            self._refresh_metasoft_context(data)
             # Safely get name (handle None values)
             identity = data.get('identity') or {}
             last_name = (identity.get('last_name') or '').strip()
@@ -466,6 +499,31 @@ class ProfileTab(ctk.CTkFrame):
         state = "normal" if self.selected_item else "disabled"
         self.save_btn.configure(state=state)
         self.delete_btn.configure(state=state)
+        match = (
+            self.session_manager.get_match_for_profile(self.current_filename)
+            if self.current_filename
+            else None
+        )
+        self.analysis_btn.configure(state="normal" if match else "disabled")
+
+    def _refresh_metasoft_context(self, profile: Dict[str, Any]) -> None:
+        """Relit l'EC liée au match; les lactates restent lus dans le profil."""
+        match = self.session_manager.get_match_for_profile(self.current_filename)
+        economy_state = {"status": "missing", "data": None, "reason": None}
+        if match:
+            match_id = _match_id(match.profile_name, match.xml_filename)
+            economy_state = self.session_manager.manual_running_economy_state(
+                match_id,
+                match,
+            )
+        self.form.set_metasoft_context(profile, economy_state, matched=match is not None)
+
+    def _open_metasoft_analysis(self) -> None:
+        if not self.current_filename:
+            return
+        match = self.session_manager.get_match_for_profile(self.current_filename)
+        if match:
+            _open_metasoft_match(self.session_manager, match.to_dict())
     
     def _new_profile(self):
         if not self.session_manager.current_session:
@@ -518,6 +576,7 @@ class ProfileTab(ctk.CTkFrame):
             if new_filename:
                 # Update current filename if it was renamed
                 self.current_filename = new_filename
+                self._refresh_metasoft_context(data)
                 
                 if not silent:
                     self.save_btn.configure(text="Sauvegardé")
@@ -573,6 +632,7 @@ class ProfileTab(ctk.CTkFrame):
             data = self.session_manager.get_profile(filename)
             if data:
                 self.form.set_data(data)
+                self._refresh_metasoft_context(data)
                 identity = data.get('identity') or {}
                 last_name = (identity.get('last_name') or '').strip()
                 first_name = (identity.get('first_name') or '').strip()
@@ -875,17 +935,7 @@ class XmlMatchTab(ctk.CTkFrame):
         self.refresh()
 
     def _analyze_match(self, match_info: Dict):
-        import webbrowser
-
-        from local_api.metasoft_server import LocalMetaSoftServer
-
-        try:
-            server = LocalMetaSoftServer.ensure_started(self.session_manager)
-            url = server.url_for_match(match_info)
-            if not webbrowser.open(url):
-                messagebox.showinfo("Analyse MetaSoft", f"URL locale:\n{url}")
-        except Exception as e:
-            messagebox.showerror("Analyse MetaSoft", f"Ouverture impossible:\n{e}")
+        _open_metasoft_match(self.session_manager, match_info)
 
     def _export_match(self, match_info: Dict):
         profile_name = match_info.get('profile_name', '')

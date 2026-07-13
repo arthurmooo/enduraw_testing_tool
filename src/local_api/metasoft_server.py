@@ -582,8 +582,9 @@ class LocalMetaSoftServer:
                 status=500,
             )
 
-        if updated_paths:
-            self._record_profile_update(profile_name)
+        # Le profil Python affiche aussi l'EC du sidecar: un report EC seul doit
+        # donc déclencher son rafraîchissement même si le JSON profil est identique.
+        self._record_profile_update(profile_name)
 
         return {
             "ok": True,

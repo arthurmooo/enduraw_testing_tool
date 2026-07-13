@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 from pydantic import ValidationError
 from core.validation_models import ProfileFormModel
 from core.protocol_store import ProtocolStore
+from ui.profile_metasoft_summary import build_profile_metasoft_summary
 
 import matplotlib
 matplotlib.use("Agg")
@@ -28,6 +29,7 @@ class TabbedInputForm(ctk.CTkFrame):
         self.lactate_entries: List[Dict] = []
         self.lactate_thresholds: Dict[str, Any] = {}
         self.summary_labels: Dict[str, ctk.CTkLabel] = {}
+        self.metasoft_summary_widgets: Dict[str, Dict[str, ctk.CTkLabel]] = {}
 
         self._init_field_mapping()
 
@@ -422,6 +424,9 @@ class TabbedInputForm(ctk.CTkFrame):
         right.grid_columnconfigure(1, weight=1)
         r2 = 0
 
+        r2 = self._add_section(right, "Résultats MetaSoft reportés", r2)
+        r2 = self._add_metasoft_summary(right, r2)
+
         r2 = self._add_section(right, "Conseils d'Entraînement", r2)
         r2 = self._add_textfield(right, "conseils_entrainements", "Recommandations de séances", r2, height=200)
 
@@ -663,6 +668,57 @@ class TabbedInputForm(ctk.CTkFrame):
         lbl = ctk.CTkLabel(frame, text=f"  {title}",
                            font=ctk.CTkFont(size=12, slant="italic"), text_color="gray")
         lbl.grid(row=row, column=0, columnspan=2, pady=(8, 2), sticky="w")
+        return row + 1
+
+    def _add_metasoft_summary(self, frame, row: int) -> int:
+        """Ajoute les résumés liés aux sources officielles profil et sidecar EC."""
+        container = ctk.CTkFrame(frame, fg_color="transparent")
+        container.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        container.grid_columnconfigure(0, weight=1)
+
+        for index, (key, title) in enumerate((
+            ("lactate", "Lactates et seuils lactiques"),
+            ("running_economy", "Économie de course"),
+        )):
+            block = ctk.CTkFrame(container, corner_radius=8)
+            block.grid(row=index, column=0, sticky="ew", pady=4)
+            block.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                block,
+                text=title,
+                anchor="w",
+                font=ctk.CTkFont(size=13, weight="bold"),
+            ).grid(row=0, column=0, padx=10, pady=(9, 3), sticky="w")
+            status = ctk.CTkLabel(
+                block,
+                text="Non renseigné",
+                corner_radius=6,
+                fg_color="#48515f",
+                text_color="#f2f5f7",
+                font=ctk.CTkFont(size=11, weight="bold"),
+            )
+            status.grid(row=0, column=1, padx=10, pady=(9, 3), sticky="e")
+            details = ctk.CTkLabel(
+                block,
+                text="Aucune donnée reportée.",
+                anchor="w",
+                justify="left",
+                wraplength=520,
+                text_color=("#475569", "#a8b1bd"),
+            )
+            details.grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                padx=10,
+                pady=(4, 10),
+                sticky="ew",
+            )
+            self.metasoft_summary_widgets[key] = {
+                "status": status,
+                "details": details,
+            }
         return row + 1
 
     def _add_field(self, frame, key: str, label: str, row: int, field_type: str = "text") -> int:
@@ -1098,6 +1154,30 @@ class TabbedInputForm(ctk.CTkFrame):
         # Refresh summary if on Analyse tab
         self._update_summary()
 
+    def set_metasoft_context(
+        self,
+        profile: Dict[str, Any],
+        economy_state: Dict[str, Any],
+        matched: bool,
+    ) -> None:
+        """Affiche les résultats reportés sans recalculer ni modifier leurs sources."""
+        summary = build_profile_metasoft_summary(profile, economy_state, matched)
+        tone_colors = {
+            "success": "#167d5b",
+            "warning": "#946817",
+            "danger": "#a3434b",
+            "muted": "#48515f",
+        }
+        for key, content in summary.items():
+            widgets = self.metasoft_summary_widgets.get(key)
+            if not widgets:
+                continue
+            widgets["status"].configure(
+                text=content["status"],
+                fg_color=tone_colors.get(content["tone"], tone_colors["muted"]),
+            )
+            widgets["details"].configure(text="\n".join(content["lines"]))
+
     def clear(self):
         for ei in self.entries.values():
             w = ei['widget']
@@ -1111,6 +1191,7 @@ class TabbedInputForm(ctk.CTkFrame):
         # Reset summary
         for lbl in self.summary_labels.values():
             lbl.configure(text="—")
+        self.set_metasoft_context({}, {"status": "missing"}, matched=False)
         # Reset DB status
         self.set_db_status("")
 

@@ -1268,6 +1268,32 @@ class MetaSoftLocalApiTest(unittest.TestCase):
             [{"stage_index": 1, "enabled": True}],
         )
 
+    def test_ec_only_report_requests_profile_summary_refresh(self) -> None:
+        match_id = self._weighted_match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [],
+                "manual_running_economy_selections": [{
+                    "stage_index": 1,
+                    "start_seconds": 60,
+                    "end_seconds": 120,
+                    "exclusions": [],
+                }],
+                "manual_running_economy_stage_selections": [
+                    {"stage_index": 1, "enabled": True},
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["updated_paths"], [])
+        self.assertEqual(
+            self.server.consume_pending_profile_updates(),
+            [payload["profile_name"]],
+        )
+
     def test_react_export_endpoint_is_removed(self) -> None:
         match_id = self._match_id()
         status, payload = self._post(
