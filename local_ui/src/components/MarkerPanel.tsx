@@ -8,12 +8,14 @@ export function MarkerPanel({
   dirtyMarkers,
   deletedMarkers,
   profileVo2maxMlKgMin,
+  onChangeWindowSeconds,
 }: {
   draftMarkers: DraftMarkers;
   confirmedMarkers: ConfirmedMarkers;
   dirtyMarkers: Set<MetaSoftMarkerName>;
   deletedMarkers: Set<MetaSoftMarkerName>;
   profileVo2maxMlKgMin: number | null;
+  onChangeWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
 }) {
   const displayedVo2maxMlKgMin = currentVo2maxMlKgMin(
     draftMarkers,
@@ -75,12 +77,28 @@ export function MarkerPanel({
                       {name === "VO2_max" ? "VO2max" : name}
                     </span>
                   </td>
-                  <td>{draft.mode === "point" ? "Ligne" : "Range"}</td>
+                  <td>{markerModeLabel(row.mode)}</td>
                   <td>{secondsToClock(row.t_seconds)}</td>
                   <td>
                     {row.window_start_seconds === null || row.window_end_seconds === null
                       ? "-"
-                      : `${secondsToClock(row.window_start_seconds)} - ${secondsToClock(row.window_end_seconds)}`}
+                      : (
+                        <div className="marker-window-cell">
+                          <span>{secondsToClock(row.window_start_seconds)} - {secondsToClock(row.window_end_seconds)}</span>
+                          <label>
+                            <span>Duree</span>
+                            <input
+                              type="number"
+                              min={1}
+                              step={5}
+                              value={Math.round(row.window_end_seconds - row.window_start_seconds)}
+                              onChange={(event) => onChangeWindowSeconds(name, Number(event.target.value))}
+                              aria-label={`Duree du marqueur ${name} en secondes`}
+                            />
+                            <span>s</span>
+                          </label>
+                        </div>
+                      )}
                   </td>
                   <td>{formatNumber(row.values.fc_bpm, 0)}</td>
                   <td>{formatNumber(row.values.vo2_l_min, 2)}</td>
@@ -109,6 +127,12 @@ export function MarkerPanel({
       </p>
     </section>
   );
+}
+
+function markerModeLabel(mode: DraftMarkers[MetaSoftMarkerName]["mode"]): string {
+  if (mode === "point") return "Ligne";
+  if (mode === "previous") return "Precedent";
+  return "Range";
 }
 
 function currentVo2maxMlKgMin(

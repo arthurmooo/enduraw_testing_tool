@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import Plot from "react-plotly.js";
-import { Maximize2, X } from "lucide-react";
+import { Maximize2, Minus, Plus, RotateCcw, X } from "lucide-react";
 import {
   buildMarkerAnnotations,
   buildMarkerShapes,
@@ -13,6 +13,7 @@ import { MARKER_COLORS, MetaSoftGraphConfig, MetaSoftSeriesConfig } from "../lib
 import {
   axisLabel,
   axisTitle,
+  averagePointsByTimeBlock,
   buildCursorAnnotations,
   buildCursorShapes,
   buildTickVals,
@@ -30,6 +31,7 @@ import {
   previousWindowBounds,
   sameDragPreview,
   sameMarkerTarget,
+  scaledAxisRange,
   secondsToDuration,
   smoothSeries,
   timeFromClientX,
@@ -40,6 +42,7 @@ import {
 } from "../lib/metasoftChartHelpers";
 import { MARKER_NAMES, secondsToClock } from "../lib/markerUtils";
 import type {
+  ChartProcessingMode,
   DraftMarkers,
   MarkerMode,
   MetaSoftMarkerName,
@@ -56,6 +59,7 @@ interface Props {
   markers: DraftMarkers;
   phaseFilter: string;
   smoothingSeconds: number;
+  processingMode: ChartProcessingMode;
   showSpeedBands: boolean;
   timeXRange: [number, number] | null;
   timeZoomResetRevision: number;
@@ -81,6 +85,7 @@ function MetaSoftChartComponent({
   markers,
   phaseFilter,
   smoothingSeconds,
+  processingMode,
   showSpeedBands,
   timeXRange,
   timeZoomResetRevision,
@@ -95,6 +100,7 @@ function MetaSoftChartComponent({
 }: Props) {
   const [localXRange, setLocalXRange] = useState<[number, number] | null>(null);
   const [plotRevision, setPlotRevision] = useState(0);
+  const [yScaleFactor, setYScaleFactor] = useState(1);
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
   const modalTitleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -182,6 +188,7 @@ function MetaSoftChartComponent({
       height={height}
       plotRevision={plotRevision}
       xRange={xRange}
+      yScaleFactor={yScaleFactor}
       onXRangeChange={handleXRangeChange}
     />
   ) : (
@@ -195,6 +202,8 @@ function MetaSoftChartComponent({
       plotRevision={plotRevision}
       plotResetKey={String(timeZoomResetRevision)}
       smoothingSeconds={smoothingSeconds}
+      processingMode={processingMode}
+      yScaleFactor={yScaleFactor}
       xRange={xRange}
       onXRangeChange={handleXRangeChange}
       showSpeedBands={showSpeedBands}
@@ -210,6 +219,12 @@ function MetaSoftChartComponent({
       <div className="chart-title-row">
         <h2>{graph.title}</h2>
         <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
+        <ScaleControls
+          onZoomIn={() => setYScaleFactor((current) => Math.max(0.35, current * 0.8))}
+          onZoomOut={() => setYScaleFactor((current) => Math.min(4, current * 1.25))}
+          onAuto={() => setYScaleFactor(1)}
+          onResetZoom={() => handleXRangeChange(null)}
+        />
         <button
           type="button"
           onClick={() => onFullscreenChange(graph.id, true)}
@@ -230,6 +245,12 @@ function MetaSoftChartComponent({
             <div className="modal-header">
               <h2 id={modalTitleId}>Plein ecran - {graph.title}</h2>
               <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
+              <ScaleControls
+                onZoomIn={() => setYScaleFactor((current) => Math.max(0.35, current * 0.8))}
+                onZoomOut={() => setYScaleFactor((current) => Math.min(4, current * 1.25))}
+                onAuto={() => setYScaleFactor(1)}
+                onResetZoom={() => handleXRangeChange(null)}
+              />
               <button
                 type="button"
                 ref={closeButtonRef}
@@ -250,6 +271,33 @@ function MetaSoftChartComponent({
 }
 
 export const MetaSoftChart = memo(MetaSoftChartComponent);
+
+function ScaleControls({
+  onZoomIn,
+  onZoomOut,
+  onAuto,
+  onResetZoom,
+}: {
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onAuto: () => void;
+  onResetZoom: () => void;
+}) {
+  return (
+    <div className="scale-controls" aria-label="Regler l'echelle verticale">
+      <button type="button" onClick={onZoomOut} title="Elargir l'echelle verticale" aria-label="Elargir l'echelle verticale">
+        <Minus size={14} />
+      </button>
+      <button type="button" onClick={onAuto} title="Echelle automatique sur la zone visible">Auto</button>
+      <button type="button" onClick={onZoomIn} title="Resserrer l'echelle verticale" aria-label="Resserrer l'echelle verticale">
+        <Plus size={14} />
+      </button>
+      <button type="button" onClick={onResetZoom} title="Reinitialiser le zoom temporel" aria-label="Reinitialiser le zoom temporel">
+        <RotateCcw size={14} />
+      </button>
+    </div>
+  );
+}
 
 function SeriesToggles({
   series,
@@ -285,6 +333,7 @@ function RunningEconomyChart({
   height,
   plotRevision,
   xRange,
+  yScaleFactor,
   onXRangeChange,
 }: {
   analysis: import("../types/metasoft").MetaSoftAnalysis;
@@ -293,9 +342,14 @@ function RunningEconomyChart({
   height: number;
   plotRevision: number;
   xRange: [number, number] | null;
+  yScaleFactor: number;
   onXRangeChange: (range: [number, number] | null) => void;
 }) {
   const rows = analysis.computed.running_economy ?? [];
+  const visibleValues = rows.filter((row) => (
+    !xRange || (row.stage_index >= xRange[0] && row.stage_index <= xRange[1])
+  )).map((row) => row.value_j_kg_m);
+  const yRange = scaledAxisRange(visibleValues, yScaleFactor);
   const data = series.map((seriesItem) => ({
     type: "scatter",
     mode: "lines+markers",
@@ -326,10 +380,11 @@ function RunningEconomyChart({
         },
         yaxis: {
           title: "J/kg/m",
+          range: yRange,
           gridcolor: "rgba(255,255,255,0.055)",
         },
       }}
-      config={{ responsive: true, displayModeBar: false, doubleClick: "reset" }}
+      config={{ responsive: true, displayModeBar: false, doubleClick: false }}
       revision={plotRevision}
       style={{ width: "100%", height }}
       useResizeHandler
@@ -352,6 +407,8 @@ function PointChartBody({
   plotRevision,
   plotResetKey,
   smoothingSeconds,
+  processingMode,
+  yScaleFactor,
   xRange,
   onXRangeChange,
   showSpeedBands,
@@ -369,6 +426,8 @@ function PointChartBody({
   plotRevision: number;
   plotResetKey: string;
   smoothingSeconds: number;
+  processingMode: ChartProcessingMode;
+  yScaleFactor: number;
   xRange: [number, number] | null;
   onXRangeChange: (range: [number, number] | null) => void;
   showSpeedBands: boolean;
@@ -402,9 +461,13 @@ function PointChartBody({
   const [markerHover, setMarkerHover] = useState<MarkerDragTarget | null>(null);
   const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
   const canEditTimeMarkers = graph.kind === "time";
+  const processedPoints = useMemo(
+    () => processingMode === "blocks" ? averagePointsByTimeBlock(points, 5) : points,
+    [points, processingMode],
+  );
   const chartPoints = useMemo(
-    () => points.filter((point) => pointXValue(point, graph) !== null),
-    [graph, points],
+    () => processedPoints.filter((point) => pointXValue(point, graph) !== null),
+    [graph, processedPoints],
   );
   const x = useMemo(() => chartPoints.map((point) => pointXValue(point, graph)), [chartPoints, graph]);
   const maxTime = useMemo(
@@ -469,15 +532,18 @@ function PointChartBody({
     )),
     [chartPoints],
   );
-  const data = useMemo(() => series.map((seriesItem) => {
+  const renderedValues = useMemo(() => Object.fromEntries(series.map((seriesItem) => {
     const rawY = chartPoints.map((point) => point.values[seriesItem.key as keyof MetaSoftPoint["values"]]);
-    const shouldSmooth = graph.kind === "time" && seriesItem.smoothable;
+    const shouldSmooth = processingMode === "smooth" && graph.kind === "time" && seriesItem.smoothable;
+    return [seriesItem.key, shouldSmooth ? smoothSeries(x, rawY, smoothingSeconds) : rawY];
+  })), [chartPoints, graph.kind, processingMode, series, smoothingSeconds, x]);
+  const data = useMemo(() => series.map((seriesItem) => {
     return {
       type: "scatter",
       mode: graph.kind === "scatter" ? "markers" : "lines",
       name: seriesItem.label,
       x,
-      y: shouldSmooth ? smoothSeries(x, rawY, smoothingSeconds) : rawY,
+      y: renderedValues[seriesItem.key],
       yaxis: seriesItem.axis,
       customdata: chartPoints.map((point) => point.index),
       text: speedHoverText,
@@ -489,7 +555,19 @@ function PointChartBody({
         : `${seriesItem.unit === "bpm" ? "%{y:.0f}" : "%{y}"}<br>Vitesse %{text}<extra>${seriesItem.label}</extra>`,
       connectgaps: false,
     };
-  }), [chartPoints, graph.kind, series, smoothingSeconds, speedHoverText, x]);
+  }), [chartPoints, graph.kind, renderedValues, series, speedHoverText, x]);
+  const visibleXRange = effectiveRange ?? defaultRange;
+  const axisRange = useCallback((axis: "y" | "y2") => scaledAxisRange(
+    series
+      .filter((item) => (item.axis ?? "y") === axis)
+      .flatMap((item) => (renderedValues[item.key] ?? []).filter((_value, index) => {
+        const xValue = x[index];
+        return typeof xValue === "number" && xValue >= visibleXRange[0] && xValue <= visibleXRange[1];
+      })),
+    yScaleFactor,
+  ), [renderedValues, series, visibleXRange, x, yScaleFactor]);
+  const yRange = axisRange("y");
+  const y2Range = axisRange("y2");
   const layout = useMemo(() => ({
     autosize: true,
     paper_bgcolor: "rgba(0,0,0,0)",
@@ -513,12 +591,14 @@ function PointChartBody({
       title: { text: axisTitle(graph.xAxis), font: { size: 10, color: "rgba(226,232,240,0.65)" } },
     },
     yaxis: {
+      range: yRange,
       title: { text: axisLabel(series, "y"), font: { size: 10, color: "rgba(226,232,240,0.65)" } },
       gridcolor: "rgba(255,255,255,0.055)",
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
     },
     yaxis2: {
+      range: y2Range,
       overlaying: "y",
       side: "right",
       title: { text: axisLabel(series, "y2"), font: { size: 10, color: "rgba(226,232,240,0.65)" } },
@@ -526,12 +606,12 @@ function PointChartBody({
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
     },
-  }), [annotations, defaultRange, effectiveRange, graph.kind, graph.xAxis, plotMargins, series, shapes, tickText, tickVals]);
+  }), [annotations, defaultRange, effectiveRange, graph.kind, graph.xAxis, plotMargins, series, shapes, tickText, tickVals, y2Range, yRange]);
   const config = useMemo(() => ({
     responsive: true,
     displayModeBar: false,
     scrollZoom: false,
-    doubleClick: "reset",
+    doubleClick: false,
     editable: false,
   }), []);
 
@@ -610,8 +690,11 @@ function PointChartBody({
       clearPendingClick();
       return;
     }
-    const tSeconds = timeFromClientX(mouseEvent.clientX, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
-    if (tSeconds === null) return;
+    const clickedSeconds = timeFromClientX(mouseEvent.clientX, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
+    if (clickedSeconds === null) return;
+    const tSeconds = processingMode === "blocks"
+      ? Math.floor(clickedSeconds / 5) * 5 + 2.5
+      : clickedSeconds;
     clearPendingClick();
     clickTimerRef.current = window.setTimeout(() => {
       clickTimerRef.current = null;
@@ -619,16 +702,12 @@ function PointChartBody({
         left: clamp(mouseEvent.clientX - bounds.left, 8, Math.max(8, bounds.width - MARKER_POPOVER_WIDTH - 8)),
         top: clamp(mouseEvent.clientY - bounds.top, 8, Math.max(8, bounds.height - MARKER_POPOVER_HEIGHT - 8)),
         tSeconds: clamp(tSeconds, 0, maxTime),
-        mode: "point",
-        rangeDuration: "4:00",
+        mode: processingMode === "blocks" ? "range" : "point",
+        rangeDuration: processingMode === "blocks" ? "0:05" : "4:00",
         previousDuration: "0:10",
       });
     }, 320);
-  }, [canEditTimeMarkers, clearPendingClick, defaultRange, effectiveRange, maxTime, plotMargins]);
-
-  const cancelSingleClick = useCallback(() => {
-    resetZoomFromDoubleClick();
-  }, [resetZoomFromDoubleClick]);
+  }, [canEditTimeMarkers, clearPendingClick, defaultRange, effectiveRange, maxTime, plotMargins, processingMode]);
 
   const handleContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
@@ -747,7 +826,6 @@ function PointChartBody({
         onRelayout={handleRelayout}
         onHover={handleHover}
         onUnhover={handleUnhover}
-        onDoubleClick={cancelSingleClick}
       />
       {proposal && (
         <div

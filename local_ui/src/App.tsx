@@ -19,6 +19,7 @@ import {
   secondsToClock,
   serializeMarkerSelections,
 } from "./lib/markerUtils";
+import { centeredWindowBounds, previousWindowBounds } from "./lib/metasoftChartHelpers";
 import type {
   ConfirmedMarkers,
   DraftMarkers,
@@ -28,6 +29,7 @@ import type {
   MetaSoftPoint,
   ProfileConflict,
   ReportResponse,
+  ChartProcessingMode,
 } from "./types/metasoft";
 
 const NAV_ITEMS = [
@@ -51,6 +53,7 @@ export default function App() {
   const [deletedMarkers, setDeletedMarkers] = useState<Set<MetaSoftMarkerName>>(new Set());
   const [dirtyMarkers, setDirtyMarkers] = useState<Set<MetaSoftMarkerName>>(new Set());
   const [phaseFilter, setPhaseFilter] = useState("Tout");
+  const [processingMode, setProcessingMode] = useState<ChartProcessingMode>("blocks");
   const [smoothingSeconds, setSmoothingSeconds] = useState(20);
   const [showSpeedBands, setShowSpeedBands] = useState(true);
   const [timeXRange, setTimeXRange] = useState<[number, number] | null>(null);
@@ -67,9 +70,6 @@ export default function App() {
   const manualEconomyRef = useRef<RunningEconomyManualHandle | null>(null);
   const ignoreTimeRelayoutUntilRef = useRef(0);
   const timeXRangeRef = useRef<[number, number] | null>(null);
-  const blockedResetRangeRef = useRef<[number, number] | null>(null);
-  const lastZoomSourceGraphIdRef = useRef<string | null>(null);
-  const blockedResetGraphIdRef = useRef<string | null>(null);
   const cursorFrameRef = useRef<number | null>(null);
   const cursorPointRef = useRef<MetaSoftPoint | null>(null);
   const pendingCursorPointRef = useRef<MetaSoftPoint | null>(null);
@@ -106,9 +106,6 @@ export default function App() {
         setCursorPoint(firstPoint);
         setPhaseFilter("Tout");
         timeXRangeRef.current = null;
-        blockedResetRangeRef.current = null;
-        lastZoomSourceGraphIdRef.current = null;
-        blockedResetGraphIdRef.current = null;
         setFullscreenGraphId(null);
         setTimeXRange(null);
         setReadingViewMode("all");
@@ -133,10 +130,6 @@ export default function App() {
     () => Array.from(new Set((payload?.analysis.phases ?? []).map((phase) => phase.phase))).filter(Boolean),
     [payload],
   );
-  const timeRangeKey = useMemo(() => {
-    if (!timeXRange) return `full-${timeZoomResetRevision}`;
-    return `range-${timeXRange[0].toFixed(3)}-${timeXRange[1].toFixed(3)}`;
-  }, [timeXRange, timeZoomResetRevision]);
   const flushCursorPoint = useCallback(() => {
     cursorFrameRef.current = null;
     const next = pendingCursorPointRef.current;
@@ -156,41 +149,19 @@ export default function App() {
   const handleTimeXRangeChange = useCallback((graphId: string, range: [number, number] | null) => {
     const now = window.performance.now();
     if (range === null) {
-      if (timeXRangeRef.current === null) {
-        debugZoom("ignore reset without active range", { graphId, range });
-        return;
-      }
-      // ponytail: keep one reset pass to avoid reusing a stale per-plot relayout range.
-      ignoreTimeRelayoutUntilRef.current = now + 500;
-      blockedResetRangeRef.current = timeXRangeRef.current;
-      blockedResetGraphIdRef.current = lastZoomSourceGraphIdRef.current;
-      debugZoom("accept reset", {
-        graphId,
-        blockedGraphId: blockedResetGraphIdRef.current,
-        blockedRange: blockedResetRangeRef.current,
-      });
+      // Un seul reset React pilote tous les graphes; Plotly ne remet plus une
+      // ancienne plage en concurrence via son propre double-clic.
+      ignoreTimeRelayoutUntilRef.current = now + 120;
+      debugZoom("accept reset", { graphId, previousRange: timeXRangeRef.current });
       timeXRangeRef.current = null;
-      lastZoomSourceGraphIdRef.current = null;
       setTimeZoomResetRevision((revision) => revision + 1);
       setTimeXRange(null);
       return;
     }
     if (now < ignoreTimeRelayoutUntilRef.current) {
-      debugZoom("ignore range during reset window", { graphId, range, blockedRange: blockedResetRangeRef.current });
+      debugZoom("ignore range during reset window", { graphId, range });
       return;
     }
-    if (sameRange(range, blockedResetRangeRef.current)) {
-      debugZoom("ignore stale reset range", {
-        graphId,
-        range,
-        blockedGraphId: blockedResetGraphIdRef.current,
-        blockedRange: blockedResetRangeRef.current,
-      });
-      return;
-    }
-    blockedResetRangeRef.current = null;
-    blockedResetGraphIdRef.current = null;
-    lastZoomSourceGraphIdRef.current = graphId;
     timeXRangeRef.current = range;
     debugZoom("accept range", { graphId, range });
     setTimeXRange(range);
@@ -238,6 +209,31 @@ export default function App() {
     markDirty(marker);
   }, [markDirty, payload]);
 
+  const resizeMarkerWindow = useCallback((marker: MetaSoftMarkerName, durationSeconds: number) => {
+    if (!payload || !Number.isFinite(durationSeconds) || durationSeconds < 1) return;
+    setDraftMarkers((current) => {
+      if (!current) return current;
+      const item = current[marker];
+      if (item.mode === "point" || item.t_seconds === null) return current;
+      const maxTime = Math.max(...payload.analysis.points.map((point) => point.t_seconds ?? 0), 0);
+      const [start, end] = item.mode === "previous"
+        ? previousWindowBounds(item.t_seconds, durationSeconds)
+        : centeredWindowBounds(item.t_seconds, durationSeconds, maxTime);
+      return {
+        ...current,
+        [marker]: buildDraftMarker(
+          marker,
+          payload.analysis.points,
+          item.t_seconds,
+          item.mode,
+          start,
+          end,
+        ),
+      };
+    });
+    markDirty(marker);
+  }, [markDirty, payload]);
+
   const handleFullscreenChange = useCallback((graphId: string, open: boolean) => {
     setFullscreenGraphId(open ? graphId : null);
   }, []);
@@ -282,12 +278,13 @@ export default function App() {
 
   const renderReadingChart = (graph: (typeof READING_GRAPH_CONFIGS)[number], height?: number) => (
     <MetaSoftChart
-      key={`${readingViewMode}-${graph.kind === "time" ? `${graph.id}-${timeRangeKey}` : graph.id}`}
+      key={`${readingViewMode}-${graph.id}`}
       analysis={analysis}
       graph={graph}
       markers={draftMarkers}
       phaseFilter={phaseFilter}
       smoothingSeconds={graph.kind === "time" ? smoothingSeconds : 0}
+      processingMode={processingMode}
       showSpeedBands={graph.kind === "time" ? showSpeedBands : false}
       timeXRange={graph.kind === "time" ? timeXRange : null}
       timeZoomResetRevision={graph.kind === "time" ? timeZoomResetRevision : 0}
@@ -381,19 +378,34 @@ export default function App() {
             </button>
           ))}
         </div>
-        <label className="range-control">
-          <SlidersHorizontal size={15} />
-          Lissage
-          <input
-            type="range"
-            min={0}
-            max={60}
-            step={5}
-            value={smoothingSeconds}
-            onChange={(event) => setSmoothingSeconds(Number(event.target.value))}
-          />
-          <span>{smoothingSeconds}s</span>
-        </label>
+        <div className="processing-control" aria-label="Traitement visuel des donnees">
+          {(["raw", "blocks", "smooth"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={processingMode === mode ? "active" : ""}
+              onClick={() => setProcessingMode(mode)}
+              aria-pressed={processingMode === mode}
+            >
+              {mode === "raw" ? "Brut" : mode === "blocks" ? "Blocs 5 s" : "Glissant"}
+            </button>
+          ))}
+        </div>
+        {processingMode === "smooth" && (
+          <label className="range-control">
+            <SlidersHorizontal size={15} />
+            Lissage
+            <input
+              type="range"
+              min={5}
+              max={60}
+              step={5}
+              value={smoothingSeconds}
+              onChange={(event) => setSmoothingSeconds(Number(event.target.value))}
+            />
+            <span>{smoothingSeconds}s</span>
+          </label>
+        )}
         <button
           type="button"
           className={showSpeedBands ? "nav-toggle active" : "nav-toggle"}
@@ -479,6 +491,7 @@ export default function App() {
           dirtyMarkers={dirtyMarkers}
           deletedMarkers={deletedMarkers}
           profileVo2maxMlKgMin={profileVo2maxMlKgMin}
+          onChangeWindowSeconds={resizeMarkerWindow}
         />
       </section>
 
@@ -583,11 +596,6 @@ function buildMarkerReportSummary(
 
 function sameCursorPoint(left: MetaSoftPoint | null, right: MetaSoftPoint | null): boolean {
   return (left?.index ?? null) === (right?.index ?? null);
-}
-
-function sameRange(left: [number, number], right: [number, number] | null): boolean {
-  if (!right) return false;
-  return Math.abs(left[0] - right[0]) < 0.25 && Math.abs(left[1] - right[1]) < 0.25;
 }
 
 function debugZoom(message: string, payload: Record<string, unknown>): void {

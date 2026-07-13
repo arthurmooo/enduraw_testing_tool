@@ -136,7 +136,7 @@ input:focus-visible {
   top: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: auto auto auto 1fr;
+  grid-template-columns: auto auto auto auto 1fr;
   gap: 12px;
   align-items: center;
   margin: 14px 0 22px;
@@ -187,6 +187,34 @@ input:focus-visible {
 .range-control input {
   width: 120px;
   accent-color: #10d38f;
+}
+
+.processing-control,
+.scale-controls {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.processing-control button,
+.scale-controls button {
+  min-height: 28px;
+  border: 0;
+  border-radius: 5px;
+  padding: 0 9px;
+  color: rgba(226, 232, 240, 0.62);
+  background: transparent;
+  font-size: 12px;
+}
+
+.processing-control button:hover,
+.processing-control button.active,
+.scale-controls button:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .section-block {
@@ -695,6 +723,29 @@ td {
 .marker-name,
 .accent-cell {
   font-weight: 700;
+}
+
+.marker-window-cell {
+  display: grid;
+  gap: 5px;
+}
+
+.marker-window-cell label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: rgba(226, 232, 240, 0.48);
+  font-size: 11px;
+}
+
+.marker-window-cell input {
+  width: 62px;
+  min-height: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  padding: 0 6px;
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .accent-cell {

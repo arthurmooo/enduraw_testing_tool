@@ -12,6 +12,60 @@ export type MarkerDragPart = "start" | "center" | "end";
 export type MarkerDragTarget = { marker: MetaSoftMarkerName; part: MarkerDragPart };
 export type MarkerDragPreview = MarkerDragTarget & { xSeconds: number };
 
+export function averagePointsByTimeBlock(
+  points: MetaSoftPoint[],
+  blockSeconds: number,
+): MetaSoftPoint[] {
+  if (blockSeconds <= 0) return points;
+  const buckets = new Map<number, MetaSoftPoint[]>();
+  for (const point of points) {
+    if (typeof point.t_seconds !== "number" || !Number.isFinite(point.t_seconds)) continue;
+    const start = Math.floor(point.t_seconds / blockSeconds) * blockSeconds;
+    const bucket = buckets.get(start);
+    if (bucket) bucket.push(point);
+    else buckets.set(start, [point]);
+  }
+  return Array.from(buckets.entries()).map(([start, bucket]) => {
+    const values: MetaSoftPoint["values"] = {};
+    const keys = new Set(bucket.flatMap((point) => Object.keys(point.values)));
+    for (const key of keys) {
+      const numericValues = bucket
+        .map((point) => point.values[key as keyof MetaSoftPoint["values"]])
+        .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+      if (numericValues.length) {
+        values[key as keyof MetaSoftPoint["values"]] = Number(
+          (numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length).toFixed(3),
+        );
+      }
+    }
+    const tSeconds = start + blockSeconds / 2;
+    return {
+      index: bucket[0].index,
+      t: secondsToClock(tSeconds),
+      t_seconds: tSeconds,
+      phase: mostFrequent(bucket.map((point) => point.phase ?? null)),
+      marker: null,
+      values,
+    };
+  });
+}
+
+export function scaledAxisRange(
+  values: Array<number | string | null | undefined>,
+  scale = 1,
+): [number, number] | undefined {
+  const numericValues = values.filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+  if (!numericValues.length) return undefined;
+  const min = Math.min(...numericValues);
+  const max = Math.max(...numericValues);
+  const center = (min + max) / 2;
+  const dataHalfSpan = Math.max((max - min) / 2, Math.abs(center) * 0.01, 0.05);
+  const halfSpan = dataHalfSpan * 1.16 * clamp(scale, 0.35, 4);
+  return [center - halfSpan, center + halfSpan];
+}
+
 export function smoothSeries(
   x: Array<number | null>,
   y: Array<number | string | null | undefined>,
@@ -367,4 +421,13 @@ function toNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function mostFrequent<T>(values: T[]): T | null {
+  if (!values.length) return null;
+  const counts = new Map<T, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return values.reduce((best, value) => (
+    (counts.get(value) ?? 0) > (counts.get(best) ?? 0) ? value : best
+  ));
 }

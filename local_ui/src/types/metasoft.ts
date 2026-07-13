@@ -35,6 +35,7 @@ export type MetaSoftGraphId =
 
 export type MetaSoftMarkerName = "SV1" | "SV2" | "VO2_max" | "VMA";
 export type MarkerMode = "point" | "range" | "previous";
+export type ChartProcessingMode = "raw" | "blocks" | "smooth";
 
 export interface MetaSoftMetricSpec {
   key: MetaSoftMetricKey;
