@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, FileUp, SlidersHorizontal } from "lucide-react";
 import { AnalysisExportSection, type MarkerReportSummaryItem } from "./components/AnalysisExportSection";
 import { CursorRail } from "./components/CursorRail";
 import { MarkerPanel } from "./components/MarkerPanel";
 import { MetaSoftChart } from "./components/MetaSoftChart";
+import { LactateSection } from "./components/LactateSection";
 import {
   RunningEconomyManualSection,
   type ManualEconomyReportSummary,
@@ -28,6 +29,7 @@ import type {
   MarkerMode,
   MetaSoftMarkerName,
   MetaSoftDraftPayload,
+  LactateTestDraft,
   MetaSoftPoint,
   ProfileConflict,
   ReportResponse,
@@ -38,6 +40,7 @@ const NAV_ITEMS = [
   { label: "Lecture", targetId: "metasoft-reading" },
   { label: "Marqueurs", targetId: "metasoft-markers" },
   { label: "EC", targetId: "metasoft-running-economy" },
+  { label: "Lactate", targetId: "metasoft-lactate" },
   { label: "Report", targetId: "metasoft-profile-report" },
 ];
 const READING_GRAPH_CONFIGS = GRAPH_CONFIGS.filter((graph) => graph.source === "points");
@@ -71,6 +74,7 @@ export default function App() {
   const [manualEconomyReportSummary, setManualEconomyReportSummary] = useState<ManualEconomyReportSummary | null>(null);
   const [draftRevision, setDraftRevision] = useState(0);
   const [draftSaveStatus, setDraftSaveStatus] = useState<string | null>(null);
+  const [lactateDraft, setLactateDraft] = useState<LactateTestDraft | null>(null);
   const manualEconomyRef = useRef<RunningEconomyManualHandle | null>(null);
   const draftSavePromiseRef = useRef<Promise<unknown> | null>(null);
   const reportInProgressRef = useRef(false);
@@ -112,6 +116,7 @@ export default function App() {
         setDeletedMarkers(deleted);
         setDirtyMarkers(restoredDraft.dirty);
         setDraftRevision(0);
+        setLactateDraft(result.metasoft_draft?.lactate_test ?? null);
         setDraftSaveStatus(result.metasoft_draft ? "Brouillon local restaure" : null);
         reportEditRevisionRef.current = 0;
         cursorPointRef.current = firstPoint;
@@ -149,6 +154,7 @@ export default function App() {
       const draft: MetaSoftDraftPayload = {
         marker_selections: markerSelections,
         ...(manualEconomyPayload ?? {}),
+        ...(lactateDraft ? { lactate_test: lactateDraft } : {}),
       };
       setDraftSaveStatus("Sauvegarde du brouillon...");
       const savePromise = apiPost<{ ok: true }>(
@@ -169,7 +175,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [bootstrap, dirtyMarkers, draftMarkers, draftRevision, payload]);
+  }, [bootstrap, dirtyMarkers, draftMarkers, draftRevision, lactateDraft, payload]);
 
   const phases = useMemo(
     () => Array.from(new Set((payload?.analysis.phases ?? []).map((phase) => phase.phase))).filter(Boolean),
@@ -360,7 +366,8 @@ export default function App() {
             bootstrap?.token ?? "",
             {
               marker_selections: markerSelections,
-              ...(manualEconomyPayload ?? {}),
+            ...(manualEconomyPayload ?? {}),
+            ...(lactateDraft ? { lactate_test: lactateDraft } : {}),
               ...(overwrite ? { conflict_policy: "overwrite" } : {}),
             },
           );
@@ -387,6 +394,7 @@ export default function App() {
           setDirtyMarkers(new Set());
           setDraftRevision(0);
           setDraftSaveStatus("Brouillon officialise");
+          setLactateDraft(null);
           setReport(response);
           setConflicts([]);
         } catch (err) {
@@ -511,7 +519,9 @@ export default function App() {
         {readingViewMode === "all" ? (
           <div className="reading-workspace">
             <div className="charts-grid">
-              {READING_GRAPH_CONFIGS.map((graph) => renderReadingChart(graph))}
+              {READING_GRAPH_CONFIGS.map((graph) => (
+                <DeferredChart key={graph.id}>{renderReadingChart(graph)}</DeferredChart>
+              ))}
             </div>
             <CursorRail analysis={analysis} cursorPoint={cursorPoint} />
           </div>
@@ -561,6 +571,15 @@ export default function App() {
         onReportSummaryChange={setManualEconomyReportSummary}
       />
 
+      <LactateSection
+        profile={payload.profile}
+        initialDraft={lactateDraft}
+        onChange={(next) => {
+          setLactateDraft(next);
+          markManualEconomyDirty();
+        }}
+      />
+
       <AnalysisExportSection
         busy={busy}
         error={error}
@@ -591,6 +610,26 @@ export default function App() {
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return "Action MetaSoft impossible.";
+}
+
+function DeferredChart({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || !("IntersectionObserver" in window)) {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      setVisible(true);
+      observer.disconnect();
+    }, { rootMargin: "500px 0px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return <div ref={ref} className="deferred-chart-slot">{visible ? children : null}</div>;
 }
 
 function profileMeasuredVo2max(profile: Record<string, unknown>): number | null {

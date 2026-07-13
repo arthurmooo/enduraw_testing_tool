@@ -52,6 +52,7 @@ import type {
 const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
 const MARKER_POPOVER_WIDTH = 420;
 const MARKER_POPOVER_HEIGHT = 240;
+type ScaleMode = "common" | "series";
 
 interface Props {
   analysis: import("../types/metasoft").MetaSoftAnalysis;
@@ -101,6 +102,9 @@ function MetaSoftChartComponent({
   const [localXRange, setLocalXRange] = useState<[number, number] | null>(null);
   const [plotRevision, setPlotRevision] = useState(0);
   const [yScaleFactor, setYScaleFactor] = useState(1);
+  const [scaleMode, setScaleMode] = useState<ScaleMode>("common");
+  const [seriesScaleFactors, setSeriesScaleFactors] = useState<Record<string, number>>({});
+  const [selectedScaleSeriesKey, setSelectedScaleSeriesKey] = useState<string>(graph.series[0]?.key ?? "");
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
   const modalTitleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -130,6 +134,16 @@ function MetaSoftChartComponent({
   }, [graph.kind, timeZoomResetRevision]);
   useEffect(() => setHiddenSeries(new Set()), [analysis.file.filename, graph.id]);
   useEffect(() => {
+    setYScaleFactor(1);
+    setSeriesScaleFactors({});
+    setScaleMode("common");
+  }, [analysis.file.filename, graph.id]);
+  useEffect(() => {
+    if (!visibleSeries.some((series) => series.key === selectedScaleSeriesKey)) {
+      setSelectedScaleSeriesKey(visibleSeries[0]?.key ?? "");
+    }
+  }, [selectedScaleSeriesKey, visibleSeries]);
+  useEffect(() => {
     if (fullscreen) closeButtonRef.current?.focus();
   }, [fullscreen]);
   useEffect(() => {
@@ -154,6 +168,23 @@ function MetaSoftChartComponent({
     if (range === null) setPlotRevision((revision) => revision + 1);
   }, [graph.id, graph.kind, onTimeXRangeChange]);
   const xRange = graph.kind === "time" ? timeXRange : localXRange;
+  const changeYScale = useCallback((multiplier: number) => {
+    if (scaleMode === "series") {
+      setSeriesScaleFactors((current) => ({
+        ...current,
+        [selectedScaleSeriesKey]: clamp((current[selectedScaleSeriesKey] ?? 1) * multiplier, 0.35, 4),
+      }));
+    } else {
+      setYScaleFactor((current) => clamp(current * multiplier, 0.35, 4));
+    }
+  }, [scaleMode, selectedScaleSeriesKey]);
+  const resetYScale = useCallback(() => {
+    if (scaleMode === "series") {
+      setSeriesScaleFactors((current) => ({ ...current, [selectedScaleSeriesKey]: 1 }));
+    } else {
+      setYScaleFactor(1);
+    }
+  }, [scaleMode, selectedScaleSeriesKey]);
 
   const toggleSeries = useCallback((series: MetaSoftSeriesConfig) => {
     setHiddenSeries((current) => {
@@ -204,6 +235,9 @@ function MetaSoftChartComponent({
       smoothingSeconds={smoothingSeconds}
       processingMode={processingMode}
       yScaleFactor={yScaleFactor}
+      scaleMode={scaleMode}
+      seriesScaleFactors={seriesScaleFactors}
+      selectedScaleSeriesKey={selectedScaleSeriesKey}
       xRange={xRange}
       onXRangeChange={handleXRangeChange}
       showSpeedBands={showSpeedBands}
@@ -220,9 +254,14 @@ function MetaSoftChartComponent({
         <h2>{graph.title}</h2>
         <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
         <ScaleControls
-          onZoomIn={() => setYScaleFactor((current) => Math.max(0.35, current * 0.8))}
-          onZoomOut={() => setYScaleFactor((current) => Math.min(4, current * 1.25))}
-          onAuto={() => setYScaleFactor(1)}
+          series={visibleSeries}
+          mode={scaleMode}
+          selectedSeriesKey={selectedScaleSeriesKey}
+          onModeChange={setScaleMode}
+          onSelectedSeriesChange={setSelectedScaleSeriesKey}
+          onZoomIn={() => changeYScale(0.8)}
+          onZoomOut={() => changeYScale(1.25)}
+          onAuto={resetYScale}
           onResetZoom={() => handleXRangeChange(null)}
         />
         <button
@@ -246,9 +285,14 @@ function MetaSoftChartComponent({
               <h2 id={modalTitleId}>Plein ecran - {graph.title}</h2>
               <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
               <ScaleControls
-                onZoomIn={() => setYScaleFactor((current) => Math.max(0.35, current * 0.8))}
-                onZoomOut={() => setYScaleFactor((current) => Math.min(4, current * 1.25))}
-                onAuto={() => setYScaleFactor(1)}
+                series={visibleSeries}
+                mode={scaleMode}
+                selectedSeriesKey={selectedScaleSeriesKey}
+                onModeChange={setScaleMode}
+                onSelectedSeriesChange={setSelectedScaleSeriesKey}
+                onZoomIn={() => changeYScale(0.8)}
+                onZoomOut={() => changeYScale(1.25)}
+                onAuto={resetYScale}
                 onResetZoom={() => handleXRangeChange(null)}
               />
               <button
@@ -272,12 +316,30 @@ function MetaSoftChartComponent({
 
 export const MetaSoftChart = memo(MetaSoftChartComponent);
 
+function plotlyAxisId(index: number): string {
+  return index === 0 ? "y" : `y${index + 1}`;
+}
+
+function plotlyLayoutAxisKey(index: number): string {
+  return index === 0 ? "yaxis" : `yaxis${index + 1}`;
+}
+
 function ScaleControls({
+  series,
+  mode,
+  selectedSeriesKey,
+  onModeChange,
+  onSelectedSeriesChange,
   onZoomIn,
   onZoomOut,
   onAuto,
   onResetZoom,
 }: {
+  series: MetaSoftSeriesConfig[];
+  mode: ScaleMode;
+  selectedSeriesKey: string;
+  onModeChange: (mode: ScaleMode) => void;
+  onSelectedSeriesChange: (key: string) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onAuto: () => void;
@@ -285,6 +347,24 @@ function ScaleControls({
 }) {
   return (
     <div className="scale-controls" aria-label="Regler l'echelle verticale">
+      {series.length > 1 && (
+        <button
+          type="button"
+          onClick={() => onModeChange(mode === "common" ? "series" : "common")}
+          title="Basculer entre une echelle commune et une echelle par courbe"
+        >
+          {mode === "series" ? "Par courbe" : "Commune"}
+        </button>
+      )}
+      {mode === "series" && series.length > 1 && (
+        <select
+          aria-label="Courbe dont l'echelle est affichee et ajustee"
+          value={selectedSeriesKey}
+          onChange={(event) => onSelectedSeriesChange(event.target.value)}
+        >
+          {series.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+        </select>
+      )}
       <button type="button" onClick={onZoomOut} title="Elargir l'echelle verticale" aria-label="Elargir l'echelle verticale">
         <Minus size={14} />
       </button>
@@ -409,6 +489,9 @@ function PointChartBody({
   smoothingSeconds,
   processingMode,
   yScaleFactor,
+  scaleMode,
+  seriesScaleFactors,
+  selectedScaleSeriesKey,
   xRange,
   onXRangeChange,
   showSpeedBands,
@@ -428,6 +511,9 @@ function PointChartBody({
   smoothingSeconds: number;
   processingMode: ChartProcessingMode;
   yScaleFactor: number;
+  scaleMode: ScaleMode;
+  seriesScaleFactors: Record<string, number>;
+  selectedScaleSeriesKey: string;
   xRange: [number, number] | null;
   onXRangeChange: (range: [number, number] | null) => void;
   showSpeedBands: boolean;
@@ -537,14 +623,14 @@ function PointChartBody({
     const shouldSmooth = processingMode === "smooth" && graph.kind === "time" && seriesItem.smoothable;
     return [seriesItem.key, shouldSmooth ? smoothSeries(x, rawY, smoothingSeconds) : rawY];
   })), [chartPoints, graph.kind, processingMode, series, smoothingSeconds, x]);
-  const data = useMemo(() => series.map((seriesItem) => {
+  const data = useMemo(() => series.map((seriesItem, seriesIndex) => {
     return {
       type: "scatter",
       mode: graph.kind === "scatter" ? "markers" : "lines",
       name: seriesItem.label,
       x,
       y: renderedValues[seriesItem.key],
-      yaxis: seriesItem.axis,
+      yaxis: scaleMode === "series" ? plotlyAxisId(seriesIndex) : seriesItem.axis,
       customdata: chartPoints.map((point) => point.index),
       text: speedHoverText,
       line: { color: seriesItem.color, width: 0.8 },
@@ -555,7 +641,7 @@ function PointChartBody({
         : `${seriesItem.unit === "bpm" ? "%{y:.0f}" : "%{y}"}<br>Vitesse %{text}<extra>${seriesItem.label}</extra>`,
       connectgaps: false,
     };
-  }), [chartPoints, graph.kind, renderedValues, series, speedHoverText, x]);
+  }), [chartPoints, graph.kind, renderedValues, scaleMode, series, speedHoverText, x]);
   const visibleXRange = effectiveRange ?? defaultRange;
   const axisRange = useCallback((axis: "y" | "y2") => scaledAxisRange(
     series
@@ -568,6 +654,28 @@ function PointChartBody({
   ), [renderedValues, series, visibleXRange, x, yScaleFactor]);
   const yRange = axisRange("y");
   const y2Range = axisRange("y2");
+  const separateAxes = useMemo(() => Object.fromEntries(series.map((seriesItem, seriesIndex) => {
+    const selected = seriesItem.key === selectedScaleSeriesKey;
+    const range = scaledAxisRange(
+      (renderedValues[seriesItem.key] ?? []).filter((_value, index) => {
+        const xValue = x[index];
+        return typeof xValue === "number" && xValue >= visibleXRange[0] && xValue <= visibleXRange[1];
+      }),
+      seriesScaleFactors[seriesItem.key] ?? 1,
+    );
+    return [plotlyLayoutAxisKey(seriesIndex), {
+      range,
+      ...(seriesIndex ? { overlaying: "y" } : {}),
+      side: selected && seriesIndex ? "right" : "left",
+      showticklabels: selected,
+      showgrid: selected,
+      title: selected ? { text: `${seriesItem.label} (${seriesItem.unit})`, font: { size: 10, color: seriesItem.color } } : undefined,
+      tickfont: { color: seriesItem.color },
+      gridcolor: selected ? "rgba(255,255,255,0.055)" : "rgba(255,255,255,0)",
+      linecolor: selected ? seriesItem.color : "rgba(255,255,255,0)",
+      zerolinecolor: "rgba(255,255,255,0.08)",
+    }];
+  })), [renderedValues, selectedScaleSeriesKey, series, seriesScaleFactors, visibleXRange, x]);
   const layout = useMemo(() => ({
     autosize: true,
     paper_bgcolor: "rgba(0,0,0,0)",
@@ -590,14 +698,13 @@ function PointChartBody({
       zerolinecolor: "rgba(255,255,255,0.08)",
       title: { text: axisTitle(graph.xAxis), font: { size: 10, color: "rgba(226,232,240,0.65)" } },
     },
-    yaxis: {
+    ...(scaleMode === "series" ? separateAxes : { yaxis: {
       range: yRange,
       title: { text: axisLabel(series, "y"), font: { size: 10, color: "rgba(226,232,240,0.65)" } },
       gridcolor: "rgba(255,255,255,0.055)",
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
-    },
-    yaxis2: {
+    }, yaxis2: {
       range: y2Range,
       overlaying: "y",
       side: "right",
@@ -605,8 +712,8 @@ function PointChartBody({
       gridcolor: "rgba(255,255,255,0)",
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
-    },
-  }), [annotations, defaultRange, effectiveRange, graph.kind, graph.xAxis, plotMargins, series, shapes, tickText, tickVals, y2Range, yRange]);
+    } }),
+  }), [annotations, defaultRange, effectiveRange, graph.kind, graph.xAxis, plotMargins, scaleMode, separateAxes, series, shapes, tickText, tickVals, y2Range, yRange]);
   const config = useMemo(() => ({
     responsive: true,
     displayModeBar: false,

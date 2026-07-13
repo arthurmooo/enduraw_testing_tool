@@ -137,6 +137,7 @@ class StressTestResults(BaseModel):
     first_stage_speed: Optional[float] = Field(None, gt=0)
     last_stage_speed: Optional[float] = Field(None, gt=0)
     lactate_profile: List[LactatePoint] = Field(default_factory=list)
+    lactate_thresholds: Dict[str, Any] = Field(default_factory=dict)
 
 class RSI(BaseModel):
     avant: Optional[float] = None

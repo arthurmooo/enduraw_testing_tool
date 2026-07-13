@@ -717,6 +717,12 @@ class XmlMatchTab(ctk.CTkFrame):
             command=self._export_all_matches
         )
         self.export_all_btn.grid(row=0, column=1, padx=5)
+        ctk.CTkButton(
+            match_header,
+            text="Ouvrir les exports",
+            width=140,
+            command=self._open_output_folder,
+        ).grid(row=0, column=2, padx=5)
         
         self.match_list = ctk.CTkScrollableFrame(match_panel, height=150)
         self.match_list.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
@@ -727,6 +733,19 @@ class XmlMatchTab(ctk.CTkFrame):
         self._refresh_xmls()
         self._refresh_profiles()
         self._refresh_matches()
+
+    def _open_output_folder(self):
+        """Ouvre le dossier JSON de la session active."""
+        output_dir = self.session_manager.get_output_dir()
+        if not output_dir:
+            messagebox.showwarning("Exports", "Chargez d'abord une session.")
+            return
+        try:
+            path = Path(output_dir)
+            path.mkdir(parents=True, exist_ok=True)
+            _open_local_folder(path)
+        except Exception as error:
+            messagebox.showerror("Exports", f"Ouverture impossible:\n{error}")
     
     def _refresh_xmls(self):
         for item in self.xml_items:

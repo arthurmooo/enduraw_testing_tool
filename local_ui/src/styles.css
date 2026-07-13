@@ -210,6 +210,16 @@ input:focus-visible {
   font-size: 12px;
 }
 
+.scale-controls select {
+  max-width: 120px;
+  border: 0;
+  border-radius: 5px;
+  padding: 0 6px;
+  color: #f8fafc;
+  background: #102238;
+  font-size: 12px;
+}
+
 .processing-control button:hover,
 .processing-control button.active,
 .scale-controls button:hover {
@@ -388,6 +398,11 @@ input:focus-visible {
 
 .chart-body {
   position: relative;
+}
+
+.deferred-chart-slot {
+  min-width: 0;
+  min-height: 290px;
 }
 
 .marker-popover {
@@ -807,6 +822,58 @@ td {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.ec-plot-wrap {
+  position: relative;
+}
+
+.ec-plot-controls {
+  position: absolute;
+  z-index: 3;
+  top: 4px;
+  right: 4px;
+  background: rgba(6, 20, 36, 0.88);
+}
+
+.lactate-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.lactate-enable input {
+  accent-color: #10d38f;
+}
+
+.lactate-workspace {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.8fr) minmax(480px, 1.2fr);
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.table-number-input {
+  width: 92px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  padding: 6px 8px;
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.lactate-threshold-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1050px) {
+  .lactate-workspace {
+    grid-template-columns: 1fr;
+  }
 }
 
 .active-action {

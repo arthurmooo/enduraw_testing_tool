@@ -70,6 +70,7 @@ export interface MetaSoftWarmupStage {
   end_seconds: number | null;
   point_count: number;
   native_de?: Record<string, { value: number; unit: string; source: string }>;
+  source?: "detected" | "manual";
 }
 
 export interface MetaSoftRunningEconomy {
@@ -116,7 +117,33 @@ export interface ManualRunningEconomyPayload {
   match_id: string;
   rows: ManualRunningEconomyRow[];
   stage_selections?: Array<{ stage_index: number; enabled: boolean }>;
+  rest_baseline?: ManualRunningEconomyRestBaseline | null;
   warnings?: MetaSoftWarning[];
+}
+
+export interface ManualRunningEconomyRestSelection {
+  start_seconds: number;
+  end_seconds: number;
+  exclusions: ManualRunningEconomyExclusion[];
+}
+
+export interface ManualRunningEconomyRestBaseline extends ManualRunningEconomyRestSelection {
+  vo2_ml_min: number;
+  vco2_ml_min: number;
+  point_count: number;
+  source: string;
+}
+
+export interface LactateMeasurementDraft {
+  type: "rest_before" | "stage" | "rest_after";
+  speed: number | null;
+  lactate_mmol_l: number | null;
+}
+
+export interface LactateTestDraft {
+  active: boolean;
+  measurements: LactateMeasurementDraft[];
+  thresholds: { sl1?: number | null; sl2?: number | null };
 }
 
 export interface MetaSoftWarning {
@@ -212,13 +239,14 @@ export interface MetaSoftDraftPayload {
   marker_selections?: MarkerSelectionPayload[];
   manual_running_economy_selections?: Array<{
     stage_index: number;
+    source?: "detected" | "manual";
     start_seconds: number;
     end_seconds: number;
     exclusions: ManualRunningEconomyExclusion[];
   }>;
   manual_running_economy_stage_selections?: Array<{ stage_index: number; enabled: boolean }>;
-  manual_running_economy_rest_selection?: Record<string, unknown>;
-  lactate_test?: Record<string, unknown>;
+  manual_running_economy_rest_selection?: ManualRunningEconomyRestSelection;
+  lactate_test?: LactateTestDraft;
 }
 
 export interface LocalAnalysisPayload {

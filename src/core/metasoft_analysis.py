@@ -13,6 +13,7 @@ from math import isfinite
 
 MIN_STABLE_SPEED_STAGE_SECONDS = 60
 MIN_RUNNING_SPEED_KMH = 6.0
+MIN_MANUAL_ECONOMY_SECONDS = 30
 
 
 def build_metasoft_analysis(parsed: dict, manual_mass_kg: Optional[float] = None) -> dict:
@@ -148,6 +149,43 @@ def compute_rest_baseline(points: list[dict]) -> Optional[dict]:
     }
 
 
+def compute_manual_rest_baseline(points: list[dict], selection: dict) -> dict:
+    """Calcule le repos officiel sur la plage choisie et ses exclusions."""
+    if not isinstance(selection, dict):
+        raise ValueError("Selection de repos EC invalide.")
+    rest_points = [point for point in points if point.get("phase") == "Repos"]
+    rest_times = [point.get("t_seconds") for point in rest_points]
+    rest_times = [value for value in rest_times if isinstance(value, (int, float))]
+    if not rest_times:
+        raise ValueError("Phase Repos absente.")
+    start = _finite_number(selection.get("start_seconds"), "rest.start_seconds")
+    end = _finite_number(selection.get("end_seconds"), "rest.end_seconds")
+    if start < min(rest_times) or end > max(rest_times) or start >= end:
+        raise ValueError("Bornes de repos EC invalides.")
+    exclusions = _normalise_manual_exclusions(selection.get("exclusions", []), start, end)
+    selected = [
+        point for point in _points_between(rest_points, start, end)
+        if not _manual_is_excluded(point.get("t_seconds"), exclusions)
+    ]
+    usable = [
+        point for point in selected
+        if _vo2_ml_min(point) is not None and _vco2_ml_min(point)["value"] is not None
+    ]
+    if not usable:
+        raise ValueError("Aucun point VO2/VCO2 utilisable dans le repos choisi.")
+    vco2 = [_vco2_ml_min(point) for point in usable]
+    return {
+        "vo2_ml_min": round(mean(_vo2_ml_min(point) for point in usable), 3),
+        "vco2_ml_min": round(mean(item["value"] for item in vco2), 3),
+        "vco2_source": _vco2_source(vco2),
+        "point_count": len(usable),
+        "start_seconds": round(start, 3),
+        "end_seconds": round(end, 3),
+        "exclusions": exclusions,
+        "source": "manual_rest_selection",
+    }
+
+
 def compute_running_economy(
     stage: dict,
     rest_baseline: Optional[dict],
@@ -194,6 +232,7 @@ def build_manual_running_economy(
     selections: list[dict],
     profile_vo2max_ml_kg_min: Optional[float] = None,
     vo2max_source: str = "profile.stress_test_results.measured_vo2max",
+    rest_selection: Optional[dict] = None,
 ) -> dict:
     """Recalcule l'EC manuelle officielle depuis les selections UI.
 
@@ -205,7 +244,11 @@ def build_manual_running_economy(
         raise ValueError("selections doit etre une liste.")
     stages = {stage.get("stage_index"): stage for stage in analysis.get("warmup_stages", [])}
     points = analysis.get("points", [])
-    rest = analysis.get("computed", {}).get("rest_baseline")
+    rest = (
+        compute_manual_rest_baseline(points, rest_selection)
+        if rest_selection is not None
+        else analysis.get("computed", {}).get("rest_baseline")
+    )
     xml_mass = _positive_number(analysis.get("athlete", {}).get("weight_kg"))
     vo2max = _positive_number(profile_vo2max_ml_kg_min)
     rows = []
@@ -228,6 +271,7 @@ def build_manual_running_economy(
 
     return {
         "source": "python.metasoft_analysis.manual_running_economy",
+        "rest_baseline": rest,
         "rows": rows,
         "warnings": warnings,
     }
@@ -243,16 +287,24 @@ def _manual_running_economy_row(
     selection: dict,
 ) -> tuple[dict, list[dict]]:
     stage_index = _selection_int(selection.get("stage_index"), "stage_index")
+    selection_source = selection.get("source", "detected")
+    if selection_source not in {"detected", "manual"}:
+        raise ValueError("Source de selection EC invalide.")
     stage = stages.get(stage_index)
-    if not stage:
-        raise ValueError(f"Palier EC inconnu: {stage_index}.")
-
-    stage_start = _finite_number(stage.get("start_seconds"), "stage.start_seconds")
-    stage_end = _finite_number(stage.get("end_seconds"), "stage.end_seconds")
     start = _finite_number(selection.get("start_seconds"), "start_seconds")
     end = _finite_number(selection.get("end_seconds"), "end_seconds")
-    if start < stage_start or end > stage_end or start >= end:
-        raise ValueError("Bornes EC manuelle invalides.")
+    if selection_source == "detected":
+        if not stage:
+            raise ValueError(f"Palier EC inconnu: {stage_index}.")
+        stage_start = _finite_number(stage.get("start_seconds"), "stage.start_seconds")
+        stage_end = _finite_number(stage.get("end_seconds"), "stage.end_seconds")
+        if start < stage_start or end > stage_end or start >= end:
+            raise ValueError("Bornes EC manuelle invalides.")
+    else:
+        times = [point.get("t_seconds") for point in points]
+        times = [value for value in times if isinstance(value, (int, float))]
+        if not times or start < min(times) or end > max(times) or end - start < MIN_MANUAL_ECONOMY_SECONDS:
+            raise ValueError("Une zone EC libre doit durer au moins 30 s et rester dans le test.")
 
     exclusions = _normalise_manual_exclusions(
         selection.get("exclusions", []),
@@ -272,13 +324,20 @@ def _manual_running_economy_row(
         if _number(point, "vo2_l_min") is not None and _number(point, "vco2_l_min") is not None
     ]
     warnings = []
-    speed_m_min = round(stage.get("speed_kmh", 0) * 1000 / 60, 3)
+    speed_values = [
+        value for point in usable_points
+        if (value := _number(point, "speed_kmh")) is not None
+    ]
+    speed_kmh = stage.get("speed_kmh") if stage else (mean(speed_values) if speed_values else None)
+    if speed_kmh is None or speed_kmh <= 0:
+        raise ValueError(f"Vitesse positive absente de la zone EC {stage_index}.")
+    speed_m_min = round(speed_kmh * 1000 / 60, 3)
     vo2_l_min = _average_metric(usable_points, "vo2_l_min")
     vo2_ml_kg_min = _average_metric(usable_points, "vo2_ml_kg_min")
     vco2_l_min = _average_metric(usable_points, "vco2_l_min")
     row = {
         "stage_index": stage_index,
-        "speed_kmh": stage.get("speed_kmh"),
+        "speed_kmh": round(speed_kmh, 3),
         "speed_m_min": speed_m_min,
         "start_seconds": round(start, 3),
         "end_seconds": round(end, 3),
@@ -289,7 +348,7 @@ def _manual_running_economy_row(
         "ec_j_kg_m": None,
         "percent_vo2max": None,
         "sources": {
-            "selection": "manual_stable_stage",
+            "selection": "manual_free_zone" if selection_source == "manual" else "manual_stable_stage",
             "calculation": "python.metasoft_analysis.manual_running_economy",
             "mass": "xml_metasoft",
             "vo2max": vo2max_source,
@@ -299,6 +358,11 @@ def _manual_running_economy_row(
     }
     for key in ("de_kcal_h", "decho_kcal_h", "defat_kcal_h", "depro_kcal_h"):
         row[key] = _round_optional(_average_metric(usable_points, key), 3)
+
+    if selection_source == "manual" and speed_values and max(speed_values) - min(speed_values) > 0.5:
+        warning = _manual_warning(stage_index, "manual_speed_unstable")
+        warnings.append(warning)
+        row["warnings"].append(warning)
 
     if mass_kg is None:
         warning = _manual_warning(stage_index, "missing_xml_mass_kg")

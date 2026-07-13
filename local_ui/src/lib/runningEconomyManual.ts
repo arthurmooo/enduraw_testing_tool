@@ -1,5 +1,6 @@
 import type {
   ManualRunningEconomyExclusion,
+  ManualRunningEconomyRestBaseline,
   ManualRunningEconomyRow,
   MetaSoftAnalysis,
   MetaSoftMetricKey,
@@ -17,6 +18,7 @@ export interface ManualEconomyDraft {
 
 export interface ManualRunningEconomySelection {
   stage_index: number;
+  source: "detected" | "manual";
   start_seconds: number;
   end_seconds: number;
   exclusions: ManualRunningEconomyExclusion[];
@@ -42,8 +44,12 @@ export function initialEconomyDraft(stage: MetaSoftWarmupStage): ManualEconomyDr
 export function clampDraftToStage(draft: ManualEconomyDraft, stage: MetaSoftWarmupStage): ManualEconomyDraft {
   const min = numberOr(stage.start_seconds, draft.startSeconds);
   const max = numberOr(stage.end_seconds, draft.endSeconds);
-  const start = clamp(Math.min(draft.startSeconds, draft.endSeconds), min, max);
-  const end = clamp(Math.max(draft.startSeconds, draft.endSeconds), start, max);
+  let start = clamp(Math.min(draft.startSeconds, draft.endSeconds), min, max);
+  let end = clamp(Math.max(draft.startSeconds, draft.endSeconds), start, max);
+  if (stage.source === "manual" && max - min >= 30 && end - start < 30) {
+    end = Math.min(max, start + 30);
+    start = Math.max(min, end - 30);
+  }
   return {
     ...draft,
     stageIndex: stage.stage_index,
@@ -85,6 +91,7 @@ export function buildManualEconomyPreviewRow(
   stage: MetaSoftWarmupStage,
   draft: ManualEconomyDraft,
   profileVo2maxMlKgMin: number | null,
+  manualRestBaseline?: ManualRunningEconomyRestBaseline | null,
 ): ManualRunningEconomyRow {
   const bounded = clampDraftToStage(draft, stage);
   const selectedPoints = pointsInRange(analysis.points, bounded.startSeconds, bounded.endSeconds);
@@ -93,9 +100,11 @@ export function buildManualEconomyPreviewRow(
     numeric(point.values.vo2_l_min) !== null && numeric(point.values.vco2_l_min) !== null
   ));
   const noUsablePoints = selectedPoints.length > 0 && usablePoints.length === 0;
-  const rest = analysis.computed.rest_baseline;
+  const rest = manualRestBaseline ?? analysis.computed.rest_baseline;
   const mass = analysis.athlete.weight_kg;
-  const speedMMin = stage.speed_kmh * 1000 / 60;
+  const measuredSpeed = average(usablePoints, "speed_kmh");
+  const speedKmh = stage.source === "manual" ? measuredSpeed ?? 0 : stage.speed_kmh;
+  const speedMMin = speedKmh * 1000 / 60;
   const vo2 = average(usablePoints, "vo2_l_min");
   const vo2MlKg = average(usablePoints, "vo2_ml_kg_min");
   const vco2 = average(usablePoints, "vco2_l_min");
@@ -116,7 +125,7 @@ export function buildManualEconomyPreviewRow(
 
   return {
     stage_index: stage.stage_index,
-    speed_kmh: stage.speed_kmh,
+    speed_kmh: roundOrNull(speedKmh, 3) ?? 0,
     start_seconds: bounded.startSeconds,
     end_seconds: bounded.endSeconds,
     exclusions: bounded.exclusions,
@@ -131,8 +140,15 @@ export function buildManualEconomyPreviewRow(
     decho_kcal_h: roundOrNull(average(usablePoints, "decho_kcal_h"), 3),
     defat_kcal_h: roundOrNull(average(usablePoints, "defat_kcal_h"), 3),
     depro_kcal_h: roundOrNull(average(usablePoints, "depro_kcal_h"), 3),
-    sources: { selection: "preview_manual_stable_stage", artefacts: "excluded_raw_points" },
-    warning: noUsablePoints ? "Aucun point VO2/VCO2 utilisable." : null,
+    sources: {
+      selection: stage.source === "manual" ? "preview_manual_free_zone" : "preview_manual_stable_stage",
+      artefacts: "excluded_raw_points",
+    },
+    warning: noUsablePoints
+      ? "Aucun point VO2/VCO2 utilisable."
+      : stage.source === "manual" && speedSpread(usablePoints) > 0.5
+        ? "Vitesse variable de plus de 0,5 km/h dans cette zone."
+        : null,
   };
 }
 
@@ -143,9 +159,31 @@ export function manualEconomySelection(
   const bounded = clampDraftToStage(draft, stage);
   return {
     stage_index: bounded.stageIndex,
+    source: stage.source ?? "detected",
     start_seconds: bounded.startSeconds,
     end_seconds: bounded.endSeconds,
     exclusions: bounded.exclusions,
+  };
+}
+
+export function buildManualRestPreview(
+  points: MetaSoftPoint[],
+  draft: ManualEconomyDraft,
+): ManualRunningEconomyRestBaseline | null {
+  const selected = pointsInRange(points, draft.startSeconds, draft.endSeconds)
+    .filter((point) => point.phase === "Repos" && !isExcluded(point.t_seconds, draft.exclusions))
+    .filter((point) => numeric(point.values.vo2_l_min) !== null && numeric(point.values.vco2_l_min) !== null);
+  const vo2 = average(selected, "vo2_l_min");
+  const vco2 = average(selected, "vco2_l_min");
+  if (vo2 === null || vco2 === null) return null;
+  return {
+    start_seconds: draft.startSeconds,
+    end_seconds: draft.endSeconds,
+    exclusions: draft.exclusions,
+    vo2_ml_min: Number((vo2 * 1000).toFixed(3)),
+    vco2_ml_min: Number((vco2 * 1000).toFixed(3)),
+    point_count: selected.length,
+    source: "preview_manual_rest_selection",
   };
 }
 
@@ -179,6 +217,11 @@ function average(points: MetaSoftPoint[], key: MetaSoftMetricKey): number | null
   const values = points.map((point) => numeric(point.values[key])).filter((value): value is number => value !== null);
   if (!values.length) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function speedSpread(points: MetaSoftPoint[]): number {
+  const values = points.map((point) => numeric(point.values.speed_kmh)).filter((value): value is number => value !== null);
+  return values.length ? Math.max(...values) - Math.min(...values) : 0;
 }
 
 function isExcluded(tSeconds: number | null, exclusions: ManualRunningEconomyExclusion[]): boolean {

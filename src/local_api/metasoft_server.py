@@ -360,6 +360,13 @@ class LocalMetaSoftServer:
 
     def _build_manual_running_economy(self, context, match_id, selections, payload, markers=None):
         """Calcule l'EC officielle depuis l'analyse Python, sans valeurs React."""
+        rest_selection = payload.get("manual_running_economy_rest_selection")
+        if rest_selection is not None and not isinstance(rest_selection, dict):
+            return _error(
+                "invalid_running_economy_manual",
+                "Selection de repos EC invalide.",
+                status=400,
+            )
         vo2max_result = self._manual_running_economy_vo2max(context, payload, markers)
         if not vo2max_result["ok"]:
             return vo2max_result
@@ -369,6 +376,7 @@ class LocalMetaSoftServer:
                 selections,
                 profile_vo2max_ml_kg_min=vo2max_result["value"],
                 vo2max_source=vo2max_result["source"],
+                rest_selection=rest_selection,
             )
         except ValueError as exc:
             return _error(
@@ -626,6 +634,11 @@ class LocalMetaSoftServer:
             metasoft_marker_to_stress_patch(marker)
             for marker in markers_result["markers"].values()
         ]
+        lactate_result = _lactate_patch(payload)
+        if not lactate_result["ok"]:
+            return lactate_result
+        if lactate_result["present"]:
+            patch_results.append(lactate_result["patch_result"])
         patch_result = _merge_patch_results(patch_results)
         if markers_result["markers"] and patch_result.get("status") != "ok":
             return _error(
@@ -922,6 +935,7 @@ def _manual_running_economy_selections(payload, key="selections"):
             "start_seconds": item.get("start_seconds"),
             "end_seconds": item.get("end_seconds"),
             "exclusions": item.get("exclusions", []),
+            "source": item.get("source", "detected"),
         })
     return result
 
@@ -946,6 +960,78 @@ def _manual_running_economy_stage_selections(payload):
             return None
         result.append({"stage_index": stage_index, "enabled": enabled})
     return result
+
+
+def _lactate_patch(payload):
+    """Valide le protocole lactate independant avant ecriture profil."""
+    if "lactate_test" not in payload:
+        return {"ok": True, "present": False}
+    data = payload.get("lactate_test")
+    if not isinstance(data, dict) or not isinstance(data.get("active"), bool):
+        return _error("invalid_lactate_test", "Test lactate invalide.", status=400)
+    if not data["active"]:
+        return {
+            "ok": True,
+            "present": True,
+            "patch_result": {
+                "status": "ok",
+                "patch": {"stress_test_results": {"lactate_profile": [], "lactate_thresholds": {}}},
+                "delete_paths": [],
+                "warnings": [],
+            },
+        }
+    measurements = data.get("measurements")
+    if not isinstance(measurements, list) or len(measurements) < 3:
+        return _error("invalid_lactate_test", "Mesures lactate incompletes.", status=400)
+    normalised = []
+    allowed_types = {"rest_before", "stage", "rest_after"}
+    for index, item in enumerate(measurements):
+        if not isinstance(item, dict) or item.get("type") not in allowed_types:
+            return _error("invalid_lactate_test", "Ligne lactate invalide.", status=400)
+        speed = _number(item.get("speed"))
+        lactate = _number(item.get("lactate_mmol_l"))
+        if speed is None or not 0 <= speed <= 40 or lactate is None or not 0 <= lactate <= 30:
+            return _error("invalid_lactate_test", "Vitesse ou lactate hors bornes.", status=400)
+        if item["type"] == "stage" and speed <= 0:
+            return _error("invalid_lactate_test", "Une vitesse de palier doit etre positive.", status=400)
+        normalised.append({
+            "type": item["type"],
+            "order": index,
+            "speed": round(speed, 3),
+            "lactate_mmol_l": round(lactate, 3),
+        })
+    if normalised[0]["type"] != "rest_before" or normalised[-1]["type"] != "rest_after":
+        return _error("invalid_lactate_test", "Le protocole doit commencer et finir au repos.", status=400)
+    thresholds = data.get("thresholds", {})
+    if not isinstance(thresholds, dict):
+        return _error("invalid_lactate_test", "Seuils lactate invalides.", status=400)
+    resolved_thresholds = {}
+    for name in ("sl1", "sl2"):
+        value = thresholds.get(name)
+        if value is None:
+            continue
+        index = _integer(value)
+        if index is None or index < 0 or index >= len(normalised):
+            return _error("invalid_lactate_test", f"{name.upper()} lactate invalide.", status=400)
+        if normalised[index]["type"] != "stage":
+            return _error("invalid_lactate_test", f"{name.upper()} doit viser un palier.", status=400)
+        resolved_thresholds[name] = {
+            "measurement_index": index,
+            **deepcopy(normalised[index]),
+        }
+    return {
+        "ok": True,
+        "present": True,
+        "patch_result": {
+            "status": "ok",
+            "patch": {"stress_test_results": {
+                "lactate_profile": normalised,
+                "lactate_thresholds": resolved_thresholds,
+            }},
+            "delete_paths": [],
+            "warnings": [],
+        },
+    }
 
 
 def _marker_from_selection(points, selection):

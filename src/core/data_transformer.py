@@ -258,14 +258,19 @@ class DataTransformer:
         mesures = []
         for entry in lactate_profile:
             if entry.get('speed') is not None and entry.get('lactate_mmol_l') is not None:
-                mesures.append({
+                mesure = {
                     "vitesse": entry['speed'],
                     "lactate": entry['lactate_mmol_l']
-                })
+                }
+                for key in ('type', 'order'):
+                    if entry.get(key) is not None:
+                        mesure[key] = entry[key]
+                mesures.append(mesure)
         
         return {
             "actif": len(mesures) > 0,
-            "mesures": mesures
+            "mesures": mesures,
+            "seuils": manual_input.get('stress_test_results', {}).get('lactate_thresholds', {}),
         }
     
     def _build_patient_info(

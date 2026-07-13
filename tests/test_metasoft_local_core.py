@@ -415,6 +415,62 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         self.assertEqual(row["de_kcal_h"], 750)
         self.assertEqual(row["percent_vo2max"], 70)
 
+    def test_manual_running_economy_accepts_free_zone_and_manual_rest(self) -> None:
+        parsed = {
+            "athlete": {"weight_kg": 60},
+            "points": [
+                _point(0, "Repos", 0),
+                _point(10, "Repos", 0),
+                _point(20, "Repos", 0),
+                _point(60, "Exercice", 10),
+                _point(90, "Exercice", 10),
+                _point(120, "Exercice", 10),
+            ],
+            "warnings": [],
+        }
+        parsed["points"][1]["values"].update({"vo2_l_min": 9, "vco2_l_min": 8})
+        analysis = build_metasoft_analysis(parsed)
+
+        manual = build_manual_running_economy(
+            analysis,
+            [{
+                "stage_index": 1001,
+                "source": "manual",
+                "start_seconds": 60,
+                "end_seconds": 120,
+                "exclusions": [],
+            }],
+            profile_vo2max_ml_kg_min=50,
+            rest_selection={
+                "start_seconds": 0,
+                "end_seconds": 20,
+                "exclusions": [{"start_seconds": 9, "end_seconds": 11}],
+            },
+        )
+
+        self.assertEqual(analysis["warmup_stages"], [])
+        self.assertEqual(manual["rest_baseline"]["vo2_ml_min"], 1000)
+        self.assertEqual(manual["rest_baseline"]["point_count"], 2)
+        self.assertEqual(manual["rows"][0]["speed_kmh"], 10)
+        self.assertEqual(manual["rows"][0]["sources"]["selection"], "manual_free_zone")
+        self.assertIsNotNone(manual["rows"][0]["ec_j_kg_m"])
+
+    def test_lactate_export_keeps_rest_protocol_and_independent_thresholds(self) -> None:
+        profile = _manual_profile()
+        profile["stress_test_results"]["lactate_profile"] = [
+            {"type": "rest_before", "order": 0, "speed": 0, "lactate_mmol_l": 1.1},
+            {"type": "stage", "order": 1, "speed": 10, "lactate_mmol_l": 2.0},
+            {"type": "rest_after", "order": 2, "speed": 0, "lactate_mmol_l": 1.8},
+        ]
+        profile["stress_test_results"]["lactate_thresholds"] = {
+            "sl1": {"measurement_index": 1, "speed": 10, "lactate_mmol_l": 2.0},
+        }
+
+        payload = DataTransformer().transform({}, profile)
+
+        self.assertEqual(payload["test_lactate"]["mesures"][0]["type"], "rest_before")
+        self.assertEqual(payload["test_lactate"]["seuils"]["sl1"]["speed"], 10)
+
     def test_vco2_derives_from_ve_ratio_when_vo2_rer_is_unavailable(self) -> None:
         points = [{
             "values": {"ve_l_min": 44.0, "ve_vco2": 22.0},

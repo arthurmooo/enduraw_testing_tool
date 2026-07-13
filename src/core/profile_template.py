@@ -101,7 +101,8 @@ def get_empty_profile() -> Dict[str, Any]:
             'vma': None,
             'first_stage_speed': None,
             'last_stage_speed': None,
-            'lactate_profile': []
+            'lactate_profile': [],
+            'lactate_thresholds': {}
         },
         
         # Section 9: Training Advice

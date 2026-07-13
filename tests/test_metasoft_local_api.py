@@ -406,6 +406,55 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertAlmostEqual(row["percent_vo2max"], 100, places=2)
         self.assertEqual(row["sources"]["vo2max"], "metasoft_marker.vo2_max")
 
+    def test_manual_running_economy_api_uses_free_zone_and_selected_rest(self) -> None:
+        match_id = self._weighted_match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/running-economy/manual",
+            {
+                "selections": [{
+                    "stage_index": 1001,
+                    "source": "manual",
+                    "start_seconds": 60,
+                    "end_seconds": 120,
+                    "exclusions": [],
+                }],
+                "manual_running_economy_rest_selection": {
+                    "start_seconds": 0,
+                    "end_seconds": 10,
+                    "exclusions": [],
+                },
+            },
+        )
+
+        self.assertEqual(status, 200)
+        data = payload["manual_running_economy"]
+        self.assertEqual(data["rest_baseline"]["source"], "manual_rest_selection")
+        self.assertEqual(data["rows"][0]["sources"]["selection"], "manual_free_zone")
+
+    def test_report_persists_independent_lactate_protocol_and_thresholds(self) -> None:
+        match_id = self._match_id()
+        lactate_test = {
+            "active": True,
+            "measurements": [
+                {"type": "rest_before", "speed": 0, "lactate_mmol_l": 1.1},
+                {"type": "stage", "speed": 10, "lactate_mmol_l": 2.0},
+                {"type": "stage", "speed": 12, "lactate_mmol_l": 3.5},
+                {"type": "rest_after", "speed": 0, "lactate_mmol_l": 2.2},
+            ],
+            "thresholds": {"sl1": 1, "sl2": 2},
+        }
+
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {"marker_selections": [], "lactate_test": lactate_test},
+        )
+
+        self.assertEqual(status, 200)
+        stress = self.session_manager.get_profile(self.profile_name)["stress_test_results"]
+        self.assertEqual(stress["lactate_profile"][0]["type"], "rest_before")
+        self.assertEqual(stress["lactate_thresholds"]["sl2"]["speed"], 12)
+
     def test_manual_running_economy_persists_disabled_stage_adjustments(self) -> None:
         match_id = self._weighted_two_stage_match_id()
         stage_selections = [

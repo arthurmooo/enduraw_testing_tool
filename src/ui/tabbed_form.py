@@ -26,6 +26,7 @@ class TabbedInputForm(ctk.CTkFrame):
         self.protocol_store = protocol_store
         self.entries: Dict[str, Dict] = {}
         self.lactate_entries: List[Dict] = []
+        self.lactate_thresholds: Dict[str, Any] = {}
         self.summary_labels: Dict[str, ctk.CTkLabel] = {}
 
         self._init_field_mapping()
@@ -850,6 +851,7 @@ class TabbedInputForm(ctk.CTkFrame):
         return row + 1
 
     def _add_lactate_entry(self):
+        self.lactate_thresholds = {}
         row = len(self.lactate_entries) + 1
         ef = ctk.CTkFrame(self.lactate_frame, fg_color="transparent")
         ef.grid(row=row, column=0, columnspan=3, sticky="ew", pady=2)
@@ -875,6 +877,7 @@ class TabbedInputForm(ctk.CTkFrame):
             if entry['frame'] == frame:
                 frame.destroy()
                 self.lactate_entries.pop(i)
+                self.lactate_thresholds = {}
                 break
 
     def _get_lactate_data(self) -> List[Dict]:
@@ -884,7 +887,11 @@ class TabbedInputForm(ctk.CTkFrame):
                 sv = entry['speed'].get().replace(',', '.')
                 lv = entry['lactate'].get().replace(',', '.')
                 if sv and lv:
-                    measurements.append({'speed': float(sv), 'lactate_mmol_l': float(lv)})
+                    measurement = {'speed': float(sv), 'lactate_mmol_l': float(lv)}
+                    for key in ('type', 'order'):
+                        if entry.get(key) is not None:
+                            measurement[key] = entry[key]
+                    measurements.append(measurement)
             except ValueError:
                 pass
         return measurements
@@ -900,11 +907,15 @@ class TabbedInputForm(ctk.CTkFrame):
                 self.lactate_entries[idx]['speed'].insert(0, str(m['speed']))
             if m.get('lactate_mmol_l') is not None:
                 self.lactate_entries[idx]['lactate'].insert(0, str(m['lactate_mmol_l']))
+            for key in ('type', 'order'):
+                if m.get(key) is not None:
+                    self.lactate_entries[idx][key] = m[key]
 
     def _clear_lactate(self):
         for entry in self.lactate_entries[:]:
             entry['frame'].destroy()
         self.lactate_entries.clear()
+        self.lactate_thresholds = {}
 
     # ------------------------------------------------------------------ #
     #  Time formatting                                                    #
@@ -1071,6 +1082,9 @@ class TabbedInputForm(ctk.CTkFrame):
         # Lactate
         lactate_data = data.get('stress_test_results', {}).get('lactate_profile', [])
         self._set_lactate_data(lactate_data)
+        self.lactate_thresholds = dict(
+            data.get('stress_test_results', {}).get('lactate_thresholds', {})
+        )
 
         # Refresh summary if on Analyse tab
         self._update_summary()
@@ -1334,6 +1348,7 @@ class TabbedInputForm(ctk.CTkFrame):
                 'first_stage_speed': flat_data.get('first_stage_speed'),
                 'last_stage_speed': flat_data.get('last_stage_speed'),
                 'lactate_profile': lactate_data,
+                'lactate_thresholds': self._resolved_lactate_thresholds(lactate_data),
             },
             'conseils_entrainements': flat_data.get('conseils_entrainements', ''),
             'rsi': {
@@ -1360,3 +1375,18 @@ class TabbedInputForm(ctk.CTkFrame):
             },
             'lactatemie_repos': flat_data.get('lactatemie_repos'),
         }
+
+    def _resolved_lactate_thresholds(self, measurements: List[Dict]) -> Dict[str, Any]:
+        """Resynchronise les seuils React si une valeur lactate a ete editee ici."""
+        resolved = {}
+        for name, threshold in self.lactate_thresholds.items():
+            if not isinstance(threshold, dict):
+                continue
+            index = threshold.get('measurement_index')
+            if not isinstance(index, int) or not 0 <= index < len(measurements):
+                continue
+            resolved[name] = {
+                'measurement_index': index,
+                **measurements[index],
+            }
+        return resolved
