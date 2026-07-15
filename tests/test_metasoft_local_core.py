@@ -595,6 +595,30 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         self.assertEqual(marker["values"]["vo2_ml_kg_min"], 45)
         self.assertEqual(marker["values"]["speed_kmh"], 14)
 
+    def test_marker_time_block_excludes_upper_bound_and_hidden_phase(self) -> None:
+        points = [
+            {**_marker_point(0, 100, 1.0, 10, 0), "phase": "Repos"},
+            {**_marker_point(4, 104, 1.4, 14, 0), "phase": "Repos"},
+            {**_marker_point(4, 999, 9.9, 99, 0), "phase": "Exercice"},
+            {**_marker_point(5, 200, 2.0, 20, 0), "phase": "Repos"},
+        ]
+
+        marker = build_metasoft_marker(
+            points,
+            "SV1",
+            window_start_seconds=0,
+            window_end_seconds=5,
+            window_end_exclusive=True,
+            phase_filter="Repos",
+        )
+
+        self.assertEqual(marker["status"], "ok")
+        self.assertEqual(marker["point_count"], 2)
+        self.assertEqual(marker["values"]["fc_bpm"], 102)
+        self.assertEqual(marker["values"]["vo2_ml_kg_min"], 12)
+        self.assertTrue(marker["window_end_exclusive"])
+        self.assertEqual(marker["phase_filter"], "Repos")
+
     def test_marker_ignores_smoothed_or_aggregated_values(self) -> None:
         points = [_marker_point(10, 120, 2.0, 40, 12)]
 

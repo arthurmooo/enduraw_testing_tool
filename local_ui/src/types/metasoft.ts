@@ -198,6 +198,8 @@ export interface MetaSoftMarker {
   t_seconds: number | null;
   window_start_seconds: number | null;
   window_end_seconds: number | null;
+  window_end_exclusive?: boolean;
+  phase_filter?: string | null;
   phase?: string | null;
   point_count: number;
   values: {
@@ -241,6 +243,8 @@ export interface MarkerSelectionPayload {
   t_seconds?: number | null;
   window_start_seconds?: number | null;
   window_end_seconds?: number | null;
+  window_end_exclusive?: boolean;
+  phase_filter?: string | null;
 }
 
 export interface MetaSoftDraftPayload {
@@ -268,6 +272,7 @@ export interface LocalAnalysisPayload {
   analysis: MetaSoftAnalysis;
   manual_running_economy?: ManualRunningEconomyPayload | null;
   metasoft_draft?: MetaSoftDraftPayload | null;
+  lactate_profile_provenance_valid: boolean;
   confirmed_markers?: ConfirmedMarkers;
   deleted_markers?: MetaSoftMarkerName[];
   warnings: MetaSoftWarning[];

@@ -422,6 +422,42 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
             output_dir = Path(manager.get_output_dir())
             self.assertEqual(list(output_dir.iterdir()), [])
 
+    def test_export_guard_blocks_unreported_or_changed_lactates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = SessionManager(tmp_dir)
+            manager.create_session("2026-07-08", "contas")
+            profile = {
+                "email": "arthur@example.test",
+                "identity": {"first_name": "Arthur", "last_name": "Mo"},
+                "stress_test_results": {
+                    "lactate_profile": [
+                        {"type": "rest_before", "lactate_mmol_l": 1.1},
+                        {"type": "stage", "speed": 12, "lactate_mmol_l": 3.2},
+                    ],
+                    "lactate_thresholds": {},
+                },
+            }
+            profile_name = manager.add_profile(profile)
+            source_xml = Path(tmp_dir) / "metasoft.xml"
+            source_xml.write_text("<xml />", encoding="utf-8")
+            xml_filename = manager.import_xml(str(source_xml))
+            match = manager.create_match(profile_name, xml_filename)
+            xml_data = {"metasoft_analysis": {"athlete": {"athlete_name": "Mo Arthur"}}}
+
+            with self.assertRaisesRegex(ValueError, "lactate_provenance_stale"):
+                _validated_metasoft_export_markers(manager, match, xml_data, profile)
+
+            manager.record_metasoft_report(match, profile, {})
+            self.assertEqual(
+                _validated_metasoft_export_markers(manager, match, xml_data, profile),
+                {},
+            )
+
+            profile["stress_test_results"]["lactate_profile"][1]["lactate_mmol_l"] = 4.8
+            manager.update_profile(profile_name, profile)
+            with self.assertRaisesRegex(ValueError, "lactate_provenance_stale"):
+                _validated_metasoft_export_markers(manager, match, xml_data, profile)
+
     def test_valid_export_uses_exact_proven_profile_and_sidecar_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = SessionManager(tmp_dir)

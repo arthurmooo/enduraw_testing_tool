@@ -21,7 +21,7 @@ from core.metasoft_audit_export import (
     metasoft_audit_filename,
 )
 from utils.json_exporter import JsonExporter
-from core.session_manager import SessionManager
+from core.session_manager import SessionManager, metasoft_profile_has_lactates
 from core.mongo_service import MongoService
 from core.protocol_store import ProtocolStore
 from core.app_paths import (
@@ -103,7 +103,7 @@ def _validated_metasoft_export_markers(
     xml_data: Dict[str, Any],
     profile_data: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Bloque l'export si identite ou provenance marqueurs n'est pas prouvee."""
+    """Bloque l'export si identite ou provenance MetaSoft n'est pas prouvee."""
     analysis = xml_data.get("metasoft_analysis")
     if not isinstance(analysis, dict):
         # Le garde-fou ne change pas le contrat des anciens flux non MetaSoft.
@@ -117,9 +117,15 @@ def _validated_metasoft_export_markers(
 
     provenance = session_manager.validate_metasoft_report(match, profile_data)
     profile_markers = metasoft_unproven_profile_markers(profile_data, {})
+    profile_has_lactates = metasoft_profile_has_lactates(profile_data)
     if not provenance["valid"]:
         # Un report invalide explicite reste bloquant meme si le profil ne porte
         # aucun seuil; `missing` reste compatible avec un profil historiquement vide.
+        if profile_has_lactates and not profile_markers:
+            raise ValueError(
+                "lactate_provenance_stale: lactates MetaSoft absents ou perimes "
+                f"({provenance['reason']})."
+            )
         if profile_markers or match.metasoft_report is not None:
             raise ValueError(
                 "marker_provenance_stale: provenance MetaSoft absente ou perimee "

@@ -121,7 +121,12 @@ export default function App() {
         setDeletedMarkers(deleted);
         setDirtyMarkers(restoredDraft.dirty);
         setDraftRevision(0);
-        setLactateDraft(buildLactateDraft(result.profile, result.analysis, result.metasoft_draft?.lactate_test));
+        setLactateDraft(buildLactateDraft(
+          result.profile,
+          result.analysis,
+          result.metasoft_draft?.lactate_test,
+          result.lactate_profile_provenance_valid,
+        ));
         setLactateDirty(Boolean(result.metasoft_draft?.lactate_test));
         setDraftSaveStatus(result.metasoft_draft ? "Brouillon local restaure" : null);
         reportEditRevisionRef.current = 0;
@@ -252,13 +257,24 @@ export default function App() {
     mode: MarkerMode,
     windowStartSeconds?: number | null,
     windowEndSeconds?: number | null,
+    windowEndExclusive = false,
+    markerPhaseFilter: string | null = null,
   ) => {
     if (!payload) return;
     setDraftMarkers((current) => {
       if (!current) return current;
       return {
         ...current,
-        [marker]: buildDraftMarker(marker, payload.analysis.points, tSeconds, mode, windowStartSeconds, windowEndSeconds),
+        [marker]: buildDraftMarker(
+          marker,
+          payload.analysis.points,
+          tSeconds,
+          mode,
+          windowStartSeconds,
+          windowEndSeconds,
+          windowEndExclusive,
+          markerPhaseFilter,
+        ),
       };
     });
     markDirty(marker);
@@ -292,6 +308,8 @@ export default function App() {
           item.mode,
           start,
           end,
+          item.window_end_exclusive === true,
+          item.phase_filter ?? null,
         ),
       };
     });
@@ -379,7 +397,7 @@ export default function App() {
             {
               marker_selections: markerSelections,
               ...(manualEconomyPayload ?? {}),
-              ...(lactateDraft && lactateDirty ? { lactate_test: lactateDraft } : {}),
+              ...(lactateDraft ? { lactate_test: lactateDraft } : {}),
               ...(overwrite ? { conflict_policy: "overwrite" } : {}),
             },
           );
@@ -406,7 +424,12 @@ export default function App() {
           setDirtyMarkers(new Set());
           setDraftRevision(0);
           setDraftSaveStatus("Brouillon officialise");
-          setLactateDraft(buildLactateDraft(canonical.profile, canonical.analysis));
+          setLactateDraft(buildLactateDraft(
+            canonical.profile,
+            canonical.analysis,
+            null,
+            canonical.lactate_profile_provenance_valid,
+          ));
           setLactateDirty(false);
           setReport(response);
           setConflicts([]);

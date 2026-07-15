@@ -20,6 +20,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT_DIR / "src"
 sys.path.insert(0, str(SRC_DIR))
 
+from core.data_transformer import DataTransformer
 from core.metasoft_markers import build_metasoft_marker
 from core.session_manager import SessionManager
 from local_api.metasoft_server import LocalMetaSoftServer
@@ -974,6 +975,88 @@ class MetaSoftLocalApiTest(unittest.TestCase):
             updated["stress_test_results"]["measured_vo2max"],
             marker["values"]["vo2_ml_kg_min"],
         )
+
+    def test_report_uses_exact_visible_time_block_and_phase(self) -> None:
+        status, payload = self._post(
+            f"/api/matches/{self._match_id()}/profile/report",
+            {
+                "marker_selections": [{
+                    "name": "SV1",
+                    "action": "upsert",
+                    "mode": "range",
+                    "t_seconds": 75,
+                    "window_start_seconds": 60,
+                    "window_end_seconds": 90,
+                    "window_end_exclusive": True,
+                    "phase_filter": "Echauffement",
+                }],
+                "conflict_policy": "overwrite",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        marker = payload["confirmed_markers"]["SV1"]
+        self.assertEqual(marker["point_count"], 1)
+        self.assertEqual(marker["values"]["fc_bpm"], 120)
+        self.assertTrue(marker["window_end_exclusive"])
+        self.assertEqual(marker["phase_filter"], "Echauffement")
+
+    def test_unproven_profile_lactates_require_explicit_report_choice(self) -> None:
+        profile = self.session_manager.get_profile(self.profile_name)
+        for key in ("thresholds", "measured_vo2max", "max_hr", "vma"):
+            profile["stress_test_results"].pop(key, None)
+        profile["stress_test_results"].update({
+            "lactate_profile": [
+                {"type": "rest_before", "speed": 0, "lactate_mmol_l": 1.1},
+                {"type": "stage", "speed": 10, "lactate_mmol_l": 3.2},
+            ],
+            "lactate_thresholds": {
+                "sl1": {"measurement_index": 1, "type": "stage", "speed": 10},
+            },
+        })
+        self.session_manager.update_profile(self.profile_name, profile)
+        endpoint = f"/api/matches/{self._match_id()}/profile/report"
+
+        status, analysis = self._get(f"/api/matches/{self._match_id()}/analysis")
+
+        self.assertEqual(status, 200)
+        warning = next(item for item in analysis["warnings"] if item["blocking"])
+        self.assertEqual(warning["code"], "lactate_provenance_missing")
+        self.assertEqual(warning["reason"], "missing")
+        self.assertFalse(analysis["lactate_profile_provenance_valid"])
+
+        status, payload = self._post(endpoint, {"marker_selections": []})
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "lactate_selection_required")
+
+        status, _payload = self._post(
+            endpoint,
+            {
+                "marker_selections": [],
+                "lactate_test": {"active": False, "measurements": [], "thresholds": {}},
+                "conflict_policy": "overwrite",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        stress = self.session_manager.get_profile(self.profile_name)["stress_test_results"]
+        self.assertEqual(stress["lactate_profile"], [])
+        self.assertEqual(stress["lactate_thresholds"], {})
+        self.assertEqual(
+            DataTransformer().transform(
+                {},
+                self.session_manager.get_profile(self.profile_name),
+            )["test_lactate"],
+            {"actif": False, "mesures": []},
+        )
+        self.assertTrue(self.session_manager.validate_metasoft_report(
+            self.session_manager.matches[0],
+            self.session_manager.get_profile(self.profile_name),
+        )["valid"])
+        status, analysis = self._get(f"/api/matches/{self._match_id()}/analysis")
+        self.assertEqual(status, 200)
+        self.assertTrue(analysis["lactate_profile_provenance_valid"])
 
     def test_analysis_reloads_cumulative_confirmed_and_deleted_markers(self) -> None:
         match_id = self._match_id()

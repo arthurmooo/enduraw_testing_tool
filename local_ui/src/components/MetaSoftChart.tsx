@@ -40,7 +40,7 @@ import {
   type MarkerDragPreview,
   type MarkerDragTarget,
 } from "../lib/metasoftChartHelpers";
-import { MARKER_NAMES, secondsToClock } from "../lib/markerUtils";
+import { MARKER_NAMES, nearestPoint, secondsToClock } from "../lib/markerUtils";
 import type {
   ChartProcessingMode,
   DraftMarkers,
@@ -78,6 +78,8 @@ interface Props {
     mode: MarkerMode,
     windowStartSeconds?: number | null,
     windowEndSeconds?: number | null,
+    windowEndExclusive?: boolean,
+    phaseFilter?: string | null,
   ) => void;
   onDeleteMarker: (marker: MetaSoftMarkerName) => void;
   onChangeMarkerWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
@@ -238,6 +240,7 @@ function MetaSoftChartComponent({
       plotResetKey={String(timeZoomResetRevision)}
       smoothingSeconds={smoothingSeconds}
       processingMode={processingMode}
+      phaseFilter={phaseFilter}
       yScaleFactor={yScaleFactor}
       scaleMode={scaleMode}
       seriesScaleFactors={seriesScaleFactors}
@@ -498,6 +501,7 @@ function PointChartBody({
   plotResetKey,
   smoothingSeconds,
   processingMode,
+  phaseFilter,
   yScaleFactor,
   scaleMode,
   seriesScaleFactors,
@@ -521,6 +525,7 @@ function PointChartBody({
   plotResetKey: string;
   smoothingSeconds: number;
   processingMode: ChartProcessingMode;
+  phaseFilter: string;
   yScaleFactor: number;
   scaleMode: ScaleMode;
   seriesScaleFactors: Record<string, number>;
@@ -536,6 +541,8 @@ function PointChartBody({
     mode: MarkerMode,
     windowStartSeconds?: number | null,
     windowEndSeconds?: number | null,
+    windowEndExclusive?: boolean,
+    phaseFilter?: string | null,
   ) => void;
   onDeleteMarker: (marker: MetaSoftMarkerName) => void;
   onChangeMarkerWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
@@ -814,7 +821,7 @@ function PointChartBody({
       setProposal({
         left: clamp(mouseEvent.clientX, popoverWidth / 2 + 12, window.innerWidth - popoverWidth / 2 - 12),
         top: opensBelow ? mouseEvent.clientY + 10 : mouseEvent.clientY - 10,
-        tSeconds: clamp(tSeconds, 0, maxTime),
+        tSeconds: processingMode === "blocks" ? Math.max(0, tSeconds) : clamp(tSeconds, 0, maxTime),
         mode: processingMode === "blocks" ? "range" : "point",
         rangeDuration: processingMode === "blocks" ? "0:05" : "4:00",
         previousDuration: "0:10",
@@ -888,15 +895,30 @@ function PointChartBody({
     if (xSeconds !== null) finalDrag = { ...finalDrag, xSeconds: clamp(xSeconds, 0, maxTime) };
     clearPendingDragFrame();
     const next = draggedMarkerBounds(markers[finalDrag.marker], finalDrag.part, finalDrag.xSeconds, maxTime);
-    onPlaceMarker(finalDrag.marker, next.tSeconds, next.mode, next.windowStart, next.windowEnd);
+    const placedTime = next.mode === "point" && processingMode === "blocks"
+      ? nearestPoint(points, next.tSeconds)?.t_seconds ?? next.tSeconds
+      : next.tSeconds;
+    onPlaceMarker(
+      finalDrag.marker,
+      placedTime,
+      next.mode,
+      next.windowStart,
+      next.windowEnd,
+      next.mode === "range" && processingMode === "blocks",
+      phaseFilter === "Tout" ? null : phaseFilter,
+    );
     dragPreviewRef.current = null;
     setDragPreview(null);
-  }, [canEditTimeMarkers, clearPendingDragFrame, defaultRange, effectiveRange, markers, maxTime, onPlaceMarker, plotMargins]);
+  }, [canEditTimeMarkers, clearPendingDragFrame, defaultRange, effectiveRange, markers, maxTime, onPlaceMarker, phaseFilter, plotMargins, points, processingMode]);
 
   const placeProposalMarker = useCallback((marker: MetaSoftMarkerName) => {
     if (!proposal) return;
+    const markerPhaseFilter = phaseFilter === "Tout" ? null : phaseFilter;
     if (proposal.mode === "point") {
-      onPlaceMarker(marker, proposal.tSeconds, "point", null, null);
+      const pointTime = processingMode === "blocks"
+        ? nearestPoint(points, proposal.tSeconds)?.t_seconds ?? proposal.tSeconds
+        : proposal.tSeconds;
+      onPlaceMarker(marker, pointTime, "point", null, null, false, markerPhaseFilter);
       setProposal(null);
       return;
     }
@@ -904,12 +926,21 @@ function PointChartBody({
       proposal.mode === "previous" ? proposal.previousDuration : proposal.rangeDuration,
     );
     if (rangeSeconds === null) return;
+    const blockRange = processingMode === "blocks" && proposal.mode === "range";
     const [windowStart, windowEnd] = proposal.mode === "previous"
       ? previousWindowBounds(proposal.tSeconds, rangeSeconds)
-      : centeredWindowBounds(proposal.tSeconds, rangeSeconds, maxTime);
-    onPlaceMarker(marker, proposal.tSeconds, proposal.mode, windowStart, windowEnd);
+      : centeredWindowBounds(proposal.tSeconds, rangeSeconds, blockRange ? 0 : maxTime);
+    onPlaceMarker(
+      marker,
+      proposal.tSeconds,
+      proposal.mode,
+      windowStart,
+      windowEnd,
+      blockRange,
+      markerPhaseFilter,
+    );
     setProposal(null);
-  }, [maxTime, onPlaceMarker, proposal]);
+  }, [maxTime, onPlaceMarker, phaseFilter, points, processingMode, proposal]);
   const handleHover = useCallback((event: Readonly<{ points?: Array<{ customdata?: unknown; x?: unknown }> }>) => {
     onCursorPoint(graph.id, nearestEventPoint(chartPoints, event, graph));
   }, [chartPoints, graph, onCursorPoint]);

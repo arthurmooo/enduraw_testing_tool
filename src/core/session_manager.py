@@ -67,6 +67,27 @@ class ProfileMatch:
         )
 
 
+def metasoft_profile_lactate_snapshot(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """Canonise les champs lactate du profil pour la preuve du report courant."""
+    stress = profile.get("stress_test_results", {}) if isinstance(profile, dict) else {}
+    if not isinstance(stress, dict):
+        stress = {}
+    lactate_profile = stress.get("lactate_profile")
+    lactate_thresholds = stress.get("lactate_thresholds")
+    return {
+        "lactate_profile": deepcopy(lactate_profile) if isinstance(lactate_profile, list) else [],
+        "lactate_thresholds": (
+            deepcopy(lactate_thresholds) if isinstance(lactate_thresholds, dict) else {}
+        ),
+    }
+
+
+def metasoft_profile_has_lactates(profile: Dict[str, Any]) -> bool:
+    """Indique si le profil porte des mesures ou seuils lactate exportables."""
+    snapshot = metasoft_profile_lactate_snapshot(profile)
+    return bool(snapshot["lactate_profile"] or snapshot["lactate_thresholds"])
+
+
 class SessionManager:
     """Manages sessions and profiles"""
     
@@ -740,6 +761,20 @@ class SessionManager:
             return {"valid": False, "reason": "invalid_markers", "markers": {}}
         if not metasoft_markers_match_profile(profile, markers):
             return {"valid": False, "reason": "marker_profile_mismatch", "markers": {}}
+        current_lactates = metasoft_profile_lactate_snapshot(profile)
+        if "profile_lactate_snapshot" not in report:
+            if metasoft_profile_has_lactates(profile):
+                return {
+                    "valid": False,
+                    "reason": "profile_lactates_unproven",
+                    "markers": deepcopy(markers),
+                }
+        elif report.get("profile_lactate_snapshot") != current_lactates:
+            return {
+                "valid": False,
+                "reason": "profile_lactates_changed",
+                "markers": deepcopy(markers),
+            }
         ec_state = self.manual_running_economy_state(self._match_id(match), match)
         expected_ec_digest = report.get("manual_running_economy_sha256")
         current_ec_digest = (
@@ -788,6 +823,7 @@ class SessionManager:
                 "source_fingerprint": fingerprint,
                 "markers": deepcopy(markers),
                 "profile_marker_snapshot": metasoft_profile_marker_snapshot(profile),
+                "profile_lactate_snapshot": metasoft_profile_lactate_snapshot(profile),
                 "manual_running_economy_sha256": (
                     self._json_sha256(manual_running_economy)
                     if manual_running_economy is not None

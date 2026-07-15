@@ -366,8 +366,10 @@ export function buildLactateDraft(
   profile: Record<string, unknown>,
   analysis: MetaSoftAnalysis,
   initialDraft?: LactateTestDraft | null,
+  profileProvenanceValid = true,
 ): LactateTestDraft {
   if (initialDraft) return mergeLactateDraft(initialDraft, analysis);
+  if (!profileProvenanceValid) return buildDetectedLactateDraft(analysis, false);
   const stress = profile.stress_test_results && typeof profile.stress_test_results === "object"
     ? profile.stress_test_results as Record<string, unknown>
     : {};

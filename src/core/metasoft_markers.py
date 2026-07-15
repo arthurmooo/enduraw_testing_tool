@@ -96,13 +96,31 @@ def build_metasoft_marker(
     t_seconds: Optional[float] = None,
     window_start_seconds: Optional[float] = None,
     window_end_seconds: Optional[float] = None,
+    window_end_exclusive: bool = False,
+    phase_filter: Optional[str] = None,
 ) -> dict:
     """Retourne un marqueur officiel depuis les points bruts MetaSoft.
 
     Mode point: conserve le temps clique et prend les valeurs du point XML le
-    plus proche. Mode range: moyenne inclusive des points bruts dans la fenetre;
-    les valeurs `None` sont ignorees par metrique, jamais remplacees par zero.
+    plus proche. Mode range: moyenne les points bruts dans la fenetre selon les
+    memes bornes et la meme phase que React; les valeurs `None` sont ignorees
+    par metrique, jamais remplacees par zero.
     """
+    if not isinstance(window_end_exclusive, bool):
+        return _blocked_marker(
+            name,
+            "invalid_window_semantics",
+            "Semantique de fin de fenetre MetaSoft invalide.",
+        )
+    if phase_filter is not None:
+        if not isinstance(phase_filter, str) or not phase_filter.strip():
+            return _blocked_marker(
+                name,
+                "invalid_phase_filter",
+                "Filtre de phase MetaSoft invalide.",
+            )
+        phase_filter = phase_filter.strip()
+        points = [point for point in points if point.get("phase") == phase_filter]
     if t_seconds is not None and (
         window_start_seconds is not None or window_end_seconds is not None
     ):
@@ -112,14 +130,19 @@ def build_metasoft_marker(
             "Selection MetaSoft ambigue: choisir point ou range, pas les deux.",
         )
     if t_seconds is not None:
-        return _build_point_marker(points, name, t_seconds)
+        marker = _build_point_marker(points, name, t_seconds)
+        marker["phase_filter"] = phase_filter
+        return marker
     if window_start_seconds is not None or window_end_seconds is not None:
-        return _build_range_marker(
+        marker = _build_range_marker(
             points,
             name,
             window_start_seconds,
             window_end_seconds,
+            window_end_exclusive,
         )
+        marker["phase_filter"] = phase_filter
+        return marker
     return _blocked_marker(name, "missing_selection", "Selection MetaSoft absente.")
 
 
@@ -302,17 +325,19 @@ def _build_range_marker(
     name: str,
     start: Optional[float],
     end: Optional[float],
+    end_exclusive: bool = False,
 ) -> dict:
     if start is None or end is None or end < start:
         marker = _blocked_marker(
             name,
             "invalid_window",
-            "Fenetre MetaSoft invalide: debut et fin inclusifs requis.",
+            "Fenetre MetaSoft invalide: debut et fin requis.",
         )
         marker.update({
             "mode": "range",
             "window_start_seconds": start,
             "window_end_seconds": end,
+            "window_end_exclusive": end_exclusive,
             "point_count": 0,
         })
         return marker
@@ -320,7 +345,8 @@ def _build_range_marker(
     selected = [
         point for point in points
         if _number(point.get("t_seconds")) is not None
-        and start <= point["t_seconds"] <= end
+        and start <= point["t_seconds"]
+        and (point["t_seconds"] < end if end_exclusive else point["t_seconds"] <= end)
     ]
     if not selected:
         marker = _blocked_marker(
@@ -332,6 +358,7 @@ def _build_range_marker(
             "mode": "range",
             "window_start_seconds": start,
             "window_end_seconds": end,
+            "window_end_exclusive": end_exclusive,
             "point_count": 0,
         })
         return marker
@@ -345,6 +372,7 @@ def _build_range_marker(
         "selection_time_seconds": (start + end) / 2,
         "window_start_seconds": start,
         "window_end_seconds": end,
+        "window_end_exclusive": end_exclusive,
         "point_count": len(selected),
         "phase": _common_phase(selected),
         "values": _official_values(name, selected),

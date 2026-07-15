@@ -28,6 +28,7 @@ from core.metasoft_markers import (
     metasoft_unproven_profile_markers,
     metasoft_marker_to_stress_patch,
 )
+from core.session_manager import metasoft_profile_has_lactates
 from utils.xml_parser import TCPXmlParser
 
 
@@ -249,6 +250,11 @@ class LocalMetaSoftServer:
                 else None
             ),
             "metasoft_draft": draft_state["data"] if draft_state["status"] == "ok" else None,
+            "lactate_profile_provenance_valid": bool(
+                provenance["valid"]
+                and isinstance(context["match_info"].metasoft_report, dict)
+                and "profile_lactate_snapshot" in context["match_info"].metasoft_report
+            ),
             "confirmed_markers": confirmed_markers,
             "deleted_markers": deleted_markers,
             "warnings": warnings,
@@ -451,6 +457,20 @@ class LocalMetaSoftServer:
         patch_result = self._patch_from_payload(context, payload)
         if not patch_result["ok"]:
             return patch_result
+        previous_provenance = self.session_manager.validate_metasoft_report(
+            context["match_info"],
+            context["profile"],
+        )
+        if (
+            "lactate_test" not in payload
+            and metasoft_profile_has_lactates(context["profile"])
+            and not previous_provenance["valid"]
+        ):
+            return _error(
+                "lactate_selection_required",
+                "Report refuse: confirmer ou desactiver les lactates pour ce XML.",
+                status=409,
+            )
 
         conflicts = _patch_conflicts(context["profile"], patch_result["patch_result"])
         if conflicts and payload.get("conflict_policy") != "overwrite":
@@ -465,10 +485,6 @@ class LocalMetaSoftServer:
         if not manual_result["ok"]:
             return manual_result
 
-        previous_provenance = self.session_manager.validate_metasoft_report(
-            context["match_info"],
-            context["profile"],
-        )
         canonical_markers = (
             deepcopy(previous_provenance["markers"])
             if previous_provenance.get("markers")
@@ -476,6 +492,9 @@ class LocalMetaSoftServer:
                 previous_provenance["valid"]
                 or str(previous_provenance.get("reason", "")).startswith(
                     "manual_running_economy_"
+                )
+                or str(previous_provenance.get("reason", "")).startswith(
+                    "profile_lactates_"
                 )
             )
             else {}
@@ -1086,12 +1105,35 @@ def _marker_from_selection(points, selection):
     mode = selection.get("mode")
     if mode not in {"point", "range", "previous"}:
         return _error("invalid_marker_selection", "Mode marqueur invalide.", status=400)
+    phase_filter = selection.get("phase_filter")
+    if phase_filter is not None:
+        if (
+            not isinstance(phase_filter, str)
+            or not phase_filter.strip()
+            or len(phase_filter.strip()) > 120
+        ):
+            return _error("invalid_marker_selection", "Filtre de phase invalide.", status=400)
+        phase_filter = phase_filter.strip()
+    window_end_exclusive = selection.get("window_end_exclusive", False)
+    if not isinstance(window_end_exclusive, bool) or (
+        window_end_exclusive and mode != "range"
+    ):
+        return _error(
+            "invalid_marker_selection",
+            "Semantique de fin de fenetre invalide.",
+            status=400,
+        )
 
     if mode == "point":
         t_seconds = _number(selection.get("t_seconds"))
         if t_seconds is None:
             return _error("invalid_marker_selection", "Temps point manquant.", status=400)
-        marker = build_metasoft_marker(points, name, t_seconds=t_seconds)
+        marker = build_metasoft_marker(
+            points,
+            name,
+            t_seconds=t_seconds,
+            phase_filter=phase_filter,
+        )
     elif mode == "previous":
         t_seconds = _number(selection.get("t_seconds"))
         start = _number(selection.get("window_start_seconds"))
@@ -1112,6 +1154,7 @@ def _marker_from_selection(points, selection):
             name,
             window_start_seconds=start,
             window_end_seconds=t_seconds,
+            phase_filter=phase_filter,
         )
         marker.update({
             "mode": "previous",
@@ -1140,6 +1183,8 @@ def _marker_from_selection(points, selection):
             name,
             window_start_seconds=start,
             window_end_seconds=end,
+            window_end_exclusive=window_end_exclusive,
+            phase_filter=phase_filter,
         )
         marker.update({
             "t_seconds": selection_time,
@@ -1310,16 +1355,21 @@ def _metasoft_provenance_warning(provenance, match, profile):
             "markers": unproven,
         }
     unproven = metasoft_unproven_profile_markers(profile, {})
-    if provenance["reason"] == "missing" and not unproven:
+    has_lactates = metasoft_profile_has_lactates(profile)
+    if provenance["reason"] == "missing" and not unproven and not has_lactates:
         return None
+    lactate_only = has_lactates and not unproven
     code = (
-        "marker_provenance_missing"
-        if provenance["reason"] == "missing"
-        else "marker_provenance_stale"
+        f"{'lactate' if lactate_only else 'marker'}_provenance_"
+        f"{'missing' if provenance['reason'] == 'missing' else 'stale'}"
     )
     return {
         "code": code,
-        "message": "Provenance marqueurs MetaSoft absente ou perimee; export bloque.",
+        "message": (
+            "Provenance lactate MetaSoft absente ou perimee; export bloque."
+            if lactate_only
+            else "Provenance marqueurs MetaSoft absente ou perimee; export bloque."
+        ),
         "blocking": True,
         "reason": provenance["reason"],
         "markers": unproven,

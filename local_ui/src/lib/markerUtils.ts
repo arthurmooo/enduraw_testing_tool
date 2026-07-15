@@ -29,16 +29,21 @@ export function buildDraftMarker(
   mode: MarkerMode = "range",
   windowStart = defaultWindowStart(mode, tSeconds),
   windowEnd = defaultWindowEnd(mode, tSeconds),
+  windowEndExclusive = false,
+  phaseFilter: string | null = null,
 ): DraftMarker {
   const boundedStart = windowStart === null ? null : Math.max(0, windowStart);
   const boundedEnd = windowEnd === null ? null : Math.max(boundedStart ?? 0, windowEnd);
-  const nearest = nearestPoint(points, tSeconds);
+  const eligiblePoints = phaseFilter
+    ? points.filter((point) => point.phase === phaseFilter)
+    : points;
+  const nearest = nearestPoint(eligiblePoints, tSeconds);
   const windowPoints = mode === "point" || boundedStart === null || boundedEnd === null
     ? nearest ? [nearest] : []
-    : points.filter((point) => (
+    : eligiblePoints.filter((point) => (
       point.t_seconds !== null
       && point.t_seconds >= boundedStart
-      && point.t_seconds <= boundedEnd
+      && (windowEndExclusive ? point.t_seconds < boundedEnd : point.t_seconds <= boundedEnd)
     ));
   const values = {
     fc_bpm: average(windowPoints, "fc_bpm"),
@@ -55,6 +60,8 @@ export function buildDraftMarker(
     t_seconds: tSeconds,
     window_start_seconds: boundedStart,
     window_end_seconds: boundedEnd,
+    window_end_exclusive: mode === "range" && windowEndExclusive,
+    phase_filter: phaseFilter,
     phase: nearest?.phase ?? null,
     point_count: windowPoints.length,
     values,
@@ -76,7 +83,13 @@ export function serializeMarkerSelections(
       return [{ name, action: "delete" }];
     }
     if (marker.mode === "point") {
-      return [{ name, action: "upsert", mode: "point", t_seconds: marker.t_seconds }];
+      return [{
+        name,
+        action: "upsert",
+        mode: "point",
+        t_seconds: marker.t_seconds,
+        ...(marker.phase_filter ? { phase_filter: marker.phase_filter } : {}),
+      }];
     }
     if (marker.mode === "previous") {
       return [{
@@ -86,6 +99,7 @@ export function serializeMarkerSelections(
         t_seconds: marker.t_seconds,
         window_start_seconds: marker.window_start_seconds,
         window_end_seconds: marker.window_end_seconds,
+        ...(marker.phase_filter ? { phase_filter: marker.phase_filter } : {}),
       }];
     }
     return [{
@@ -95,6 +109,8 @@ export function serializeMarkerSelections(
       ...(marker.t_seconds === null ? {} : { t_seconds: marker.t_seconds }),
       window_start_seconds: marker.window_start_seconds,
       window_end_seconds: marker.window_end_seconds,
+      ...(marker.window_end_exclusive ? { window_end_exclusive: true } : {}),
+      ...(marker.phase_filter ? { phase_filter: marker.phase_filter } : {}),
     }];
   });
 }
@@ -122,6 +138,8 @@ export function restoreDraftMarkerSelections(
       mode,
       selection.window_start_seconds ?? null,
       selection.window_end_seconds ?? null,
+      selection.window_end_exclusive === true,
+      selection.phase_filter ?? null,
     );
     dirty.add(name);
   }
