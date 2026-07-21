@@ -9,7 +9,13 @@ import type {
   MetaSoftPoint,
 } from "../types/metasoft";
 
-export const MARKER_NAMES: MetaSoftMarkerName[] = ["SV1", "SV2", "VO2_max", "VMA"];
+export const MARKER_NAMES: MetaSoftMarkerName[] = [
+  "SV1",
+  "SV2",
+  "VO2_max",
+  "VMA",
+  "Cross-over",
+];
 const DEFAULT_WINDOW_SECONDS = 120;
 const DEFAULT_PREVIOUS_SECONDS = 10;
 
@@ -45,6 +51,9 @@ export function buildDraftMarker(
       && point.t_seconds >= boundedStart
       && (windowEndExclusive ? point.t_seconds < boundedEnd : point.t_seconds <= boundedEnd)
     ));
+  const dechoKcalH = average(windowPoints, "decho_kcal_h");
+  const defatKcalH = average(windowPoints, "defat_kcal_h");
+  const substratePercentages = oxidationPercentages(dechoKcalH, defatKcalH);
   const values = {
     fc_bpm: average(windowPoints, "fc_bpm"),
     vo2_l_min: average(windowPoints, "vo2_l_min"),
@@ -52,6 +61,10 @@ export function buildDraftMarker(
     speed_kmh: average(windowPoints, "speed_kmh"),
     rer: average(windowPoints, "rer"),
     de_kcal_h: average(windowPoints, "de_kcal_h"),
+    decho_kcal_h: dechoKcalH,
+    defat_kcal_h: defatKcalH,
+    fat_percent: substratePercentages.fat,
+    cho_percent: substratePercentages.cho,
     vma: name === "VMA" ? average(windowPoints, "speed_kmh") : null,
   };
   return {
@@ -188,6 +201,19 @@ function average(points: MetaSoftPoint[], key: MetaSoftMetricKey): number | null
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   if (!values.length) return null;
   return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(3));
+}
+
+function oxidationPercentages(
+  dechoKcalH: number | null,
+  defatKcalH: number | null,
+): { fat: number | null; cho: number | null } {
+  if (dechoKcalH === null || defatKcalH === null) return { fat: null, cho: null };
+  const total = dechoKcalH + defatKcalH;
+  if (!Number.isFinite(total) || total <= 0) return { fat: null, cho: null };
+  return {
+    fat: Number(((defatKcalH / total) * 100).toFixed(3)),
+    cho: Number(((dechoKcalH / total) * 100).toFixed(3)),
+  };
 }
 
 function normaliseMarker(marker?: string | null): MetaSoftMarkerName | null {

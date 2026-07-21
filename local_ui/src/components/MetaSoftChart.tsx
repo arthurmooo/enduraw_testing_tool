@@ -1,7 +1,16 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import Plot from "react-plotly.js";
-import { Maximize2, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { Maximize2, X } from "lucide-react";
+import {
+  ChartActionPopover,
+  ChartPlacementPopover,
+  ChartScaleControls,
+  ChartSeriesToggles,
+  chartPopoverPosition,
+  type ChartScaleMode,
+  useChartClickArbitration,
+} from "./ChartControls";
 import {
   buildMarkerAnnotations,
   buildMarkerShapes,
@@ -50,11 +59,8 @@ import type {
 } from "../types/metasoft";
 
 const DEBUG_ZOOM = new URLSearchParams(window.location.search).get("debugZoom") === "1";
-const MARKER_POPOVER_WIDTH = 336;
-const MARKER_POPOVER_HEIGHT = 252;
 const MARKER_MENU_WIDTH = 280;
 const MARKER_MENU_HEIGHT = 174;
-type ScaleMode = "common" | "series";
 
 interface Props {
   analysis: import("../types/metasoft").MetaSoftAnalysis;
@@ -108,7 +114,7 @@ function MetaSoftChartComponent({
   const [localXRange, setLocalXRange] = useState<[number, number] | null>(null);
   const [plotRevision, setPlotRevision] = useState(0);
   const [yScaleFactor, setYScaleFactor] = useState(1);
-  const [scaleMode, setScaleMode] = useState<ScaleMode>("common");
+  const [scaleMode, setScaleMode] = useState<ChartScaleMode>("common");
   const [seriesScaleFactors, setSeriesScaleFactors] = useState<Record<string, number>>({});
   const [selectedScaleSeriesKey, setSelectedScaleSeriesKey] = useState<string>(graph.series[0]?.key ?? "");
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
@@ -260,8 +266,8 @@ function MetaSoftChartComponent({
     <section className="chart-card">
       <div className="chart-title-row">
         <h2>{graph.title}</h2>
-        <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
-        <ScaleControls
+        <ChartSeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
+        <ChartScaleControls
           series={visibleSeries}
           mode={scaleMode}
           selectedSeriesKey={selectedScaleSeriesKey}
@@ -292,8 +298,8 @@ function MetaSoftChartComponent({
           <div className="modal-panel">
             <div className="modal-header">
               <h2 id={modalTitleId}>Plein ecran - {graph.title}</h2>
-              <SeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
-              <ScaleControls
+              <ChartSeriesToggles series={availableSeries} hiddenSeries={hiddenSeries} onToggle={toggleSeries} />
+              <ChartScaleControls
                 series={visibleSeries}
                 mode={scaleMode}
                 selectedSeriesKey={selectedScaleSeriesKey}
@@ -332,92 +338,6 @@ function plotlyAxisId(index: number): string {
 
 function plotlyLayoutAxisKey(index: number): string {
   return index === 0 ? "yaxis" : `yaxis${index + 1}`;
-}
-
-function ScaleControls({
-  series,
-  mode,
-  selectedSeriesKey,
-  onModeChange,
-  onSelectedSeriesChange,
-  onZoomIn,
-  onZoomOut,
-  onAuto,
-  onResetZoom,
-  showResetZoom,
-}: {
-  series: MetaSoftSeriesConfig[];
-  mode: ScaleMode;
-  selectedSeriesKey: string;
-  onModeChange: (mode: ScaleMode) => void;
-  onSelectedSeriesChange: (key: string) => void;
-  onZoomIn: () => void;
-  onZoomOut: () => void;
-  onAuto: () => void;
-  onResetZoom: () => void;
-  showResetZoom: boolean;
-}) {
-  return (
-    <div className="scale-controls" aria-label="Regler l'echelle verticale">
-      {series.length > 1 && (
-        <button
-          type="button"
-          onClick={() => onModeChange(mode === "common" ? "series" : "common")}
-          title="Basculer entre une echelle commune et une echelle par courbe"
-        >
-          {mode === "series" ? "Par courbe" : "Commune"}
-        </button>
-      )}
-      {mode === "series" && series.length > 1 && (
-        <select
-          aria-label="Courbe dont l'echelle est affichee et ajustee"
-          value={selectedSeriesKey}
-          onChange={(event) => onSelectedSeriesChange(event.target.value)}
-        >
-          {series.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
-        </select>
-      )}
-      <button type="button" onClick={onZoomOut} title="Elargir l'echelle verticale" aria-label="Elargir l'echelle verticale">
-        <Minus size={14} />
-      </button>
-      <button type="button" onClick={onAuto} title="Echelle automatique sur la zone visible">Auto</button>
-      <button type="button" onClick={onZoomIn} title="Resserrer l'echelle verticale" aria-label="Resserrer l'echelle verticale">
-        <Plus size={14} />
-      </button>
-      {showResetZoom && (
-        <button type="button" className="zoom-reset-button" onClick={onResetZoom} title="Reinitialiser le zoom temporel">
-          <RotateCcw size={14} /> Reinitialiser
-        </button>
-      )}
-    </div>
-  );
-}
-
-function SeriesToggles({
-  series,
-  hiddenSeries,
-  onToggle,
-}: {
-  series: MetaSoftSeriesConfig[];
-  hiddenSeries: Set<string>;
-  onToggle: (series: MetaSoftSeriesConfig) => void;
-}) {
-  return (
-    <div className="series-toggles">
-      {series.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          onClick={() => onToggle(item)}
-          className={hiddenSeries.has(item.key) ? "series-toggle muted" : "series-toggle"}
-          aria-pressed={!hiddenSeries.has(item.key)}
-        >
-          <span style={{ backgroundColor: item.color }} />
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
 }
 
 function RunningEconomyChart({
@@ -527,7 +447,7 @@ function PointChartBody({
   processingMode: ChartProcessingMode;
   phaseFilter: string;
   yScaleFactor: number;
-  scaleMode: ScaleMode;
+  scaleMode: ChartScaleMode;
   seriesScaleFactors: Record<string, number>;
   selectedScaleSeriesKey: string;
   xRange: [number, number] | null;
@@ -548,8 +468,6 @@ function PointChartBody({
   onChangeMarkerWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const clickTimerRef = useRef<number | null>(null);
-  const clickBlockUntilRef = useRef(0);
   const suppressClickRef = useRef(false);
   const dragFrameRef = useRef<number | null>(null);
   const dragPreviewRef = useRef<MarkerDragPreview | null>(null);
@@ -573,6 +491,12 @@ function PointChartBody({
   } | null>(null);
   const [markerHover, setMarkerHover] = useState<MarkerDragTarget | null>(null);
   const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
+  const {
+    block: blockChartClicks,
+    cancel: cancelChartClick,
+    isBlocked: chartClicksBlocked,
+    schedule: scheduleChartClick,
+  } = useChartClickArbitration();
   const canEditTimeMarkers = graph.kind === "time";
   const processedPoints = useMemo(
     () => processingMode === "blocks" ? averagePointsByTimeBlock(points, 5) : points,
@@ -598,8 +522,8 @@ function PointChartBody({
     ? { ...markers, [dragPreview.marker]: previewDraggedMarker(markers[dragPreview.marker], dragPreview, maxTime) }
     : markers, [canEditTimeMarkers, dragPreview, markers, maxTime]);
   const plotMargins = useMemo(
-    () => ({ l: 44, r: graph.series.some((item) => item.axis === "y2") ? 42 : 16, t: 14, b: 42 }),
-    [graph.series],
+    () => ({ l: 44, r: graph.series.some((item) => item.axis === "y2") ? 42 : 16, t: canEditTimeMarkers ? 32 : 14, b: 42 }),
+    [canEditTimeMarkers, graph.series],
   );
   const staticShapes = useMemo(
     () => canEditTimeMarkers ? buildTimeBandShapes(analysis) : [],
@@ -750,19 +674,12 @@ function PointChartBody({
   }), []);
 
   useEffect(() => () => {
-    if (clickTimerRef.current !== null) window.clearTimeout(clickTimerRef.current);
     if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
   }, []);
 
   useEffect(() => {
     dragPreviewRef.current = dragPreview;
   }, [dragPreview]);
-
-  const clearPendingClick = useCallback(() => {
-    if (clickTimerRef.current === null) return;
-    window.clearTimeout(clickTimerRef.current);
-    clickTimerRef.current = null;
-  }, []);
 
   const updateMarkerHover = useCallback((target: MarkerDragTarget | null) => {
     if (sameMarkerTarget(markerHoverRef.current, target)) return;
@@ -796,15 +713,15 @@ function PointChartBody({
 
   const openMarkerProposal = useCallback((event: Readonly<{ event?: MouseEvent; points?: Array<{ x?: unknown }> }>) => {
     if (!canEditTimeMarkers) return;
-    if (suppressClickRef.current || window.performance.now() < clickBlockUntilRef.current) {
+    if (suppressClickRef.current || chartClicksBlocked()) {
       suppressClickRef.current = false;
       return;
     }
     const mouseEvent = event.event;
     const bounds = wrapperRef.current?.getBoundingClientRect();
     if (!mouseEvent || !bounds || mouseEvent.detail > 1) {
-      if (mouseEvent?.detail && mouseEvent.detail > 1) clickBlockUntilRef.current = window.performance.now() + 450;
-      clearPendingClick();
+      if (mouseEvent?.detail && mouseEvent.detail > 1) blockChartClicks();
+      else cancelChartClick();
       return;
     }
     const clickedSeconds = timeFromClientX(mouseEvent.clientX, wrapperRef.current, effectiveRange ?? defaultRange, plotMargins);
@@ -812,26 +729,22 @@ function PointChartBody({
     const tSeconds = processingMode === "blocks"
       ? Math.floor(clickedSeconds / 5) * 5 + 2.5
       : clickedSeconds;
-    clearPendingClick();
-    clickTimerRef.current = window.setTimeout(() => {
-      clickTimerRef.current = null;
-      const popoverWidth = Math.min(MARKER_POPOVER_WIDTH, Math.max(1, window.innerWidth - 24));
-      const opensBelow = mouseEvent.clientY < MARKER_POPOVER_HEIGHT + 16;
+    scheduleChartClick(() => {
+      const position = chartPopoverPosition(mouseEvent.clientX, mouseEvent.clientY);
       setMarkerMenu(null);
       setProposal({
-        left: clamp(mouseEvent.clientX, popoverWidth / 2 + 12, window.innerWidth - popoverWidth / 2 - 12),
-        top: opensBelow ? mouseEvent.clientY + 10 : mouseEvent.clientY - 10,
+        ...position,
         tSeconds: processingMode === "blocks" ? Math.max(0, tSeconds) : clamp(tSeconds, 0, maxTime),
         mode: processingMode === "blocks" ? "range" : "point",
         rangeDuration: processingMode === "blocks" ? "0:05" : "4:00",
         previousDuration: "0:10",
-        opensBelow,
       });
-    }, 320);
-  }, [canEditTimeMarkers, clearPendingClick, defaultRange, effectiveRange, maxTime, plotMargins, processingMode]);
+    });
+  }, [blockChartClicks, canEditTimeMarkers, cancelChartClick, chartClicksBlocked, defaultRange, effectiveRange, maxTime, plotMargins, processingMode, scheduleChartClick]);
 
   const handleContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
+    blockChartClicks();
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     if (!target) return;
     event.preventDefault();
@@ -851,11 +764,11 @@ function PointChartBody({
       top: opensBelow ? event.clientY + 10 : event.clientY - 10,
       opensBelow,
     });
-  }, [canEditTimeMarkers, defaultRange, effectiveRange, markers, plotMargins]);
+  }, [blockChartClicks, canEditTimeMarkers, defaultRange, effectiveRange, markers, plotMargins]);
 
   const handleMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
-    if (event.button !== 0) return;
+    if (event.button !== 0 || event.detail > 1) return;
     setMarkerMenu(null);
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     const xSeconds = target
@@ -864,13 +777,13 @@ function PointChartBody({
     if (!target || xSeconds === null) return;
     event.preventDefault();
     suppressClickRef.current = true;
-    clearPendingClick();
+    cancelChartClick();
     clearPendingDragFrame();
     setProposal(null);
     const nextDrag = { ...target, xSeconds: clamp(xSeconds, 0, maxTime) };
     dragPreviewRef.current = nextDrag;
     setDragPreview(nextDrag);
-  }, [canEditTimeMarkers, clearPendingClick, clearPendingDragFrame, defaultRange, effectiveRange, markers, maxTime, plotMargins]);
+  }, [canEditTimeMarkers, cancelChartClick, clearPendingDragFrame, defaultRange, effectiveRange, markers, maxTime, plotMargins]);
 
   const handleMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
@@ -963,6 +876,7 @@ function PointChartBody({
       className="chart-body"
       style={{ height, cursor: cursorForMarkerDrag(dragPreview?.part ?? markerHover?.part ?? null, Boolean(dragPreview)) }}
       onContextMenu={handleContextMenu}
+      onDoubleClick={handleContextMenu}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -986,38 +900,19 @@ function PointChartBody({
         onUnhover={handleUnhover}
       />
       {proposal && (
-        <div
-          className={proposal.opensBelow ? "marker-popover marker-popover-below" : "marker-popover"}
-          style={{ left: proposal.left, top: proposal.top }}
-          onClick={(event) => event.stopPropagation()}
-          onContextMenu={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-          onMouseMove={(event) => event.stopPropagation()}
-          onMouseUp={(event) => event.stopPropagation()}
+        <ChartPlacementPopover
+          position={proposal}
+          title="Placer un seuil"
+          valueLabel={secondsToClock(proposal.tSeconds)}
+          modes={(["point", "range", "previous"] as const).map((mode) => ({
+            value: mode,
+            label: markerModeLabel(mode),
+          }))}
+          activeMode={proposal.mode}
+          onModeChange={(mode) => setProposal({ ...proposal, mode })}
+          help={markerModeHelp(proposal.mode)}
+          onClose={() => setProposal(null)}
         >
-          <div className="popover-head">
-            <div>
-              <p>Placer un seuil</p>
-              <span>{secondsToClock(proposal.tSeconds)}</span>
-            </div>
-            <button type="button" onClick={() => setProposal(null)} aria-label="Fermer">
-              <X size={16} />
-            </button>
-          </div>
-          <div className="segmented">
-            {(["point", "range", "previous"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => setProposal({ ...proposal, mode })}
-                className={proposal.mode === mode ? "active" : ""}
-                aria-pressed={proposal.mode === mode}
-              >
-                {markerModeLabel(mode)}
-              </button>
-            ))}
-          </div>
-          <p className="popover-help">{markerModeHelp(proposal.mode)}</p>
           {proposal.mode !== "point" && (
             <label className="field small-field">
               Duree
@@ -1051,28 +946,16 @@ function PointChartBody({
               </button>
             ))}
           </div>
-        </div>
+        </ChartPlacementPopover>
       )}
       {markerMenu && (
-        <div
-          className={`marker-popover marker-action-menu${markerMenu.opensBelow ? " marker-popover-below" : ""}`}
-          style={{ left: markerMenu.left, top: markerMenu.top }}
-          role="dialog"
-          aria-label={`Modifier ${markerDisplayName(markerMenu.marker)}`}
-          onClick={(event) => event.stopPropagation()}
-          onContextMenu={(event) => event.preventDefault()}
-          onMouseDown={(event) => event.stopPropagation()}
-          onMouseUp={(event) => event.stopPropagation()}
+        <ChartActionPopover
+          position={markerMenu}
+          eyebrow="Marqueur"
+          title={markerDisplayName(markerMenu.marker)}
+          ariaLabel={`Modifier ${markerDisplayName(markerMenu.marker)}`}
+          onClose={() => setMarkerMenu(null)}
         >
-          <div className="popover-head">
-            <div>
-              <p>Marqueur</p>
-              <strong>{markerDisplayName(markerMenu.marker)}</strong>
-            </div>
-            <button type="button" onClick={() => setMarkerMenu(null)} aria-label="Fermer">
-              <X size={16} />
-            </button>
-          </div>
           {markers[markerMenu.marker].mode !== "point" && (
             <label className="field small-field">
               Longueur de la fenetre
@@ -1110,7 +993,7 @@ function PointChartBody({
               Supprimer
             </button>
           </div>
-        </div>
+        </ChartActionPopover>
       )}
     </div>
   );
@@ -1131,20 +1014,17 @@ function nearestMarkerTargetFromMouse(
   if (plotWidth <= 0 || event.clientX < plotLeft || event.clientX > plotRight) return null;
 
   const xSeconds = range[0] + ((event.clientX - plotLeft) / plotWidth) * (range[1] - range[0]);
-  const thresholdSeconds = Math.max(10, ((range[1] - range[0]) / plotWidth) * 12);
+  // La ligne visible reste precise, mais sa cible de drag fait 18 px pour ne
+  // plus exiger de viser exactement le libelle ou le trait sur un ecran dense.
+  const thresholdSeconds = Math.max(10, ((range[1] - range[0]) / plotWidth) * 18);
   return MARKER_NAMES.reduce<{ target: MarkerDragTarget; distance: number } | null>((best, marker) => {
     const item = markers[marker];
-    const candidates: Array<{ part: MarkerDragPart; seconds: number | null }> = [
-      { part: "center", seconds: item.t_seconds },
-      { part: "start", seconds: item.mode !== "point" ? item.window_start_seconds : null },
-      { part: "end", seconds: item.mode !== "point" ? item.window_end_seconds : null },
-    ];
-    return candidates.reduce<typeof best>((candidateBest, candidate) => {
-      if (candidate.seconds === null) return candidateBest;
-      const distance = Math.abs(candidate.seconds - xSeconds);
-      if (distance > thresholdSeconds || (candidateBest && candidateBest.distance <= distance)) return candidateBest;
-      return { target: { marker, part: candidate.part }, distance };
-    }, best);
+    // Un drag simple de toute la cible deplace le marqueur. La longueur de
+    // fenetre se modifie depuis le menu ouvert au double-clic.
+    if (item.t_seconds === null) return best;
+    const distance = Math.abs(item.t_seconds - xSeconds);
+    if (distance > thresholdSeconds || (best && best.distance <= distance)) return best;
+    return { target: { marker, part: "center" }, distance };
   }, null)?.target ?? null;
 }
 

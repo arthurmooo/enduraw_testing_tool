@@ -28,11 +28,14 @@ from core.metasoft_markers import (
     metasoft_unproven_profile_markers,
     metasoft_marker_to_stress_patch,
 )
-from core.session_manager import metasoft_profile_has_lactates
+from core.session_manager import (
+    metasoft_profile_has_lactates,
+    metasoft_profile_lactate_snapshot,
+)
 from utils.xml_parser import TCPXmlParser
 
 
-VALID_MARKERS = {"SV1", "SV2", "VO2_max", "VMA"}
+VALID_MARKERS = {"SV1", "SV2", "VO2_max", "VMA", "Cross-over"}
 _PROCESS_TOKEN = secrets.token_urlsafe(32)
 
 
@@ -51,6 +54,8 @@ class LocalMetaSoftServer:
         self._profile_update_lock = threading.Lock()
         self._profile_updates = []
         self._match_context_cache = {}
+        self._browser_context_lock = threading.RLock()
+        self._browser_contexts = {}
 
     @classmethod
     def ensure_started(cls, session_manager):
@@ -73,7 +78,7 @@ class LocalMetaSoftServer:
             return []
         if session_manager is not None and instance.session_manager is not session_manager:
             return []
-        return instance.consume_pending_profile_updates()
+        return instance.consume_pending_profile_updates(session_manager)
 
     def start(self):
         """Lance un serveur local mono-thread sur un port ephemere."""
@@ -107,28 +112,135 @@ class LocalMetaSoftServer:
         return self.httpd.server_address[1]
 
     def url_for_match(self, match_info):
-        match_id = _match_id(
-            match_info.get("profile_name", ""),
-            match_info.get("xml_filename", ""),
+        context_token, match_id = self._register_browser_context(match_info)
+        return (
+            f"http://{self.host}:{self.port}/metasoft?"
+            f"match_id={match_id}&token={context_token}"
         )
-        return f"http://{self.host}:{self.port}/metasoft?match_id={match_id}&token={self.token}"
 
-    def _record_profile_update(self, profile_name):
+    def _register_browser_context(self, match_info):
+        """Fige la session et le match auxquels un onglet navigateur a droit."""
+        manager = self.session_manager
+        session_path = getattr(manager, "current_session_path", None)
+        if not session_path or not getattr(manager, "current_session", None):
+            raise ValueError("Aucune session locale chargee")
+        profile_name = str(match_info.get("profile_name", ""))
+        xml_filename = str(match_info.get("xml_filename", ""))
+        if not any(
+            match.profile_name == profile_name and match.xml_filename == xml_filename
+            for match in getattr(manager, "matches", [])
+        ):
+            raise ValueError("Association profil/XML introuvable")
+
+        # Un manager distinct conserve le dossier de session de l'onglet. Les
+        # changements ulterieurs de `current_session` dans Tk ne le mutent pas.
+        browser_manager = type(manager)(str(manager.base_path))
+        # Les managers d'onglets pointent vers les memes sidecars que Tk. Ils
+        # partagent donc leurs verrous pour serialiser les ecritures locales.
+        browser_manager._matches_lock = manager._matches_lock
+        browser_manager._manual_running_economy_lock = manager._manual_running_economy_lock
+        browser_manager._metasoft_drafts_lock = manager._metasoft_drafts_lock
+        browser_manager.load_session(str(session_path))
+        match_id = _match_id(profile_name, xml_filename)
+        browser_match = next((
+            match
+            for match in browser_manager.matches
+            if _match_id(match.profile_name, match.xml_filename) == match_id
+        ), None)
+        if browser_match is None:
+            raise ValueError("Association profil/XML introuvable")
+        source_fingerprint = browser_manager.build_metasoft_source_fingerprint(browser_match)
+        if not source_fingerprint:
+            raise ValueError("Fingerprint local profil/XML indisponible")
+        profile = browser_manager.get_profile(browser_match.profile_name) or {}
+        context_token = secrets.token_urlsafe(32)
+        with self._browser_context_lock:
+            self._browser_contexts[context_token] = {
+                "session_manager": browser_manager,
+                "session_path": str(Path(session_path).resolve()),
+                "match_id": match_id,
+                "profile_name": browser_match.profile_name,
+                "xml_filename": browser_match.xml_filename,
+                "matched_at": browser_match.matched_at,
+                "source_fingerprint": source_fingerprint,
+                "profile_mass_kg": _profile_mass_kg(profile),
+                "profile_lactate_baseline": metasoft_profile_lactate_snapshot(profile),
+            }
+        return context_token, match_id
+
+    def _request_context(self, context_token, match_id=None):
+        """Retourne le contexte immuable d'un onglet ou refuse l'ancien client."""
+        with self._browser_context_lock:
+            context = self._browser_contexts.get(context_token)
+        if not context:
+            return _error(
+                "browser_context_missing",
+                "Contexte session MetaSoft absent ou perime: rouvrir l'analyse depuis Python.",
+                status=409,
+            )
+        if match_id is not None and context["match_id"] != match_id:
+            return _error(
+                "browser_context_mismatch",
+                "Cet onglet MetaSoft n'est pas autorise pour ce match.",
+                status=409,
+            )
+        return {"ok": True, "context_token": context_token, **context}
+
+    def _refresh_browser_profile_baseline(self, context_token, profile):
+        """Actualise le snapshot apres un report reussi dans le meme onglet."""
+        with self._browser_context_lock:
+            context = self._browser_contexts.get(context_token)
+            if context is not None:
+                context["profile_lactate_baseline"] = metasoft_profile_lactate_snapshot(profile)
+
+    def valid_token(self, token):
+        if token == self.token:
+            return True
+        with self._browser_context_lock:
+            return token in self._browser_contexts
+
+    def valid_browser_context(self, token):
+        with self._browser_context_lock:
+            return token in self._browser_contexts
+
+    def _record_profile_update(self, session_manager, profile_name):
         with self._profile_update_lock:
-            if profile_name not in self._profile_updates:
-                self._profile_updates.append(profile_name)
+            session_path = str(Path(session_manager.current_session_path).resolve())
+            update = (session_path, profile_name)
+            if update not in self._profile_updates:
+                self._profile_updates.append(update)
+        active_path = getattr(self.session_manager, "current_session_path", None)
+        if active_path and str(Path(active_path).resolve()) == session_path:
+            # Garde l'objet Tk courant coherent sans attendre le prochain poll.
+            self.session_manager._load_matches()
 
     def _clear_match_context_cache(self):
         self._match_context_cache.clear()
 
-    def consume_pending_profile_updates(self):
+    def consume_pending_profile_updates(self, session_manager=None):
         """Consomme les profils modifies en attente pour une UI locale."""
+        current_path = (
+            str(Path(session_manager.current_session_path).resolve())
+            if session_manager is not None and session_manager.current_session_path
+            else None
+        )
         with self._profile_update_lock:
-            updates = list(self._profile_updates)
-            self._profile_updates.clear()
-            return updates
+            selected = [
+                profile_name
+                for session_path, profile_name in self._profile_updates
+                if current_path is None or session_path == current_path
+            ]
+            self._profile_updates = [
+                update
+                for update in self._profile_updates
+                if current_path is not None and update[0] != current_path
+            ]
+        if selected and session_manager is not None:
+            # Le manager de l'onglet a aussi persiste la provenance dans matches.json.
+            session_manager._load_matches()
+        return selected
 
-    def route_get(self, path):
+    def route_get(self, path, context_token=""):
         if path == "/api/health":
             return {
                 "ok": True,
@@ -137,39 +249,48 @@ class LocalMetaSoftServer:
                 "api_version": 1,
             }
         if path == "/api/session":
-            return self._session_payload()
+            context = self._request_context(context_token)
+            return context if not context["ok"] else self._session_payload(context)
         if path == "/api/matches":
-            return {"ok": True, "matches": self._matches_payload()}
+            context = self._request_context(context_token)
+            return context if not context["ok"] else {
+                "ok": True,
+                "matches": self._matches_payload(context),
+            }
 
         parts = _path_parts(path)
         if len(parts) == 4 and parts[:2] == ["api", "matches"] and parts[3] == "analysis":
-            return self._analysis_payload(parts[2])
+            context = self._request_context(context_token, parts[2])
+            return context if not context["ok"] else self._analysis_payload(parts[2], context)
         return _error("match_not_found", "Route API locale inconnue.", status=404)
 
-    def route_post(self, path, payload):
+    def route_post(self, path, payload, context_token=""):
         parts = _path_parts(path)
         if len(parts) < 4 or parts[:2] != ["api", "matches"]:
             return _error("match_not_found", "Route API locale inconnue.", status=404)
 
         match_id = parts[2]
+        context = self._request_context(context_token, match_id)
+        if not context["ok"]:
+            return context
         suffix = parts[3:]
         if suffix == ["markers", "officialize"]:
-            return self._officialize_payload(match_id, payload)
+            return self._officialize_payload(match_id, payload, context)
         if suffix == ["running-economy", "manual"]:
-            return self._manual_running_economy_payload(match_id, payload)
+            return self._manual_running_economy_payload(match_id, payload, context)
         if suffix == ["draft"]:
-            return self._draft_payload(match_id, payload)
+            return self._draft_payload(match_id, payload, context)
         if suffix == ["profile", "report-preview"]:
-            return self._report_preview_payload(match_id, payload)
+            return self._report_preview_payload(match_id, payload, context)
         if suffix == ["profile", "report"]:
-            return self._report_payload(match_id, payload)
+            return self._report_payload(match_id, payload, context)
         return _error("match_not_found", "Route API locale inconnue.", status=404)
 
     def static_dist(self):
         return resource_root() / "local_ui" / "dist"
 
-    def _session_payload(self):
-        session = getattr(self.session_manager, "current_session", None)
+    def _session_payload(self, context):
+        session = getattr(context["session_manager"], "current_session", None)
         if not session:
             return _error("session_not_loaded", "Aucune session locale chargee.", status=409)
         return {
@@ -181,7 +302,9 @@ class LocalMetaSoftServer:
             },
         }
 
-    def _matches_payload(self):
+    def _matches_payload(self, context):
+        manager = context["session_manager"]
+        manager._load_matches()
         return [
             {
                 "match_id": _match_id(match.profile_name, match.xml_filename),
@@ -189,19 +312,21 @@ class LocalMetaSoftServer:
                 "xml_filename": match.xml_filename,
                 "exported": bool(match.exported),
             }
-            for match in getattr(self.session_manager, "matches", [])
+            for match in getattr(manager, "matches", [])
+            if _match_id(match.profile_name, match.xml_filename) == context["match_id"]
         ]
 
-    def _analysis_payload(self, match_id):
-        context = self._match_context(match_id)
+    def _analysis_payload(self, match_id, browser_context):
+        context = self._match_context(match_id, browser_context)
         if not context["ok"]:
             return context
+        manager = context["session_manager"]
         identity = metasoft_identity_check(
             context["analysis"].get("athlete", {}),
             context["profile"],
         )
         warnings = [] if identity["ok"] else [_warning_from_check(identity)]
-        provenance = self.session_manager.validate_metasoft_report(
+        provenance = manager.validate_metasoft_report(
             context["match_info"],
             context["profile"],
         )
@@ -213,13 +338,13 @@ class LocalMetaSoftServer:
         )
         if provenance_warning:
             warnings.append(provenance_warning)
-        manual_economy_state = self.session_manager.manual_running_economy_state(
+        manual_economy_state = manager.manual_running_economy_state(
             match_id,
             context["match_info"],
         )
         if manual_economy_state["status"] in {"stale", "corrupt"}:
             warnings.append(_manual_running_economy_warning(manual_economy_state))
-        draft_state = self.session_manager.metasoft_draft_state(
+        draft_state = manager.metasoft_draft_state(
             match_id,
             context["match_info"],
         )
@@ -268,15 +393,16 @@ class LocalMetaSoftServer:
             },
         }
 
-    def _draft_payload(self, match_id, payload):
+    def _draft_payload(self, match_id, payload, browser_context):
         """Persiste un brouillon borne; aucun calcul ni profil officiel n'est modifie."""
-        context = self._match_context(match_id)
+        context = self._match_context(match_id, browser_context)
         if not context["ok"]:
             return context
+        manager = context["session_manager"]
         if not isinstance(payload, dict):
             return _error("invalid_metasoft_draft", "Brouillon MetaSoft invalide.", status=400)
         if payload.get("clear") is True:
-            self.session_manager.clear_metasoft_draft(match_id)
+            manager.clear_metasoft_draft(match_id)
             return {"ok": True, "cleared": True}
         allowed_keys = {
             "marker_selections",
@@ -302,7 +428,7 @@ class LocalMetaSoftServer:
         if len(json.dumps(payload, ensure_ascii=False)) > 2_000_000:
             return _error("invalid_metasoft_draft", "Brouillon MetaSoft trop volumineux.", status=413)
         try:
-            self.session_manager.save_metasoft_draft(
+            manager.save_metasoft_draft(
                 match_id,
                 context["match_info"],
                 payload,
@@ -311,10 +437,11 @@ class LocalMetaSoftServer:
             return _error("invalid_metasoft_draft", str(exc), status=409)
         return {"ok": True, "saved": True}
 
-    def _manual_running_economy_payload(self, match_id, payload):
-        context = self._match_context(match_id)
+    def _manual_running_economy_payload(self, match_id, payload, browser_context):
+        context = self._match_context(match_id, browser_context)
         if not context["ok"]:
             return context
+        manager = context["session_manager"]
         if not isinstance(payload, dict):
             return _error(
                 "invalid_running_economy_manual",
@@ -335,8 +462,12 @@ class LocalMetaSoftServer:
                 "stage_selections doit etre une liste valide.",
                 status=400,
             )
+        selections = _enabled_manual_running_economy_selections(
+            selections,
+            stage_selections,
+        )
         if selections == [] and not stage_selections:
-            self.session_manager.clear_manual_running_economy(match_id)
+            manager.clear_manual_running_economy(match_id)
             return {"ok": True, "manual_running_economy": None}
         data = self._build_manual_running_economy(context, match_id, selections, payload)
         if not data["ok"]:
@@ -345,7 +476,7 @@ class LocalMetaSoftServer:
         if stage_selections:
             data["stage_selections"] = stage_selections
         try:
-            fingerprint = self.session_manager.build_manual_running_economy_fingerprint(
+            fingerprint = manager.build_manual_running_economy_fingerprint(
                 context["match_info"],
                 data,
                 context["profile"],
@@ -356,7 +487,7 @@ class LocalMetaSoftServer:
                     "Fingerprint local EC/XML indisponible.",
                     status=409,
                 )
-            self.session_manager.save_manual_running_economy(match_id, data, fingerprint)
+            manager.save_manual_running_economy(match_id, data, fingerprint)
         except ValueError as exc:
             return _error(
                 "manual_running_economy_corrupt",
@@ -413,8 +544,8 @@ class LocalMetaSoftServer:
             "source": "profile.stress_test_results.measured_vo2max",
         }
 
-    def _officialize_payload(self, match_id, payload):
-        context = self._match_context(match_id)
+    def _officialize_payload(self, match_id, payload, browser_context):
+        context = self._match_context(match_id, browser_context)
         if not context["ok"]:
             return context
         markers_result = self._officialize(context, payload)
@@ -427,8 +558,8 @@ class LocalMetaSoftServer:
             "warnings": _marker_warnings(markers_result["markers"]),
         }
 
-    def _report_preview_payload(self, match_id, payload):
-        context = self._match_context(match_id)
+    def _report_preview_payload(self, match_id, payload, browser_context):
+        context = self._match_context(match_id, browser_context)
         if not context["ok"]:
             return context
         identity_error = _identity_error(context)
@@ -437,7 +568,11 @@ class LocalMetaSoftServer:
         patch_result = self._patch_from_payload(context, payload)
         if not patch_result["ok"]:
             return patch_result
-        conflicts = _patch_conflicts(context["profile"], patch_result["patch_result"])
+        conflicts = _patch_conflicts(
+            context["profile"],
+            patch_result["patch_result"],
+            ignored_roots=_explicitly_edited_profile_roots(payload, context),
+        )
         return {
             "ok": True,
             "status": "conflict" if conflicts else "ready",
@@ -447,17 +582,18 @@ class LocalMetaSoftServer:
             "warnings": patch_result["warnings"],
         }
 
-    def _report_payload(self, match_id, payload):
-        context = self._match_context(match_id)
+    def _report_payload(self, match_id, payload, browser_context):
+        context = self._match_context(match_id, browser_context)
         if not context["ok"]:
             return context
+        manager = context["session_manager"]
         identity_error = _identity_error(context)
         if identity_error:
             return identity_error
         patch_result = self._patch_from_payload(context, payload)
         if not patch_result["ok"]:
             return patch_result
-        previous_provenance = self.session_manager.validate_metasoft_report(
+        previous_provenance = manager.validate_metasoft_report(
             context["match_info"],
             context["profile"],
         )
@@ -472,7 +608,11 @@ class LocalMetaSoftServer:
                 status=409,
             )
 
-        conflicts = _patch_conflicts(context["profile"], patch_result["patch_result"])
+        conflicts = _patch_conflicts(
+            context["profile"],
+            patch_result["patch_result"],
+            ignored_roots=_explicitly_edited_profile_roots(payload, context),
+        )
         if conflicts and payload.get("conflict_policy") != "overwrite":
             return _error(
                 "profile_conflict",
@@ -501,11 +641,11 @@ class LocalMetaSoftServer:
         )
         canonical_markers.update(deepcopy(patch_result["markers"]))
         try:
-            manual_state = self.session_manager.manual_running_economy_state(
+            manual_state = manager.manual_running_economy_state(
                 match_id,
                 context["match_info"],
             )
-            manual_snapshot = self.session_manager.snapshot_manual_running_economy_entry(
+            manual_snapshot = manager.snapshot_manual_running_economy_entry(
                 match_id
             )
         except ValueError as exc:
@@ -535,7 +675,7 @@ class LocalMetaSoftServer:
             )
         final_ec_fingerprint = None
         if manual_running_economy is not None:
-            final_ec_fingerprint = self.session_manager.build_manual_running_economy_fingerprint(
+            final_ec_fingerprint = manager.build_manual_running_economy_fingerprint(
                 context["match_info"],
                 manual_running_economy,
                 profile,
@@ -550,42 +690,42 @@ class LocalMetaSoftServer:
         previous_report = deepcopy(context["match_info"].metasoft_report)
         try:
             if updated_paths:
-                saved_name = self.session_manager.update_profile(profile_name, profile)
+                saved_name = manager.update_profile(profile_name, profile)
                 if not saved_name:
                     raise ValueError("Sauvegarde profil impossible")
                 profile_name = saved_name
             if manual_result.get("present"):
                 if manual_running_economy is None:
-                    self.session_manager.clear_manual_running_economy(match_id)
+                    manager.clear_manual_running_economy(match_id)
                 else:
-                    self.session_manager.save_manual_running_economy(
+                    manager.save_manual_running_economy(
                         match_id,
                         manual_running_economy,
                         final_ec_fingerprint,
                     )
-            self.session_manager.record_metasoft_report(
+            manager.record_metasoft_report(
                 context["match_info"],
                 profile,
                 canonical_markers,
                 manual_running_economy,
             )
-            self.session_manager.clear_metasoft_draft(match_id)
+            manager.clear_metasoft_draft(match_id)
         except Exception as exc:
             rollback_errors = []
             try:
                 if updated_paths:
-                    self.session_manager.update_profile(profile_name, original_profile)
+                    manager.update_profile(profile_name, original_profile)
             except Exception as rollback_exc:
                 rollback_errors.append(f"profil: {rollback_exc}")
             try:
-                self.session_manager.restore_manual_running_economy_entry(
+                manager.restore_manual_running_economy_entry(
                     match_id,
                     manual_snapshot,
                 )
             except Exception as rollback_exc:
                 rollback_errors.append(f"EC: {rollback_exc}")
             try:
-                self.session_manager.restore_metasoft_report(
+                manager.restore_metasoft_report(
                     context["match_info"],
                     previous_report,
                 )
@@ -603,7 +743,11 @@ class LocalMetaSoftServer:
 
         # Le profil Python affiche aussi l'EC du sidecar: un report EC seul doit
         # donc déclencher son rafraîchissement même si le JSON profil est identique.
-        self._record_profile_update(profile_name)
+        self._record_profile_update(manager, profile_name)
+        self._refresh_browser_profile_baseline(
+            browser_context["context_token"],
+            profile,
+        )
 
         return {
             "ok": True,
@@ -628,6 +772,10 @@ class LocalMetaSoftServer:
                 "Payload EC manuelle invalide.",
                 status=400,
             )
+        selections = _enabled_manual_running_economy_selections(
+            selections,
+            stage_selections,
+        )
         data = self._build_manual_running_economy(
             context,
             match_id,
@@ -653,7 +801,8 @@ class LocalMetaSoftServer:
 
         patch_results = [
             metasoft_marker_to_stress_patch(marker)
-            for marker in markers_result["markers"].values()
+            for name, marker in markers_result["markers"].items()
+            if name != "Cross-over"
         ]
         lactate_result = _lactate_patch(payload)
         if not lactate_result["ok"]:
@@ -711,20 +860,52 @@ class LocalMetaSoftServer:
             markers[name] = marker["marker"]
         return {"ok": True, "markers": markers, "warnings": _marker_warnings(markers)}
 
-    def _match_context(self, match_id):
-        session = getattr(self.session_manager, "current_session", None)
+    def _match_context(self, match_id, browser_context):
+        manager = browser_context["session_manager"]
+        session = getattr(manager, "current_session", None)
         if not session:
             return _error("session_not_loaded", "Aucune session locale chargee.", status=409)
 
-        match = self._find_match(match_id)
+        # Recharge session.json et matches.json: le meme chemin peut avoir ete
+        # supprime/recree depuis l'ouverture de l'onglet.
+        try:
+            manager.load_session(browser_context["session_path"])
+        except (OSError, ValueError, json.JSONDecodeError):
+            return _error(
+                "browser_context_stale",
+                "La session de cet onglet n'existe plus: rouvrir l'analyse.",
+                status=409,
+            )
+        match = next((
+            item
+            for item in manager.matches
+            if item.profile_name == browser_context["profile_name"]
+            and item.xml_filename == browser_context["xml_filename"]
+        ), None)
         if not match:
             return _error("match_not_found", "Association profil/XML introuvable.", status=404)
+        current_fingerprint = manager.build_metasoft_source_fingerprint(match)
+        if (
+            match.matched_at != browser_context["matched_at"]
+            or current_fingerprint != browser_context["source_fingerprint"]
+        ):
+            return _error(
+                "browser_context_stale",
+                "La session, le match ou le XML de cet onglet a change: rouvrir l'analyse.",
+                status=409,
+            )
 
-        profile = self.session_manager.get_profile(match.profile_name)
+        profile = manager.get_profile(match.profile_name)
         if not profile:
             return _error("profile_not_found", "Profil local introuvable.", status=404)
+        if _profile_mass_kg(profile) != browser_context["profile_mass_kg"]:
+            return _error(
+                "browser_context_stale",
+                "La masse utilisee par l'analyse de cet onglet a change: rouvrir l'analyse.",
+                status=409,
+            )
 
-        xml_path = self.session_manager.get_xml_path(match.xml_filename)
+        xml_path = manager.get_xml_path(match.xml_filename)
         if not xml_path:
             return _error("xml_not_found", "XML local introuvable.", status=404)
 
@@ -740,7 +921,7 @@ class LocalMetaSoftServer:
 
         profile_mass = _profile_mass_kg(profile)
         cache_key = (
-            id(session),
+            browser_context["session_path"],
             getattr(session, "name", None),
             match_id,
             str(xml_file.resolve()),
@@ -774,7 +955,7 @@ class LocalMetaSoftServer:
             # jamais de disque, pour ne pas masquer un XML modifie.
             self._match_context_cache = {cache_key: {"xml_data": xml_data, "analysis": analysis}}
 
-        if not self.session_manager.build_metasoft_source_fingerprint(match):
+        if not current_fingerprint:
             return _error(
                 "match_fingerprint_unavailable",
                 "Fingerprint local profil/XML indisponible.",
@@ -792,10 +973,14 @@ class LocalMetaSoftServer:
             "profile": profile,
             "xml_data": xml_data,
             "analysis": analysis,
+            "session_manager": manager,
+            "context_token": browser_context["context_token"],
+            "profile_lactate_baseline": browser_context["profile_lactate_baseline"],
         }
 
-    def _find_match(self, match_id):
-        for match in getattr(self.session_manager, "matches", []):
+    @staticmethod
+    def _find_match(session_manager, match_id):
+        for match in getattr(session_manager, "matches", []):
             if _match_id(match.profile_name, match.xml_filename) == match_id:
                 return match
         return None
@@ -809,7 +994,9 @@ class _MetaSoftHandler(BaseHTTPRequestHandler):
                 if not self._valid_token():
                     self._send_json(_error("invalid_token", "Token local invalide.", status=403))
                     return
-                self._send_json(self.server.local_api.route_get(parsed.path))
+                self._send_json(
+                    self.server.local_api.route_get(parsed.path, self._request_token())
+                )
                 return
             if parsed.path == "/metasoft":
                 self._send_metasoft_page(parsed)
@@ -830,13 +1017,22 @@ class _MetaSoftHandler(BaseHTTPRequestHandler):
             if not payload["ok"]:
                 self._send_json(payload)
                 return
-            self._send_json(self.server.local_api.route_post(parsed.path, payload["data"]))
+            self._send_json(
+                self.server.local_api.route_post(
+                    parsed.path,
+                    payload["data"],
+                    self._request_token(),
+                )
+            )
 
     def log_message(self, _format, *_args):
         return
 
     def _valid_token(self):
-        return self.headers.get("X-Enduraw-Local-Token") == self.server.local_api.token
+        return self.server.local_api.valid_token(self._request_token())
+
+    def _request_token(self):
+        return self.headers.get("X-Enduraw-Local-Token", "")
 
     def _read_json(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -863,7 +1059,7 @@ class _MetaSoftHandler(BaseHTTPRequestHandler):
 
     def _send_metasoft_page(self, parsed):
         token = parse_qs(parsed.query).get("token", [""])[0]
-        if token != self.server.local_api.token:
+        if not self.server.local_api.valid_browser_context(token):
             self._send_json(_error("invalid_token", "Token local invalide.", status=403))
             return
 
@@ -983,6 +1179,24 @@ def _manual_running_economy_stage_selections(payload):
     return result
 
 
+def _enabled_manual_running_economy_selections(selections, stage_selections):
+    """Ecarte les zones des paliers desactives avant tout calcul officiel.
+
+    Les anciens clients peuvent encore envoyer toutes les zones et transmettre
+    `enabled` separement. Le statut d'inclusion reste donc applique a la
+    frontiere Python, avant la validation de vitesse et des bornes.
+    """
+    enabled_by_stage = {
+        item["stage_index"]: item["enabled"]
+        for item in stage_selections
+    }
+    return [
+        selection
+        for selection in selections
+        if enabled_by_stage.get(_integer(selection.get("stage_index")), True)
+    ]
+
+
 def _lactate_patch(payload):
     """Valide le protocole lactate independant avant ecriture profil."""
     if "lactate_test" not in payload:
@@ -1033,6 +1247,15 @@ def _lactate_patch(payload):
             "speed": round(speed, 3) if speed is not None else None,
             "lactate_mmol_l": round(lactate, 3) if lactate is not None else None,
         }
+        inclusion_touched = item.get("inclusion_touched")
+        if inclusion_touched is not None and not isinstance(inclusion_touched, bool):
+            return _error(
+                "invalid_lactate_test",
+                "Provenance du statut lactate invalide.",
+                status=400,
+            )
+        if inclusion_touched is not None:
+            measurement["inclusion_touched"] = inclusion_touched
         source = item.get("source")
         if source is not None and source not in {"detected", "manual"}:
             return _error("invalid_lactate_test", "Source de mesure lactate invalide.", status=400)
@@ -1054,8 +1277,30 @@ def _lactate_patch(payload):
                     return _error("invalid_lactate_test", "Temps de mesure lactate invalide.", status=400)
                 measurement[key] = round(value, 3)
         normalised.append(measurement)
+    stage_times = [
+        item["time_seconds"]
+        for item in normalised
+        if item["type"] == "stage" and "time_seconds" in item
+    ]
+    if stage_times:
+        effort_end = max(stage_times)
+        for measurement in normalised:
+            if (
+                measurement["type"] in {"recovery", "rest_after"}
+                and "delay_minutes" in measurement
+            ):
+                # Une recuperation +N min est ancree N minutes apres l'effort,
+                # quelle que soit une ancienne valeur temporelle du profil.
+                measurement["time_seconds"] = round(
+                    effort_end + measurement["delay_minutes"] * 60,
+                    3,
+                )
     if normalised[0]["type"] != "rest_before":
-        return _error("invalid_lactate_test", "Le protocole doit commencer par une mesure de repos.", status=400)
+        return _error(
+            "invalid_lactate_test",
+            "Le protocole doit commencer par une mesure de repos.",
+            status=400,
+        )
     included = [item for item in normalised if item["enabled"]]
     if len(included) < 2 or not any(item["type"] == "stage" for item in included):
         return _error("invalid_lactate_test", "Au moins un palier lactate doit etre inclus.", status=400)
@@ -1067,15 +1312,10 @@ def _lactate_patch(payload):
         value = thresholds.get(name)
         if value is None:
             continue
-        index = _integer(value)
-        if index is None or index < 0 or index >= len(normalised):
-            return _error("invalid_lactate_test", f"{name.upper()} lactate invalide.", status=400)
-        if normalised[index]["type"] != "stage" or not normalised[index]["enabled"]:
-            return _error("invalid_lactate_test", f"{name.upper()} doit viser un palier.", status=400)
-        resolved_thresholds[name] = {
-            "measurement_index": index,
-            **deepcopy(normalised[index]),
-        }
+        threshold = _normalise_lactate_threshold(name, value, normalised)
+        if not threshold["ok"]:
+            return threshold
+        resolved_thresholds[name] = threshold["threshold"]
     return {
         "ok": True,
         "present": True,
@@ -1089,6 +1329,236 @@ def _lactate_patch(payload):
             "warnings": [],
         },
     }
+
+
+def _lactate_speed_at_time(measurements, time_seconds):
+    """Interpole la vitesse entre les paliers physiques dates du protocole."""
+    stages = sorted(
+        (
+            (item.get("time_seconds"), item.get("speed"))
+            for item in measurements
+            if item.get("type") == "stage"
+            and _number(item.get("time_seconds")) is not None
+            and _number(item.get("speed")) is not None
+        ),
+        key=lambda item: item[0],
+    )
+    if not stages or not stages[0][0] <= time_seconds <= stages[-1][0]:
+        return None
+    for (left_time, left_speed), (right_time, right_speed) in zip(stages, stages[1:]):
+        if not left_time <= time_seconds <= right_time:
+            continue
+        if right_time == left_time:
+            return left_speed
+        ratio = (time_seconds - left_time) / (right_time - left_time)
+        return left_speed + ratio * (right_speed - left_speed)
+    return stages[-1][1]
+
+
+def _normalise_lactate_threshold(name, value, measurements):
+    """Valide un seuil continu en km/h et sa position temporelle en secondes."""
+    if not isinstance(value, dict):
+        index = _integer(value)
+        if index is None or index < 0 or index >= len(measurements):
+            return _error(
+                "invalid_lactate_test",
+                f"{name.upper()} lactate invalide.",
+                status=400,
+            )
+        if measurements[index]["type"] != "stage" or not measurements[index]["enabled"]:
+            return _error(
+                "invalid_lactate_test",
+                f"{name.upper()} doit viser un palier.",
+                status=400,
+            )
+        return {
+            "ok": True,
+            "threshold": {
+                "measurement_index": index,
+                **deepcopy(measurements[index]),
+            },
+        }
+
+    mode = value.get("mode")
+    speed = _number(value.get("speed_kmh", value.get("speed")))
+    if mode not in {"point", "range"} or speed is None or not 0 < speed <= 40:
+        return _error(
+            "invalid_lactate_test",
+            f"{name.upper()} doit avoir une vitesse positive en km/h.",
+            status=400,
+        )
+    threshold = {
+        "mode": mode,
+        "speed": round(speed, 3),
+        "source": "manual_graph_selection",
+    }
+
+    time_keys = (
+        "time_seconds",
+        "window_start_seconds",
+        "window_end_seconds",
+    )
+    times = {key: _number(value.get(key)) for key in time_keys}
+    if any(key in value and times[key] is None for key in time_keys):
+        return _error(
+            "invalid_lactate_test",
+            f"Temps {name.upper()} invalide.",
+            status=400,
+        )
+    if any(
+        time is not None and not 0 <= time <= 100_000
+        for time in times.values()
+    ):
+        return _error(
+            "invalid_lactate_test",
+            f"Temps {name.upper()} hors protocole.",
+            status=400,
+        )
+    time_seconds = times["time_seconds"]
+    has_dated_stages = any(
+        item.get("type") == "stage"
+        and _number(item.get("time_seconds")) is not None
+        and _number(item.get("speed")) is not None
+        for item in measurements
+    )
+    if time_seconds is not None and has_dated_stages:
+        expected_speed = _lactate_speed_at_time(measurements, time_seconds)
+        if expected_speed is None or abs(expected_speed - speed) > 0.051:
+            return _error(
+                "invalid_lactate_test",
+                f"Temps {name.upper()} hors paliers ou incoherent avec sa vitesse.",
+                status=400,
+            )
+    if times["time_seconds"] is not None:
+        # Le temps conserve le clic exact sans transformer ce seuil en prélèvement.
+        threshold["time_seconds"] = round(times["time_seconds"], 3)
+
+    legacy_keys = (
+        "timeline_position",
+        "timeline_start_position",
+        "timeline_end_position",
+    )
+    legacy_timeline = {key: _number(value.get(key)) for key in legacy_keys}
+    if any(key in value and legacy_timeline[key] is None for key in legacy_keys):
+        return _error(
+            "invalid_lactate_test",
+            f"Position graphique {name.upper()} invalide.",
+            status=400,
+        )
+    maximum_position = len(measurements) - 1
+    if any(
+        position is not None and not 0 <= position <= maximum_position
+        for position in legacy_timeline.values()
+    ):
+        return _error(
+            "invalid_lactate_test",
+            f"Position graphique {name.upper()} hors protocole.",
+            status=400,
+        )
+
+    if mode == "range":
+        start = _number(value.get("speed_start_kmh", value.get("speed_start")))
+        end = _number(value.get("speed_end_kmh", value.get("speed_end")))
+        has_temporal_window = (
+            times["window_start_seconds"] is not None
+            and times["window_end_seconds"] is not None
+        )
+        if (start is None) != (end is None):
+            return _error(
+                "invalid_lactate_test",
+                f"Plage {name.upper()} incomplète en km/h.",
+                status=400,
+            )
+        if start is not None and end is not None:
+            valid_speed_window = (
+                0 < start <= 40 and 0 < end <= 40
+                if has_temporal_window
+                else 0 < start < end <= 40 and start <= speed <= end
+            )
+            if not valid_speed_window:
+                return _error(
+                    "invalid_lactate_test",
+                    f"Plage {name.upper()} invalide en km/h.",
+                    status=400,
+                )
+            threshold.update({
+                "speed_start": round(start, 3),
+                "speed_end": round(end, 3),
+            })
+
+        window_start = times["window_start_seconds"]
+        window_end = times["window_end_seconds"]
+        if (window_start is None) != (window_end is None):
+            return _error(
+                "invalid_lactate_test",
+                f"Plage temporelle {name.upper()} incomplète.",
+                status=400,
+            )
+        if window_start is not None and window_end is not None:
+            center = times["time_seconds"]
+            if (
+                center is None
+                or window_start >= window_end
+                or not window_start <= center <= window_end
+                or (
+                    has_dated_stages
+                    and (
+                        _lactate_speed_at_time(measurements, window_start) is None
+                        or _lactate_speed_at_time(measurements, window_end) is None
+                    )
+                )
+            ):
+                return _error(
+                    "invalid_lactate_test",
+                    f"Plage temporelle {name.upper()} invalide.",
+                    status=400,
+                )
+            threshold.update({
+                "window_start_seconds": round(window_start, 3),
+                "window_end_seconds": round(window_end, 3),
+            })
+
+        legacy_start = legacy_timeline["timeline_start_position"]
+        legacy_end = legacy_timeline["timeline_end_position"]
+        if (legacy_start is None) != (legacy_end is None):
+            return _error(
+                "invalid_lactate_test",
+                f"Plage graphique {name.upper()} incomplète.",
+                status=400,
+            )
+        if legacy_start is not None and legacy_end is not None:
+            legacy_center = legacy_timeline["timeline_position"]
+            if (
+                legacy_start >= legacy_end
+                or (
+                    legacy_center is not None
+                    and not legacy_start <= legacy_center <= legacy_end
+                )
+            ):
+                return _error(
+                    "invalid_lactate_test",
+                    f"Plage graphique {name.upper()} invalide.",
+                    status=400,
+                )
+
+        # Les anciens clients décrivaient la plage en km/h; le nouveau contrat
+        # la décrit en secondes. Au moins une des deux représentations est requise.
+        if start is None and window_start is None:
+            return _error(
+                "invalid_lactate_test",
+                f"Plage {name.upper()} absente.",
+                status=400,
+            )
+    elif (
+        any(times[key] is not None for key in time_keys[1:])
+        or any(legacy_timeline[key] is not None for key in legacy_keys[1:])
+    ):
+        return _error(
+            "invalid_lactate_test",
+            f"Une ligne {name.upper()} ne peut pas avoir de plage.",
+            status=400,
+        )
+    return {"ok": True, "threshold": threshold}
 
 
 def _marker_from_selection(points, selection):
@@ -1235,9 +1705,11 @@ def _deep_merge(target, source):
             target[key] = deepcopy(value)
 
 
-def _patch_conflicts(profile, patch_result):
+def _patch_conflicts(profile, patch_result, ignored_roots=()):
     conflicts = []
     for path, incoming in _flatten_patch_values(patch_result.get("patch", {})):
+        if any(path[:len(root)] == root for root in ignored_roots):
+            continue
         current = _read_path(profile, path)
         if _empty_value(current) or _same_value(current, incoming):
             continue
@@ -1247,6 +1719,9 @@ def _patch_conflicts(profile, patch_result):
             "incoming": incoming,
         })
     for path in patch_result.get("delete_paths", []):
+        path = tuple(path)
+        if any(path[:len(root)] == root for root in ignored_roots):
+            continue
         current = _read_path(profile, path)
         if _empty_value(current):
             continue
@@ -1256,6 +1731,26 @@ def _patch_conflicts(profile, patch_result):
             "incoming": None,
         })
     return conflicts
+
+
+def _explicitly_edited_profile_roots(payload, context):
+    """Liste les blocs dont l'edition React vaut confirmation utilisateur.
+
+    Une saisie lactate est un remplacement explicite du protocole visible; elle
+    ne doit pas demander une seconde confirmation generique d'overwrite. Cette
+    exemption cesse si le profil a change depuis l'ouverture de l'onglet.
+    """
+    if not isinstance(payload, dict) or "lactate_test" not in payload:
+        return ()
+    if (
+        metasoft_profile_lactate_snapshot(context["profile"])
+        != context["profile_lactate_baseline"]
+    ):
+        return ()
+    return (
+        ("stress_test_results", "lactate_profile"),
+        ("stress_test_results", "lactate_thresholds"),
+    )
 
 
 def _patch_updated_paths(profile, patch_result):
@@ -1422,6 +1917,8 @@ def _normalise_marker_name(name):
     normalized = str(name or "").strip().replace(" ", "_").replace("-", "_")
     if normalized.lower() == "vo2max":
         return "VO2_max"
+    if normalized.lower() == "cross_over":
+        return "Cross-over"
     for marker_name in VALID_MARKERS:
         if marker_name.lower() == normalized.lower():
             return marker_name

@@ -4,7 +4,8 @@ Le module ne lit aucun fichier et ne depend ni des graphes lisses, ni des
 agregats 15 s. Source unique: `points`, la liste issue du parser MetaSoft
 normalise, avec temps en secondes et valeurs natives dans `point["values"]`.
 Les fenetres vides ou selections invalides restent bloquantes: aucune valeur
-officielle n'est inventee par fallback.
+officielle n'est inventee par fallback. Les proportions Fat/CHO sont calculees
+depuis leurs oxydations natives en kcal/h uniquement si leur total est positif.
 """
 from copy import deepcopy
 from math import isfinite
@@ -12,7 +13,14 @@ from statistics import mean
 from typing import Optional
 
 
-MARKER_VALUE_KEYS = ("fc_bpm", "vo2_l_min", "vo2_ml_kg_min", "speed_kmh")
+MARKER_VALUE_KEYS = (
+    "fc_bpm",
+    "vo2_l_min",
+    "vo2_ml_kg_min",
+    "speed_kmh",
+    "decho_kcal_h",
+    "defat_kcal_h",
+)
 MARKER_PROFILE_PATHS = {
     "SV1": (
         ("stress_test_results", "thresholds", "sv1", "hr_bpm"),
@@ -29,6 +37,8 @@ MARKER_PROFILE_PATHS = {
         ("stress_test_results", "measured_vo2max"),
     ),
     "VMA": (("stress_test_results", "vma"),),
+    # Cross-over reste un marqueur d'audit MetaSoft sans champ profil historique.
+    "Cross-over": (),
 }
 
 
@@ -148,6 +158,19 @@ def build_metasoft_marker(
 
 def metasoft_marker_to_stress_patch(marker: dict) -> dict:
     """Mappe une operation marqueur vers ses champs de profil possedes."""
+    if _normalise_marker_name(marker.get("name")) == "cross_over":
+        if marker.get("status") not in {"ok", "deleted"}:
+            return {
+                "status": "blocked",
+                "patch": {},
+                "warnings": marker.get("warnings", []),
+            }
+        return {
+            "status": "ok",
+            "patch": {"stress_test_results": {}},
+            "delete_paths": [],
+            "warnings": [],
+        }
     if marker.get("action") == "delete" and marker.get("status") == "deleted":
         delete_paths = _marker_delete_paths(marker.get("name"))
         if delete_paths:
@@ -408,6 +431,25 @@ def _official_values(name: str, selected_points: list[dict]) -> dict:
             if isinstance(point.get("values", {}).get(key), (int, float))
         ]
         values[key] = round(mean(samples), 3) if samples else None
+    # Les proportions viennent des oxydations natives en kcal/h, sans reconstruire
+    # un pourcentage lorsqu'une source manque ou que leur somme n'est pas positive.
+    decho_kcal_h = values["decho_kcal_h"]
+    defat_kcal_h = values["defat_kcal_h"]
+    total_kcal_h = (
+        decho_kcal_h + defat_kcal_h
+        if decho_kcal_h is not None and defat_kcal_h is not None
+        else None
+    )
+    values["fat_percent"] = (
+        round(defat_kcal_h / total_kcal_h * 100, 3)
+        if total_kcal_h is not None and total_kcal_h > 0
+        else None
+    )
+    values["cho_percent"] = (
+        round(decho_kcal_h / total_kcal_h * 100, 3)
+        if total_kcal_h is not None and total_kcal_h > 0
+        else None
+    )
     values["vma"] = values["speed_kmh"] if _normalise_marker_name(name) == "vma" else None
     return values
 
@@ -442,6 +484,7 @@ def _canonical_marker_name(name) -> str:
         "sv2": "SV2",
         "vo2_max": "VO2_max",
         "vma": "VMA",
+        "cross_over": "Cross-over",
     }.get(_normalise_marker_name(name), "")
 
 

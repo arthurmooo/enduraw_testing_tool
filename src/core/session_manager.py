@@ -345,16 +345,17 @@ class SessionManager:
                 new_filepath = profiles_dir / new_filename
                 counter += 1
             
-            # Update any matches pointing to old filename
-            for match in self.matches:
-                if match.profile_name == filename:
-                    match.profile_name = new_filename
-            self._save_matches()
-            
-            # Rename file
-            if new_filepath != filepath:
-                filepath.rename(new_filepath)
-                filepath = new_filepath
+            with self._matches_lock:
+                self._load_matches()
+                # Conserve les reports concurrents avant de renommer l'association.
+                for match in self.matches:
+                    if match.profile_name == filename:
+                        match.profile_name = new_filename
+                self._save_matches()
+
+                if new_filepath != filepath:
+                    filepath.rename(new_filepath)
+                    filepath = new_filepath
         
         # Le profil est une source officielle: un crash ne doit jamais laisser
         # un JSON tronque entre le report React et l'export Valentin.
@@ -437,18 +438,19 @@ class SessionManager:
         return profiles
     
     def delete_profile(self, filename: str) -> bool:
-        """Delete a profile"""
+        """Supprime un profil et son association locale."""
         if not self.current_session_path:
             return False
-        
-        filepath = self.current_session_path / self.PROFILES_DIR / filename
-        if filepath.exists():
+
+        with self._matches_lock:
+            filepath = self.current_session_path / self.PROFILES_DIR / filename
+            if not filepath.exists():
+                return False
+            self._load_matches()
             filepath.unlink()
-            # Remove any matches for this profile
             self.matches = [m for m in self.matches if m.profile_name != filename]
             self._save_matches()
             return True
-        return False
     
     # ==================== XML OPERATIONS ====================
     
@@ -566,39 +568,33 @@ class SessionManager:
                     temporary_file.unlink()
     
     def create_match(self, profile_filename: str, xml_filename: str) -> ProfileMatch:
-        """
-        Create a match between a profile and an XML file.
-        
-        Args:
-            profile_filename: Profile JSON filename
-            xml_filename: XML filename
-            
-        Returns:
-            Created ProfileMatch
-        """
-        # Remove any existing match for this profile or XML
-        self.matches = [m for m in self.matches 
-                       if m.profile_name != profile_filename 
-                       and m.xml_filename != xml_filename]
-        
-        match = ProfileMatch(
-            profile_name=profile_filename,
-            xml_filename=xml_filename
-        )
-        self.matches.append(match)
-        self._save_matches()
-        
-        return match
+        """Cree une association entre un profil et un XML locaux."""
+        with self._matches_lock:
+            self._load_matches()
+            # Retire toute association existante pour ce profil ou ce XML.
+            self.matches = [m for m in self.matches
+                            if m.profile_name != profile_filename
+                            and m.xml_filename != xml_filename]
+
+            match = ProfileMatch(
+                profile_name=profile_filename,
+                xml_filename=xml_filename
+            )
+            self.matches.append(match)
+            self._save_matches()
+            return match
     
     def remove_match(self, profile_filename: str) -> bool:
-        """Remove a match by profile filename"""
-        initial_count = len(self.matches)
-        self.matches = [m for m in self.matches if m.profile_name != profile_filename]
-        
-        if len(self.matches) < initial_count:
-            self._save_matches()
-            return True
-        return False
+        """Retire l'association du profil donne."""
+        with self._matches_lock:
+            self._load_matches()
+            initial_count = len(self.matches)
+            self.matches = [m for m in self.matches if m.profile_name != profile_filename]
+
+            if len(self.matches) < initial_count:
+                self._save_matches()
+                return True
+            return False
     
     def get_match_for_profile(self, profile_filename: str) -> Optional[ProfileMatch]:
         """Get match for a profile"""
@@ -627,12 +623,14 @@ class SessionManager:
         return [x for x in all_xmls if x['filename'] not in matched_names]
     
     def mark_as_exported(self, profile_filename: str):
-        """Mark a match as exported"""
-        for match in self.matches:
-            if match.profile_name == profile_filename:
-                match.exported = True
-                self._save_matches()
-                break
+        """Marque comme exportee l'association du profil donne."""
+        with self._matches_lock:
+            self._load_matches()
+            for match in self.matches:
+                if match.profile_name == profile_filename:
+                    match.exported = True
+                    self._save_matches()
+                    break
     
     # ==================== OUTPUT OPERATIONS ====================
     
@@ -809,9 +807,19 @@ class SessionManager:
             metasoft_profile_marker_snapshot,
         )
 
+        requested_match = match
         with self._matches_lock:
-            if not any(item is match for item in self.matches):
+            self._load_matches()
+            current_match = next((
+                item
+                for item in self.matches
+                if item.profile_name == match.profile_name
+                and item.xml_filename == match.xml_filename
+                and item.matched_at == match.matched_at
+            ), None)
+            if current_match is None:
                 raise ValueError("Association profil/XML MetaSoft perimee")
+            match = current_match
             fingerprint = self.build_metasoft_source_fingerprint(match)
             if not fingerprint:
                 raise ValueError("Fingerprint source MetaSoft indisponible")
@@ -836,15 +844,28 @@ class SessionManager:
             except Exception:
                 match.metasoft_report = previous
                 raise
+            requested_match.metasoft_report = deepcopy(match.metasoft_report)
 
     def restore_metasoft_report(
         self,
         match: ProfileMatch,
         report: Optional[Dict[str, Any]],
     ) -> None:
+        requested_match = match
         with self._matches_lock:
-            match.metasoft_report = deepcopy(report)
+            self._load_matches()
+            current_match = next((
+                item
+                for item in self.matches
+                if item.profile_name == match.profile_name
+                and item.xml_filename == match.xml_filename
+                and item.matched_at == match.matched_at
+            ), None)
+            if current_match is None:
+                raise ValueError("Association profil/XML MetaSoft perimee")
+            current_match.metasoft_report = deepcopy(report)
             self._save_matches()
+            requested_match.metasoft_report = deepcopy(report)
 
     def clear_manual_running_economy(self, match_id: str) -> None:
         """Supprime l'EC manuelle sauvegardee pour ce match uniquement."""

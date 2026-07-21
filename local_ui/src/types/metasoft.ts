@@ -33,7 +33,7 @@ export type MetaSoftGraphId =
   | "pet_time"
   | "running_economy";
 
-export type MetaSoftMarkerName = "SV1" | "SV2" | "VO2_max" | "VMA";
+export type MetaSoftMarkerName = "SV1" | "SV2" | "VO2_max" | "VMA" | "Cross-over";
 export type MarkerMode = "point" | "range" | "previous";
 export type ChartProcessingMode = "raw" | "blocks" | "smooth";
 
@@ -140,6 +140,7 @@ export interface LactateMeasurementDraft {
   speed: number | null;
   lactate_mmol_l: number | null;
   enabled?: boolean;
+  inclusion_touched?: boolean;
   source?: "detected" | "manual";
   label?: string | null;
   stage_index?: number | null;
@@ -148,10 +149,20 @@ export interface LactateMeasurementDraft {
   delay_minutes?: number | null;
 }
 
+export interface LactateThresholdDraft {
+  mode: "point" | "range";
+  speed_kmh: number;
+  speed_start_kmh?: number | null;
+  speed_end_kmh?: number | null;
+  time_seconds?: number | null;
+  window_start_seconds?: number | null;
+  window_end_seconds?: number | null;
+}
+
 export interface LactateTestDraft {
   active: boolean;
   measurements: LactateMeasurementDraft[];
-  thresholds: { sl1?: number | null; sl2?: number | null };
+  thresholds: { sl1?: LactateThresholdDraft | null; sl2?: LactateThresholdDraft | null };
 }
 
 export interface MetaSoftWarning {
@@ -209,6 +220,10 @@ export interface MetaSoftMarker {
     speed_kmh?: number | null;
     rer?: number | null;
     de_kcal_h?: number | null;
+    decho_kcal_h?: number | null;
+    defat_kcal_h?: number | null;
+    fat_percent?: number | null;
+    cho_percent?: number | null;
     vma?: number | null;
   };
   warnings?: MetaSoftWarning[];

@@ -135,12 +135,16 @@ def _marker_point(
     vo2_l_min: float | None,
     vo2_ml_kg_min: float | None,
     speed_kmh: float | None,
+    decho_kcal_h: float | None = None,
+    defat_kcal_h: float | None = None,
 ) -> dict:
     values = {
         "fc_bpm": fc_bpm,
         "vo2_l_min": vo2_l_min,
         "vo2_ml_kg_min": vo2_ml_kg_min,
         "speed_kmh": speed_kmh,
+        "decho_kcal_h": decho_kcal_h,
+        "defat_kcal_h": defat_kcal_h,
     }
     return {
         "t_seconds": t_seconds,
@@ -491,6 +495,35 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         self.assertEqual(payload["test_lactate"]["mesures"][2]["order"], 2)
         self.assertEqual(payload["test_lactate"]["seuils"]["sl1"]["measurement_index"], 1)
 
+    def test_lactate_export_keeps_continuous_threshold_without_measurement_index(self) -> None:
+        profile = _manual_profile()
+        profile["stress_test_results"]["lactate_profile"] = [
+            {"type": "rest_before", "speed": 0, "lactate_mmol_l": 1.1},
+            {"type": "stage", "speed": 10, "lactate_mmol_l": 2.0},
+        ]
+        profile["stress_test_results"]["lactate_thresholds"] = {
+            "sl1": {
+                "mode": "range",
+                "speed": 10.7,
+                "source": "manual_graph_selection",
+                "time_seconds": 540,
+                "window_start_seconds": 510,
+                "window_end_seconds": 570,
+                "timeline_position": 1.35,
+            },
+        }
+
+        payload = DataTransformer().transform({}, profile)
+
+        threshold = payload["test_lactate"]["seuils"]["sl1"]
+        self.assertEqual(threshold["speed"], 10.7)
+        self.assertEqual(threshold["time_seconds"], 540)
+        self.assertEqual(threshold["window_start_seconds"], 510)
+        self.assertEqual(threshold["window_end_seconds"], 570)
+        self.assertNotIn("measurement_index", threshold)
+        self.assertNotIn("lactate_mmol_l", threshold)
+        self.assertNotIn("timeline_position", threshold)
+
     def test_vco2_derives_from_ve_ratio_when_vo2_rer_is_unavailable(self) -> None:
         points = [{
             "values": {"ve_l_min": 44.0, "ve_vco2": 22.0},
@@ -627,6 +660,44 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         self.assertEqual(marker["values"]["fc_bpm"], 120)
         self.assertEqual(marker["values"]["vo2_ml_kg_min"], 40)
         self.assertEqual(marker["values"]["speed_kmh"], 12)
+
+    def test_cross_over_uses_native_fat_and_cho_oxidation_percentages(self) -> None:
+        points = [
+            _marker_point(10, 120, 2.0, 40, 12, 300, 100),
+            _marker_point(20, 140, 3.0, 50, 14, 500, 500),
+        ]
+
+        marker = build_metasoft_marker(
+            points,
+            "Cross-over",
+            window_start_seconds=10,
+            window_end_seconds=20,
+        )
+        patch_result = metasoft_marker_to_stress_patch(marker)
+
+        self.assertEqual(marker["values"]["decho_kcal_h"], 400)
+        self.assertEqual(marker["values"]["defat_kcal_h"], 300)
+        self.assertEqual(marker["values"]["fat_percent"], 42.857)
+        self.assertEqual(marker["values"]["cho_percent"], 57.143)
+        self.assertEqual(patch_result["status"], "ok")
+        self.assertEqual(patch_result["patch"], {"stress_test_results": {}})
+
+    def test_cross_over_keeps_percentages_unavailable_without_positive_total(self) -> None:
+        zero_total = build_metasoft_marker(
+            [_marker_point(10, 120, 2.0, 40, 12, 0, 0)],
+            "Cross-over",
+            t_seconds=10,
+        )
+        missing_fat = build_metasoft_marker(
+            [_marker_point(10, 120, 2.0, 40, 12, 300, None)],
+            "Cross-over",
+            t_seconds=10,
+        )
+
+        self.assertIsNone(zero_total["values"]["fat_percent"])
+        self.assertIsNone(zero_total["values"]["cho_percent"])
+        self.assertIsNone(missing_fat["values"]["fat_percent"])
+        self.assertIsNone(missing_fat["values"]["cho_percent"])
 
     def test_marker_mapping_uses_ml_kg_vo2_and_speed_for_vma(self) -> None:
         sv1_marker = build_metasoft_marker(

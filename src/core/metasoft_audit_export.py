@@ -41,13 +41,16 @@ def build_metasoft_audit_export(
     ui_warnings: list[dict] | None = None,
     include_audit_points: bool = False,
     audit_point_step: int = 30,
+    manual_running_economy: dict | None = None,
 ) -> dict:
     """Construit le sidecar auditable MetaSoft.
 
     `analysis` vient de `build_metasoft_analysis`: EC en J/kg/m, baseline repos
     et metriques XML natives. `markers` vient de `build_metasoft_marker`: temps
-    en secondes, valeurs officielles brutes ou moyenne brute de fenetre. Les
-    points lisses et agregats graphiques ne sont jamais lus ni exposes.
+    en secondes, valeurs officielles brutes ou moyenne brute de fenetre.
+    `manual_running_economy` est l'EC officielle validee pour le match; les
+    paliers explicitement desactives sont exclus comme dans le JSON Valentin.
+    Les points lisses et agregats graphiques ne sont jamais lus ni exposes.
     """
     profile = profile or {}
     markers = _normalise_markers(markers)
@@ -107,6 +110,11 @@ def build_metasoft_audit_export(
         "warnings": warnings,
     }
 
+    official_manual_ec = _official_manual_running_economy(manual_running_economy)
+    if official_manual_ec:
+        # L'EC automatique reste distincte de la selection manuelle officielle.
+        sidecar["running_economy_manual"] = official_manual_ec
+
     if include_audit_points:
         sidecar["audit_points"] = _decimated_audit_points(
             analysis.get("points", []),
@@ -114,6 +122,29 @@ def build_metasoft_audit_export(
         )
 
     return sidecar
+
+
+def _official_manual_running_economy(manual_running_economy: dict | None) -> dict | None:
+    """Copie l'EC manuelle et retire les paliers explicitement desactives."""
+    if not manual_running_economy or not manual_running_economy.get("rows"):
+        return None
+
+    enabled_by_stage = {
+        item.get("stage_index"): item.get("enabled")
+        for item in manual_running_economy.get("stage_selections") or []
+        if isinstance(item, dict)
+    }
+    rows = [
+        deepcopy(row)
+        for row in manual_running_economy["rows"]
+        if enabled_by_stage.get(row.get("stage_index"), True) is not False
+    ]
+    if not rows:
+        return None
+    return {
+        **deepcopy(manual_running_economy),
+        "rows": rows,
+    }
 
 
 def _normalise_markers(markers) -> dict:

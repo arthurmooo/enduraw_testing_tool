@@ -60,6 +60,8 @@ export function MarkerPanel({
               <th>VO2/kg</th>
               <th>%VO2max</th>
               <th>Vitesse</th>
+              <th>% Fat</th>
+              <th>% CHO</th>
               <th>Statut</th>
             </tr>
           </thead>
@@ -107,6 +109,8 @@ export function MarkerPanel({
                   <td>{formatNumber(row.values.vo2_ml_kg_min, 1)}</td>
                   <td>{formatNumber(percentVo2Max(row.values.vo2_ml_kg_min, displayedVo2maxMlKgMin), 1)}</td>
                   <td>{formatNumber(row.values.speed_kmh, 1)}</td>
+                  <td>{formatNumber(row.values.fat_percent, 1)}</td>
+                  <td>{formatNumber(row.values.cho_percent, 1)}</td>
                   <td>
                     {dirty ? (
                       <span className="status-warn">A reporter</span>
@@ -125,7 +129,7 @@ export function MarkerPanel({
         </table>
       </div>
       <p className="panel-note">
-        Reporter au profil officialise les marqueurs. Clic secondaire sur un marqueur : modifier sa longueur ou le supprimer.
+        Reporter au profil officialise les marqueurs. Double-cliquez un marqueur pour modifier sa longueur ou le supprimer.
       </p>
       {draftSaveStatus && <p className="draft-save-status">{draftSaveStatus}</p>}
     </section>

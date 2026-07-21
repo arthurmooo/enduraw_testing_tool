@@ -341,6 +341,50 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
         self.assertEqual(sidecar["warnings"]["ui"], [])
         self.assertEqual(sidecar["warnings"]["analysis"][0]["code"], "parser_note")
 
+    def test_sidecar_manual_ec_matches_valentin_json(self) -> None:
+        session_manager = _SessionManager()
+        manual_ec = {
+            "source": "python.metasoft_analysis.manual_running_economy",
+            "match_id": "abc123",
+            "rows": [
+                {"stage_index": 1, "ec_j_kg_m": 4.23},
+                {"stage_index": 2, "ec_j_kg_m": 4.67},
+            ],
+            "stage_selections": [
+                {"stage_index": 1, "enabled": True},
+                {"stage_index": 2, "enabled": False},
+            ],
+        }
+        xml_data = {
+            "patient_data": {"Nom": "Mo", "Prénom": "Arthur"},
+            "filename_data": {"date": "2026-07-08"},
+            "measurements": [],
+            "metasoft_analysis": _analysis(),
+        }
+        profile = {
+            "email": "arthur@example.test",
+            "identity": {"first_name": "Arthur", "last_name": "Mo"},
+            "stress_test_results": {},
+        }
+
+        output = DataTransformer().transform(xml_data, profile, manual_ec)
+        _save_metasoft_audit_sidecar(
+            session_manager,
+            xml_data,
+            profile,
+            "Mo_Arthur_2026-07-08.json",
+            "Mo_Arthur.json",
+            manual_running_economy=manual_ec,
+        )
+
+        sidecar = session_manager.saved[
+            "Mo_Arthur_2026-07-08.metasoft_audit.json"
+        ]
+        self.assertEqual(
+            sidecar["running_economy_manual"],
+            output["running_economy_manual"],
+        )
+
     def test_historical_export_skips_sidecar_when_analysis_is_absent(self) -> None:
         session_manager = _SessionManager()
 
@@ -421,6 +465,53 @@ class MetaSoftMainSessionExportTest(unittest.TestCase):
 
             output_dir = Path(manager.get_output_dir())
             self.assertEqual(list(output_dir.iterdir()), [])
+
+    def test_match_writes_reload_before_updating_shared_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = SessionManager(tmp_dir)
+            session = manager.create_session("2026-07-08", "contas")
+            profile_a = {"identity": {"first_name": "Arthur", "last_name": "Mo"}}
+            profile_a_name = manager.add_profile(profile_a)
+            xml_a = Path(tmp_dir) / "a.xml"
+            xml_a.write_text("<xml />", encoding="utf-8")
+            xml_a_name = manager.import_xml(str(xml_a))
+            manager.create_match(profile_a_name, xml_a_name)
+
+            stale_manager = SessionManager(tmp_dir)
+            stale_manager.load_session(str(manager.current_session_path))
+            stale_match_a = stale_manager.get_match_for_profile(profile_a_name)
+
+            profile_b_name = manager.add_profile({
+                "identity": {"first_name": "B", "last_name": "Athlete"},
+            })
+            xml_b = Path(tmp_dir) / "b.xml"
+            xml_b.write_text("<xml />", encoding="utf-8")
+            xml_b_name = manager.import_xml(str(xml_b))
+            manager.create_match(profile_b_name, xml_b_name)
+
+            stale_manager.record_metasoft_report(stale_match_a, profile_a, {})
+            manager.mark_as_exported(profile_b_name)
+
+            reloaded = SessionManager(tmp_dir)
+            reloaded.load_session(str(manager.current_session_path))
+            self.assertEqual(reloaded.current_session.name, session.name)
+            self.assertEqual(len(reloaded.matches), 2)
+            self.assertIsNotNone(
+                reloaded.get_match_for_profile(profile_a_name).metasoft_report
+            )
+            self.assertTrue(reloaded.get_match_for_profile(profile_b_name).exported)
+
+            renamed_profile = manager.update_profile(profile_b_name, {
+                "identity": {"first_name": "B", "last_name": "Renamed"},
+            })
+            self.assertNotEqual(renamed_profile, profile_b_name)
+            self.assertTrue(stale_manager.delete_profile(renamed_profile))
+
+            reloaded.load_session(str(manager.current_session_path))
+            self.assertEqual(len(reloaded.matches), 1)
+            self.assertIsNotNone(
+                reloaded.get_match_for_profile(profile_a_name).metasoft_report
+            )
 
     def test_export_guard_blocks_unreported_or_changed_lactates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -188,6 +188,34 @@ class MetaSoftAuditExportTest(unittest.TestCase):
         })
         _assert_no_smoothed_values(self, sidecar)
 
+    def test_manual_ec_is_separate_from_automatic_ec_and_filters_disabled_stages(self) -> None:
+        analysis = _analysis()
+        automatic_stages = analysis["computed"]["running_economy"]
+        manual_ec = {
+            "source": "python.metasoft_analysis.manual_running_economy",
+            "match_id": "abc123",
+            "rows": [
+                {"stage_index": 1, "ec_j_kg_m": 4.23},
+                {"stage_index": 2, "ec_j_kg_m": 4.67},
+            ],
+            "stage_selections": [
+                {"stage_index": 1, "enabled": True},
+                {"stage_index": 2, "enabled": False},
+            ],
+        }
+
+        sidecar = build_metasoft_audit_export(
+            analysis,
+            manual_running_economy=manual_ec,
+        )
+
+        self.assertEqual(sidecar["running_economy"]["stages"], automatic_stages)
+        self.assertEqual(
+            sidecar["running_economy_manual"],
+            {**manual_ec, "rows": [manual_ec["rows"][0]]},
+        )
+        self.assertEqual(len(manual_ec["rows"]), 2)
+
     def test_identity_comparison_ignores_accents_like_ui(self) -> None:
         analysis = _analysis()
         analysis["athlete"] = {

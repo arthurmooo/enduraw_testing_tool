@@ -397,7 +397,7 @@ export default function App() {
             {
               marker_selections: markerSelections,
               ...(manualEconomyPayload ?? {}),
-              ...(lactateDraft ? { lactate_test: lactateDraft } : {}),
+              ...(lactateDraft && lactateDirty ? { lactate_test: lactateDraft } : {}),
               ...(overwrite ? { conflict_policy: "overwrite" } : {}),
             },
           );
@@ -726,6 +726,8 @@ function buildMarkerReportSummary(
       fc: formatNumber(row.values.fc_bpm, 0),
       vo2kg: formatNumber(row.values.vo2_ml_kg_min, 1),
       speed: formatNumber(row.values.speed_kmh, 1),
+      fatPercent: formatNumber(row.values.fat_percent, 1),
+      choPercent: formatNumber(row.values.cho_percent, 1),
     };
   });
 }

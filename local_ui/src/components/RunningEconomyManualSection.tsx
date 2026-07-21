@@ -333,8 +333,12 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
       stage,
       drafts[stage.stage_index] ?? initialEconomyDraft(stage),
     ));
+    const enabledStageIndexes = new Set(
+      stageSelections.filter((selection) => selection.enabled).map((selection) => selection.stage_index),
+    );
     return {
       manual_running_economy_selections: stableStages
+        .filter((stage) => enabledStageIndexes.has(stage.stage_index))
         .map((stage) => manualEconomySelection(
           stage,
           drafts[stage.stage_index] ?? initialEconomyDraft(stage),

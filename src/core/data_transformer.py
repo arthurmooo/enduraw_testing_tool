@@ -282,12 +282,26 @@ class DataTransformer:
             if not isinstance(threshold, dict):
                 continue
             profile_index = threshold.get('measurement_index')
-            if profile_index not in exported_indexes:
+            if profile_index in exported_indexes:
+                thresholds[name] = {
+                    **threshold,
+                    "measurement_index": exported_indexes[profile_index],
+                }
                 continue
-            thresholds[name] = {
-                **threshold,
-                "measurement_index": exported_indexes[profile_index],
-            }
+            # Un seuil pose entre deux prelevements porte sa vitesse et le temps
+            # reel du protocole en secondes, jamais une lactatemie inventee.
+            # Les anciens index timeline_* ne sont qu'une provenance d'interface.
+            speed = threshold.get('speed')
+            if (
+                threshold.get('mode') in {'point', 'range'}
+                and isinstance(speed, (int, float))
+                and not isinstance(speed, bool)
+            ):
+                thresholds[name] = {
+                    key: value
+                    for key, value in threshold.items()
+                    if not key.startswith('timeline_')
+                }
         if thresholds:
             result["seuils"] = thresholds
         return result

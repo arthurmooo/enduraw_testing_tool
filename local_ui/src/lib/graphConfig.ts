@@ -169,4 +169,5 @@ export const MARKER_COLORS: Record<MetaSoftMarkerName, string> = {
   SV2: "#ff8a00",
   VO2_max: "#ff405d",
   VMA: "#18b8ff",
+  "Cross-over": "#f5d90a",
 };

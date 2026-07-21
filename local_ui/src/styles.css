@@ -205,15 +205,25 @@ select:focus-visible {
 .scale-controls {
   display: inline-flex;
   gap: 4px;
-  padding: 4px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.025);
 }
 
+.processing-control {
+  padding: 4px;
+}
+
+.scale-controls {
+  gap: 2px;
+  height: 26px;
+  min-height: 26px;
+  max-height: 26px;
+  padding: 0;
+}
+
 .processing-control button,
 .scale-controls button {
-  min-height: 28px;
   border: 0;
   border-radius: 5px;
   padding: 0 9px;
@@ -222,7 +232,18 @@ select:focus-visible {
   font-size: 12px;
 }
 
+.processing-control button {
+  min-height: 28px;
+}
+
+.scale-controls button {
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+}
+
 .scale-controls select {
+  height: 24px;
   max-width: 120px;
   border: 0;
   border-radius: 5px;
@@ -416,7 +437,9 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: 26px;
   min-height: 26px;
+  max-height: 26px;
   padding: 0 8px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
@@ -525,6 +548,10 @@ select:focus-visible {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.segmented-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .popover-help,
 .interaction-hint {
   color: rgba(226, 232, 240, 0.58);
@@ -562,12 +589,13 @@ select:focus-visible {
 }
 
 .marker-choice-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(72px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 5px;
 }
 
 .marker-choice-grid button {
+  flex: 1 1 90px;
   min-width: 0;
   min-height: 32px;
   border: 1px solid;
@@ -1112,24 +1140,30 @@ td {
 }
 
 .lactate-threshold-row {
-  display: block;
-}
-
-.lactate-threshold-row label {
   display: grid;
-  gap: 5px;
-  color: rgba(226, 232, 240, 0.68);
-  font-size: 11px;
-  font-weight: 700;
+  grid-template-columns: 54px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 12px;
 }
 
-.lactate-threshold-row select {
-  min-height: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  padding: 0 9px;
+.lactate-threshold-row strong {
   color: #f8fafc;
-  background: #0b1d30;
+  font-size: 13px;
+}
+
+.lactate-chart-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.lactate-plot-wrap {
+  position: relative;
+  cursor: crosshair;
 }
 
 @media (max-width: 1050px) {

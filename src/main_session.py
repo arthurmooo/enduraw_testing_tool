@@ -72,11 +72,13 @@ def _save_metasoft_audit_sidecar(
     output_filename: str,
     profile_filename: str,
     markers: Optional[Dict[str, Any]] = None,
+    manual_running_economy: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Sauve le sidecar MetaSoft avec les marqueurs canoniques prouves.
 
-    Source: analyse MetaSoft deja parse/recalculee par `DataTransformer`.
-    Transformation: export audit pur, sans points bruts decimes ni warnings UI.
+    Source: analyse MetaSoft deja parse/recalculee par `DataTransformer` et EC
+    manuelle validee pour le match. Transformation: export audit pur, sans
+    points bruts decimes ni warnings UI.
     Fallback: aucun sidecar si le XML historique n'expose pas d'analyse MetaSoft.
     """
     analysis = xml_data.get("metasoft_analysis")
@@ -88,6 +90,7 @@ def _save_metasoft_audit_sidecar(
         analysis,
         profile=profile_data,
         markers=markers or {},
+        manual_running_economy=manual_running_economy,
         json_filename=output_filename,
         audit_filename=audit_filename,
         profile_filename=profile_filename,
@@ -995,6 +998,7 @@ class XmlMatchTab(ctk.CTkFrame):
                 output_filename,
                 profile_name,
                 markers,
+                manual_running_economy=manual_ec,
             )
             
             # Mark as exported
@@ -1070,6 +1074,7 @@ class XmlMatchTab(ctk.CTkFrame):
                     output_filename,
                     profile_name,
                     markers,
+                    manual_running_economy=manual_ec,
                 )
                 self.session_manager.mark_as_exported(profile_name)
                 success += 1

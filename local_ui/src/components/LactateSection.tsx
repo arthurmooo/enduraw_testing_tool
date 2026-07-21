@@ -1,12 +1,56 @@
-import { memo, useMemo, useState, type DragEvent } from "react";
+import {
+  memo,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import Plot from "react-plotly.js";
-import { GripVertical, Plus } from "lucide-react";
-import { speedSegmentsForAnalysis } from "../lib/chartUtils";
+import { GripVertical, Plus, Trash2 } from "lucide-react";
+import {
+  ChartActionPopover,
+  ChartPlacementPopover,
+  ChartScaleControls,
+  ChartSeriesToggles,
+  chartPopoverPosition,
+  type ChartPopoverPosition,
+  type ChartSeriesOption,
+  useChartClickArbitration,
+} from "./ChartControls";
+import {
+  buildSpeedStepLinePoints,
+  buildStaticAnnotations,
+  buildTimeBandShapes,
+  speedSegmentsForAnalysis,
+} from "../lib/chartUtils";
+import {
+  buildTickVals,
+  scaledAxisRange,
+  xRangeFromRelayout,
+} from "../lib/metasoftChartHelpers";
+import { secondsToClock } from "../lib/markerUtils";
 import type {
   LactateMeasurementDraft,
+  LactateThresholdDraft,
   LactateTestDraft,
   MetaSoftAnalysis,
 } from "../types/metasoft";
+
+type LactateThresholdName = "sl1" | "sl2";
+type LactateThresholdMode = LactateThresholdDraft["mode"];
+type LactateTimelineItem = {
+  item: LactateMeasurementDraft;
+  index: number;
+  label: string;
+  timeSeconds: number;
+  speed: number;
+};
+const LACTATE_PLOT_MARGINS = { l: 54, r: 48, t: 42, b: 92 };
+const LACTATE_SERIES: ChartSeriesOption[] = [
+  { key: "lactate", label: "Lactate", color: "#ff5f6d" },
+  { key: "protocol", label: "Paliers vitesse", color: "#10d38f" },
+];
 
 export interface LactateReportSummary {
   active: boolean;
@@ -28,11 +72,59 @@ export const LactateSection = memo(function LactateSection({
 }) {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const plotWrapRef = useRef<HTMLDivElement | null>(null);
+  const suppressThresholdClickRef = useRef(false);
+  const plotPointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const ignoreRelayoutUntilRef = useRef(0);
+  const [thresholdProposal, setThresholdProposal] = useState<{
+    timeSeconds: number;
+    speed: number;
+    mode: LactateThresholdMode;
+    rangeDurationSeconds: string;
+    position: ChartPopoverPosition;
+  } | null>(null);
+  const [thresholdDrag, setThresholdDrag] = useState<{
+    name: LactateThresholdName;
+    initial: LactateThresholdDraft;
+  } | null>(null);
+  const [thresholdMenu, setThresholdMenu] = useState<{
+    name: LactateThresholdName;
+    rangeDurationSeconds: string;
+    position: ChartPopoverPosition;
+  } | null>(null);
+  const [thresholdPreview, setThresholdPreview] = useState<LactateTestDraft["thresholds"] | null>(null);
+  const [lactateXRange, setLactateXRange] = useState<[number, number] | null>(null);
+  const [lactateZoomRevision, setLactateZoomRevision] = useState(0);
+  const [lactateYScaleFactor, setLactateYScaleFactor] = useState(1);
+  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
+  const {
+    block: blockThresholdClicks,
+    cancel: cancelThresholdClick,
+    isBlocked: thresholdClicksBlocked,
+    schedule: scheduleThresholdClick,
+  } = useChartClickArbitration();
 
   const updateMeasurement = (index: number, patch: Partial<LactateMeasurementDraft>) => {
-    const measurements = draft.measurements.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item);
-    const thresholds = patch.enabled === false ? clearThresholdAt(draft.thresholds, index) : draft.thresholds;
-    onChange({ ...draft, measurements, thresholds });
+    const current = draft.measurements[index];
+    const autoIncludesRecovery = Boolean(current)
+      && (current.type === "recovery" || current.type === "rest_after")
+      && Object.prototype.hasOwnProperty.call(patch, "lactate_mmol_l")
+      && numeric(patch.lactate_mmol_l) !== null
+      && current.inclusion_touched !== true;
+    const measurements = draft.measurements.map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+      return { ...item, ...patch, ...(autoIncludesRecovery ? { enabled: true } : {}) };
+    });
+    const timelineChanged = patch.enabled !== undefined
+      || patch.speed !== undefined
+      || autoIncludesRecovery;
+    onChange({
+      ...draft,
+      measurements,
+      thresholds: timelineChanged
+        ? rebuildLactateThresholds(draft.thresholds, measurements)
+        : draft.thresholds,
+    });
   };
   const addStage = () => {
     const measurements = [...draft.measurements];
@@ -46,23 +138,29 @@ export const LactateSection = memo(function LactateSection({
       speed: null,
       lactate_mmol_l: null,
     });
-    onChange({ ...draft, measurements });
+    onChange({
+      ...draft,
+      measurements,
+      thresholds: rebuildLactateThresholds(draft.thresholds, measurements),
+    });
   };
   const addRecovery = () => {
     const delays = draft.measurements
       .filter((item) => item.type === "recovery" || item.type === "rest_after")
       .map((item) => item.delay_minutes)
       .filter((value): value is number => typeof value === "number");
-    onChange({
-      ...draft,
-      measurements: [...draft.measurements, {
+    const measurements: LactateMeasurementDraft[] = [...draft.measurements, {
         type: "recovery",
         source: "manual",
         enabled: true,
         speed: 0,
         lactate_mmol_l: null,
         delay_minutes: delays.length ? Math.max(...delays) + 5 : 3,
-      }],
+      }];
+    onChange({
+      ...draft,
+      measurements,
+      thresholds: rebuildLactateThresholds(draft.thresholds, measurements),
     });
   };
   const moveStage = (from: number, to: number) => {
@@ -71,24 +169,205 @@ export const LactateSection = memo(function LactateSection({
     const measurements = [...draft.measurements];
     measurements.splice(from, 1);
     measurements.splice(to, 0, moved);
-    const remap = (value?: number | null) => {
-      if (typeof value !== "number") return value;
-      const original = draft.measurements[value];
-      return original ? measurements.indexOf(original) : null;
-    };
     onChange({
       ...draft,
       measurements,
-      thresholds: { sl1: remap(draft.thresholds.sl1), sl2: remap(draft.thresholds.sl2) },
+      thresholds: rebuildLactateThresholds(draft.thresholds, measurements),
     });
   };
-  const graphItems = useMemo(() => draft.measurements.flatMap((item, index) => (
-    item.enabled !== false && numeric(item.lactate_mmol_l) !== null
-      ? [{ item, index, label: `${index + 1}. ${measurementLabel(item, index)}` }]
-      : []
-  )), [draft.measurements]);
-  const graphLabels = useMemo(() => Object.fromEntries(graphItems.map((entry) => [entry.index, entry.label])), [graphItems]);
-  const validStages = graphItems.filter(({ item }) => item.type === "stage");
+  const timelineItems = useMemo<LactateTimelineItem[]>(
+    () => buildLactateTimelineItems(draft.measurements),
+    [draft.measurements],
+  );
+  const graphItems = useMemo(() => timelineItems.filter(({ item }) => (
+    numeric(item.lactate_mmol_l) !== null
+  )), [timelineItems]);
+  const thresholdStages = useMemo(
+    () => buildLactateTimelineItems(draft.measurements, true).filter(({ item, speed }) => (
+      item.type === "stage" && speed > 0
+    )),
+    [draft.measurements],
+  );
+  const defaultXRange = useMemo<[number, number]>(() => {
+    const times = timelineItems.map((entry) => entry.timeSeconds);
+    if (!times.length) return [0, 60];
+    const start = Math.min(...times);
+    const end = Math.max(...times);
+    const padding = Math.max((end - start) * 0.025, 5);
+    return [Math.max(0, start - padding), end + padding];
+  }, [timelineItems]);
+  const protocolPoints = useMemo(
+    () => lactateProtocolPoints(analysis, defaultXRange[1]),
+    [analysis, defaultXRange],
+  );
+  const visibleThresholds = thresholdPreview ?? draft.thresholds;
+  const effectiveXRange = lactateXRange
+    && lactateXRange[0] >= defaultXRange[0]
+    && lactateXRange[1] <= defaultXRange[1]
+    ? lactateXRange
+    : null;
+  const visibleXRange = effectiveXRange ?? defaultXRange;
+  const xTickVals = useMemo(() => buildTickVals(visibleXRange), [visibleXRange]);
+  const lactateYRange = useMemo(
+    () => scaledAxisRange(graphItems.map((entry) => entry.item.lactate_mmol_l), lactateYScaleFactor),
+    [graphItems, lactateYScaleFactor],
+  );
+  const availableSeries = useMemo(() => LACTATE_SERIES.filter((series) => {
+    return series.key === "lactate" ? graphItems.length > 0 : protocolPoints.x.length > 0;
+  }), [graphItems.length, protocolPoints.x.length]);
+  const showLactateScale = graphItems.length > 0 && !hiddenSeries.has("lactate");
+
+  const placeThreshold = (
+    name: LactateThresholdName,
+  ) => {
+    if (!thresholdProposal) return;
+    const selection = buildLactateThresholdAtPosition(
+      thresholdProposal.timeSeconds,
+      thresholdProposal.mode,
+      numericInput(thresholdProposal.rangeDurationSeconds),
+      thresholdStages,
+    );
+    if (!selection) return;
+    onChange({ ...draft, thresholds: { ...draft.thresholds, [name]: selection } });
+    setThresholdProposal(null);
+  };
+
+  const resetLactateZoom = () => {
+    ignoreRelayoutUntilRef.current = Date.now() + 600;
+    setLactateXRange(null);
+    setLactateZoomRevision((revision) => revision + 1);
+  };
+
+  const thresholdFromClientX = (clientX: number) => timelineTimeFromClientX(
+    clientX,
+    plotWrapRef.current,
+    visibleXRange,
+  );
+
+  const beginThresholdDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.detail > 1) return;
+    if (isLactateChartControlTarget(event.target)) return;
+    const timeSeconds = thresholdFromClientX(event.clientX);
+    const target = timeSeconds === null
+      ? null
+      : nearestLactateThresholdName(visibleThresholds, timeSeconds, visibleXRange, plotWrapRef.current, thresholdStages);
+    if (!target) return;
+    const initial = visibleThresholds[target];
+    if (!initial) return;
+    event.preventDefault();
+    suppressThresholdClickRef.current = true;
+    cancelThresholdClick();
+    setThresholdProposal(null);
+    setThresholdMenu(null);
+    setThresholdDrag({ name: target, initial });
+    setThresholdPreview(draft.thresholds);
+  };
+
+  const moveThresholdDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!thresholdDrag) return;
+    const timeSeconds = thresholdFromClientX(event.clientX);
+    if (timeSeconds === null) return;
+    const selection = buildLactateThresholdAtPosition(
+      timeSeconds,
+      thresholdDrag.initial.mode,
+      lactateThresholdDuration(thresholdDrag.initial),
+      thresholdStages,
+    );
+    if (!selection) return;
+    setThresholdPreview({ ...draft.thresholds, [thresholdDrag.name]: selection });
+  };
+
+  const endThresholdDrag = () => {
+    if (!thresholdDrag || !thresholdPreview) return;
+    onChange({ ...draft, thresholds: thresholdPreview });
+    setThresholdDrag(null);
+    setThresholdPreview(null);
+    window.setTimeout(() => {
+      suppressThresholdClickRef.current = false;
+    }, 0);
+  };
+
+  const openThresholdProposal = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (isLactateChartControlTarget(event.target)) return;
+    if (event.detail > 1) {
+      blockThresholdClicks();
+      return;
+    }
+    if (
+      thresholdClicksBlocked()
+      || suppressThresholdClickRef.current
+    ) {
+      suppressThresholdClickRef.current = false;
+      return;
+    }
+    const bounds = plotWrapRef.current?.getBoundingClientRect();
+    if (
+      !bounds
+      || event.clientY < bounds.top + LACTATE_PLOT_MARGINS.t
+      || event.clientY > bounds.bottom - LACTATE_PLOT_MARGINS.b
+    ) return;
+    const timeSeconds = thresholdFromClientX(event.clientX);
+    const speed = timeSeconds === null ? null : speedAtTimelineTime(timeSeconds, thresholdStages);
+    if (timeSeconds !== null && speed !== null && speed > 0) {
+      const position = chartPopoverPosition(event.clientX, event.clientY, 238);
+      scheduleThresholdClick(() => {
+        setThresholdMenu(null);
+        setThresholdProposal({
+          timeSeconds,
+          speed: clamp(speed, 0.1, 40),
+          mode: "point",
+          rangeDurationSeconds: "60",
+          position,
+        });
+      });
+    }
+  };
+
+  const openThresholdMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (isLactateChartControlTarget(event.target)) return;
+    blockThresholdClicks();
+    const timeSeconds = thresholdFromClientX(event.clientX);
+    const target = timeSeconds === null
+      ? null
+      : nearestLactateThresholdName(visibleThresholds, timeSeconds, visibleXRange, plotWrapRef.current, thresholdStages);
+    if (!target) return;
+    event.preventDefault();
+    suppressThresholdClickRef.current = true;
+    setThresholdProposal(null);
+    const threshold = visibleThresholds[target];
+    setThresholdMenu({
+      name: target,
+      rangeDurationSeconds: threshold?.mode === "range"
+        ? String(Math.round(lactateThresholdDuration(threshold) ?? 60))
+        : "",
+      position: chartPopoverPosition(event.clientX, event.clientY, 210, 280),
+    });
+  };
+
+  const trackPlotPointerDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+    plotPointerStartRef.current = event.button === 0 && event.detail === 1
+      ? { x: event.clientX, y: event.clientY }
+      : null;
+  };
+
+  const trackPlotPointerUp = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const start = plotPointerStartRef.current;
+    plotPointerStartRef.current = null;
+    if (!start || Math.hypot(event.clientX - start.x, event.clientY - start.y) <= 4) return;
+    suppressThresholdClickRef.current = true;
+    window.setTimeout(() => {
+      suppressThresholdClickRef.current = false;
+    }, 0);
+  };
+
+  const toggleSeries = (series: ChartSeriesOption) => {
+    setHiddenSeries((current) => {
+      const next = new Set(current);
+      if (next.has(series.key)) next.delete(series.key);
+      else next.add(series.key);
+      return next;
+    });
+  };
 
   return (
     <section id="metasoft-lactate" className="section-block">
@@ -132,7 +411,7 @@ export const LactateSection = memo(function LactateSection({
             <div className="panel-title-row lactate-toolbar">
               <div>
                 <strong>Plan de prelevements</strong>
-                <p className="panel-note">Glissez les paliers pour les reordonner. Les lignes ecartees restent sauvegardees mais sont masquees du graphe et du JSON officiel.</p>
+                <p className="panel-note">Glissez les paliers pour les reordonner. Saisir une recuperation l'inclut automatiquement ; une ligne ecartee reste sauvegardee mais est masquee du graphe et du JSON officiel.</p>
               </div>
               <div className="ec-actions">
                 <button
@@ -212,7 +491,10 @@ export const LactateSection = memo(function LactateSection({
                           <button
                             type="button"
                             className={item.enabled === false ? "table-icon-button status-button" : "table-icon-button status-button status-button-ok"}
-                            onClick={() => updateMeasurement(index, { enabled: item.enabled === false })}
+                            onClick={() => updateMeasurement(index, {
+                              enabled: item.enabled === false,
+                              inclusion_touched: true,
+                            })}
                           >
                             {item.enabled === false ? "Ecarte" : "Inclus"}
                           </button>
@@ -283,71 +565,271 @@ export const LactateSection = memo(function LactateSection({
                 <div className="lactate-threshold-panel">
                   <div>
                     <strong>Seuils lactiques</strong>
-                    <p>Choisissez directement le palier correspondant a chaque seuil.</p>
+                    <p>Cliquez la courbe pour placer SL1 ou SL2. Glissez le trait pour le deplacer ; double-cliquez pour modifier sa duree ou le supprimer.</p>
                   </div>
                   {(["sl1", "sl2"] as const).map((name) => (
                     <div className="lactate-threshold-row" key={name}>
-                      <label>
-                        <span>{name.toUpperCase()}</span>
-                        <select
-                          value={validStages.some(({ index }) => index === draft.thresholds[name]) ? String(draft.thresholds[name]) : ""}
-                          disabled={!validStages.length}
-                          onChange={(event) => onChange({
+                      <strong>{name.toUpperCase()}</strong>
+                      <span>{lactateThresholdLabel(visibleThresholds[name])}</span>
+                      {visibleThresholds[name] && (
+                        <button
+                          type="button"
+                          className="table-icon-button"
+                          onClick={() => onChange({
                             ...draft,
-                            thresholds: {
-                              ...draft.thresholds,
-                              [name]: event.target.value === "" ? null : Number(event.target.value),
-                            },
+                            thresholds: { ...draft.thresholds, [name]: null },
                           })}
+                          aria-label={`Supprimer ${name.toUpperCase()}`}
                         >
-                          <option value="">Non place</option>
-                          {validStages.map(({ item, index }) => (
-                            <option key={index} value={index}>{measurementLabel(item, index)}</option>
-                          ))}
-                        </select>
-                      </label>
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
                   ))}
-                  {!validStages.length && <p className="interaction-hint">Renseignez au moins une valeur lactate sur un palier inclus pour placer SL1 ou SL2.</p>}
                 </div>
-                {graphItems.length ? (
-                  <Plot
-                    data={[
-                      {
-                        type: "scatter",
-                        mode: "lines+markers",
-                        name: "Lactate",
-                        x: graphItems.map((entry) => entry.label),
-                        y: graphItems.map((entry) => entry.item.lactate_mmol_l),
-                        line: { color: "#ff5f6d", width: 2 },
-                        marker: { color: "#ff5f6d", size: 8 },
-                      },
-                      {
-                        type: "scatter",
-                        mode: "lines",
-                        name: "Protocole",
-                        x: graphItems.map((entry) => entry.label),
-                        y: graphItems.map((entry) => entry.item.speed ?? 0),
-                        yaxis: "y2",
-                        line: { color: "#10d38f", width: 1.5, shape: "hv" },
-                      },
-                    ]}
-                    layout={{
-                      autosize: true,
-                      paper_bgcolor: "rgba(0,0,0,0)",
-                      plot_bgcolor: "rgba(0,0,0,0)",
-                      margin: { l: 48, r: 48, t: 28, b: 82 },
-                      font: { color: "rgba(226,232,240,0.78)", size: 10 },
-                      hovermode: "closest",
-                      xaxis: { gridcolor: "rgba(255,255,255,0.055)", tickangle: -24 },
-                      yaxis: { title: "mmol/L", gridcolor: "rgba(255,255,255,0.055)" },
-                      yaxis2: { title: "km/h", overlaying: "y", side: "right", gridcolor: "rgba(0,0,0,0)" },
-                      shapes: lactateThresholdShapes(draft, graphLabels),
-                    }}
-                    config={{ responsive: true, displayModeBar: false, doubleClick: false }}
-                    style={{ width: "100%", height: 360 }}
-                    useResizeHandler
-                  />
+                {timelineItems.length ? (
+                  <>
+                    <div className="lactate-chart-toolbar">
+                      <ChartSeriesToggles
+                        series={availableSeries}
+                        hiddenSeries={hiddenSeries}
+                        onToggle={toggleSeries}
+                      />
+                      {(showLactateScale || effectiveXRange !== null) && (
+                        <ChartScaleControls
+                          series={[LACTATE_SERIES[0]]}
+                          mode="common"
+                          selectedSeriesKey="lactate"
+                          onModeChange={() => undefined}
+                          onSelectedSeriesChange={() => undefined}
+                          onZoomIn={() => setLactateYScaleFactor((factor) => factor * 0.8)}
+                          onZoomOut={() => setLactateYScaleFactor((factor) => factor * 1.25)}
+                          onAuto={() => setLactateYScaleFactor(1)}
+                          onResetZoom={resetLactateZoom}
+                          showResetZoom={effectiveXRange !== null}
+                          showScaleButtons={showLactateScale}
+                        />
+                      )}
+                    </div>
+                    <div
+                      ref={plotWrapRef}
+                      className="lactate-plot-wrap"
+                      onMouseDownCapture={trackPlotPointerDown}
+                      onMouseUpCapture={trackPlotPointerUp}
+                      onMouseDown={beginThresholdDrag}
+                      onMouseMove={moveThresholdDrag}
+                      onMouseUp={endThresholdDrag}
+                      onMouseLeave={endThresholdDrag}
+                      onClickCapture={openThresholdProposal}
+                      onDoubleClick={openThresholdMenu}
+                      onContextMenu={openThresholdMenu}
+                    >
+                    <Plot
+                      key={`lactate-${lactateZoomRevision}`}
+                      data={[
+                        ...(!hiddenSeries.has("lactate") && graphItems.length ? [{
+                          type: "scatter",
+                          mode: "lines+markers",
+                          name: "Lactate",
+                          x: graphItems.map((entry) => entry.timeSeconds),
+                          y: graphItems.map((entry) => entry.item.lactate_mmol_l),
+                          text: graphItems.map((entry) => `${entry.label}<br>${formatSpeed(entry.speed)} km/h`),
+                          hovertemplate: "%{text}<br>%{y:.1f} mmol/L<extra></extra>",
+                          line: { color: "#ff5f6d", width: 2 },
+                          marker: { color: "#ff5f6d", size: 8 },
+                        }] : []),
+                        ...(!hiddenSeries.has("protocol") && protocolPoints.x.length ? [{
+                          type: "scatter",
+                          mode: "lines",
+                          name: "Paliers vitesse",
+                          x: protocolPoints.x,
+                          y: protocolPoints.y,
+                          hovertemplate: "%{y:.1f} km/h<extra></extra>",
+                          yaxis: "y2",
+                          line: { color: "#10d38f", width: 1.5, shape: "hv" },
+                        }] : []),
+                      ]}
+                      layout={{
+                        autosize: true,
+                        paper_bgcolor: "rgba(0,0,0,0)",
+                        plot_bgcolor: "rgba(0,0,0,0)",
+                        margin: LACTATE_PLOT_MARGINS,
+                        font: { color: "rgba(226,232,240,0.78)", size: 11 },
+                        hovermode: "closest",
+                        dragmode: "zoom",
+                        xaxis: {
+                          title: "Temps du test",
+                          range: [visibleXRange[0], visibleXRange[1]],
+                          tickvals: xTickVals,
+                          ticktext: xTickVals.map(secondsToClock),
+                          gridcolor: "rgba(255,255,255,0.055)",
+                          zerolinecolor: "rgba(255,255,255,0.16)",
+                        },
+                        yaxis: {
+                          title: "Lactate (mmol/L)",
+                          range: lactateYRange && [lactateYRange[0], lactateYRange[1]],
+                          gridcolor: "rgba(255,255,255,0.055)",
+                        },
+                        yaxis2: {
+                          title: "Vitesse (km/h)",
+                          overlaying: "y",
+                          side: "right",
+                          showgrid: false,
+                          visible: !hiddenSeries.has("protocol"),
+                        },
+                        shapes: [
+                          ...(!hiddenSeries.has("protocol") ? buildTimeBandShapes(analysis) : []),
+                          ...lactateThresholdShapes(visibleThresholds, thresholdStages),
+                        ],
+                        annotations: [
+                          ...(!hiddenSeries.has("protocol") ? buildStaticAnnotations(analysis) : []),
+                          ...lactateThresholdAnnotations(visibleThresholds, thresholdStages),
+                        ],
+                      }}
+                      config={{
+                        responsive: true,
+                        displayModeBar: false,
+                        displaylogo: false,
+                        scrollZoom: false,
+                        doubleClick: false,
+                      }}
+                      style={{ width: "100%", height: 380 }}
+                      useResizeHandler
+                      onRelayout={(event: Readonly<Record<string, unknown>>) => {
+                        if (Date.now() < ignoreRelayoutUntilRef.current) return;
+                        const range = xRangeFromRelayout(event);
+                        if (range !== undefined) setLactateXRange(range);
+                      }}
+                    />
+                    {thresholdProposal && (
+                      <ChartPlacementPopover
+                        position={thresholdProposal.position}
+                        title="Placer un seuil lactique"
+                        valueLabel={`${secondsToClock(thresholdProposal.timeSeconds)} · ${formatSpeed(thresholdProposal.speed)} km/h`}
+                        modes={[
+                          { value: "point" as const, label: "Ligne" },
+                          { value: "range" as const, label: "Range" },
+                        ]}
+                        activeMode={thresholdProposal.mode}
+                        onModeChange={(mode) => setThresholdProposal({ ...thresholdProposal, mode })}
+                        help={thresholdProposal.mode === "range"
+                          ? "Plage centree sur le clic, entierement comprise entre le premier et le dernier palier."
+                          : "Trait place a la vitesse selectionnee."}
+                        onClose={() => setThresholdProposal(null)}
+                      >
+                        {thresholdProposal.mode === "range" && (
+                          <label className="field small-field">
+                            Duree de la plage (secondes)
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              inputMode="numeric"
+                              value={thresholdProposal.rangeDurationSeconds}
+                              onChange={(event) => setThresholdProposal({
+                                ...thresholdProposal,
+                                rangeDurationSeconds: event.target.value,
+                              })}
+                              placeholder="60"
+                            />
+                          </label>
+                        )}
+                        <div className="marker-choice-grid lactate-threshold-choices">
+                          {(["sl1", "sl2"] as const).map((name) => (
+                            <button
+                              key={name}
+                              type="button"
+                              disabled={thresholdProposal.mode === "range"
+                                && !validLactateRangeDuration(
+                                  thresholdProposal.rangeDurationSeconds,
+                                  thresholdStages,
+                                  thresholdProposal.timeSeconds,
+                                )}
+                              style={{ color: name === "sl1" ? "#16e0c2" : "#ff8a00", borderColor: name === "sl1" ? "#16e0c288" : "#ff8a0088" }}
+                              onClick={() => placeThreshold(name)}
+                            >
+                              {name.toUpperCase()}
+                            </button>
+                          ))}
+                        </div>
+                      </ChartPlacementPopover>
+                    )}
+                    {thresholdMenu && visibleThresholds[thresholdMenu.name] && (
+                      <ChartActionPopover
+                        position={thresholdMenu.position}
+                        eyebrow="Seuil lactique"
+                        title={thresholdMenu.name.toUpperCase()}
+                        ariaLabel={`Modifier ${thresholdMenu.name.toUpperCase()}`}
+                        onClose={() => setThresholdMenu(null)}
+                      >
+                        {visibleThresholds[thresholdMenu.name]?.mode === "range" && (
+                          <label className="field small-field">
+                            Duree de la plage (secondes)
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              inputMode="numeric"
+                              value={thresholdMenu.rangeDurationSeconds}
+                              onChange={(event) => setThresholdMenu({
+                                ...thresholdMenu,
+                                rangeDurationSeconds: event.target.value,
+                              })}
+                              placeholder="60"
+                            />
+                          </label>
+                        )}
+                        <div className="marker-menu-actions">
+                          {visibleThresholds[thresholdMenu.name]?.mode === "range" && (
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={!validLactateRangeDuration(
+                                thresholdMenu.rangeDurationSeconds,
+                                thresholdStages,
+                                visibleThresholds[thresholdMenu.name]
+                                  ? lactateThresholdTime(visibleThresholds[thresholdMenu.name]!, thresholdStages)
+                                  : null,
+                              )}
+                              onClick={() => {
+                                const current = visibleThresholds[thresholdMenu.name];
+                                if (!current) return;
+                                const center = lactateThresholdTime(current, thresholdStages);
+                                const next = center === null ? null : buildLactateThresholdAtPosition(
+                                  center,
+                                  "range",
+                                  numericInput(thresholdMenu.rangeDurationSeconds),
+                                  thresholdStages,
+                                );
+                                if (!next) return;
+                                onChange({
+                                  ...draft,
+                                  thresholds: { ...draft.thresholds, [thresholdMenu.name]: next },
+                                });
+                                setThresholdMenu(null);
+                              }}
+                            >
+                              Modifier la duree
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="danger-button"
+                            onClick={() => {
+                              onChange({
+                                ...draft,
+                                thresholds: { ...draft.thresholds, [thresholdMenu.name]: null },
+                              });
+                              setThresholdMenu(null);
+                            }}
+                          >
+                            Supprimer
+                          </button>
+                        </div>
+                      </ChartActionPopover>
+                    )}
+                    </div>
+                  </>
                 ) : (
                   <div className="lactate-graph-empty">
                     Saisissez au moins une mesure incluse pour afficher la courbe.
@@ -377,14 +859,14 @@ export function buildLactateDraft(
   const measurements = raw.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
     .map(profileMeasurement);
   const thresholds = stress.lactate_thresholds && typeof stress.lactate_thresholds === "object"
-    ? stress.lactate_thresholds as Record<string, { measurement_index?: unknown }>
+    ? stress.lactate_thresholds as Record<string, Record<string, unknown>>
     : {};
   const profileDraft = {
     active: measurements.length > 0,
     measurements,
     thresholds: {
-      sl1: numeric(thresholds.sl1?.measurement_index),
-      sl2: numeric(thresholds.sl2?.measurement_index),
+      sl1: lactateThresholdFromSaved(thresholds.sl1, measurements),
+      sl2: lactateThresholdFromSaved(thresholds.sl2, measurements),
     },
   };
   return measurements.length && profileMatchesAnalysis(measurements, analysis)
@@ -398,25 +880,28 @@ export function buildDetectedLactateDraft(analysis: MetaSoftAnalysis, active = f
 
 export function lactateReportSummary(draft: LactateTestDraft): LactateReportSummary {
   const included = draft.measurements.filter((item) => item.enabled !== false);
-  const label = (value?: number | null) => typeof value === "number" && draft.measurements[value]
-    ? measurementLabel(draft.measurements[value], value)
-    : "Non place";
   return {
     active: draft.active,
     includedCount: included.length,
     excludedCount: draft.measurements.length - included.length,
     validCount: included.filter((item) => numeric(item.lactate_mmol_l) !== null).length,
-    sl1: label(draft.thresholds.sl1),
-    sl2: label(draft.thresholds.sl2),
+    sl1: lactateThresholdLabel(draft.thresholds.sl1),
+    sl2: lactateThresholdLabel(draft.thresholds.sl2),
   };
 }
 
 function mergeLactateDraft(draft: LactateTestDraft, analysis: MetaSoftAnalysis): LactateTestDraft {
-  const saved = draft.measurements.map((item) => ({
-    ...item,
-    enabled: item.enabled !== false,
-    source: item.source ?? (item.type === "stage" ? "manual" : "detected"),
-  }));
+  const saved = draft.measurements.map((item) => {
+    const migrateFilledRecovery = (item.type === "recovery" || item.type === "rest_after")
+      && item.enabled === false
+      && item.inclusion_touched !== true
+      && numeric(item.lactate_mmol_l) !== null;
+    return {
+      ...item,
+      enabled: migrateFilledRecovery || item.enabled !== false,
+      source: item.source ?? (item.type === "stage" ? "manual" : "detected"),
+    };
+  });
   const detected = detectedMeasurements(analysis);
   const detectedStages = detected.filter((item) => item.type === "stage");
   const usedSaved = new Set<number>();
@@ -466,15 +951,13 @@ function mergeLactateDraft(draft: LactateTestDraft, analysis: MetaSoftAnalysis):
     entries.splice(recoveryIndex < 0 ? entries.length : recoveryIndex, 0, ...manual);
   }
 
-  const remap = (value?: number | null) => {
-    if (typeof value !== "number") return value ?? null;
-    const index = entries.findIndex((entry) => entry.savedIndex === value);
-    return index >= 0 ? index : null;
-  };
   return {
     ...draft,
     measurements: entries.map((entry) => entry.item),
-    thresholds: { sl1: remap(draft.thresholds.sl1), sl2: remap(draft.thresholds.sl2) },
+    thresholds: {
+      sl1: lactateThresholdFromSaved(draft.thresholds.sl1, saved),
+      sl2: lactateThresholdFromSaved(draft.thresholds.sl2, saved),
+    },
   };
 }
 
@@ -594,6 +1077,7 @@ function profileMeasurement(item: Record<string, unknown>): LactateMeasurementDr
     speed: numeric(item.speed),
     lactate_mmol_l: numeric(item.lactate_mmol_l),
     enabled: item.enabled !== false,
+    inclusion_touched: item.inclusion_touched === true,
     source: item.source === "detected" ? "detected" : "manual",
     label: typeof item.label === "string" ? item.label : null,
     stage_index: numeric(item.stage_index),
@@ -613,26 +1097,379 @@ function measurementLabel(item: LactateMeasurementDraft | undefined, index: numb
   return item.label?.trim() || (item.speed !== null ? `${item.speed} km/h` : `Palier ${index + 1}`);
 }
 
-function clearThresholdAt(thresholds: LactateTestDraft["thresholds"], index: number) {
-  return {
-    sl1: thresholds.sl1 === index ? null : thresholds.sl1,
-    sl2: thresholds.sl2 === index ? null : thresholds.sl2,
-  };
+function buildLactateTimelineItems(
+  measurements: LactateMeasurementDraft[],
+  includeDisabled = false,
+): LactateTimelineItem[] {
+  const times = new Map<number, number>();
+  const ordered = measurements.flatMap((item, index) => {
+    if (item.type === "recovery" || item.type === "rest_after" || numeric(item.speed) === null) return [];
+    const knownTime = item.type === "rest_before" ? 0 : numeric(item.time_seconds);
+    if (knownTime !== null) times.set(index, knownTime);
+    return [index];
+  });
+  for (let cursor = 0; cursor < ordered.length;) {
+    if (times.has(ordered[cursor])) {
+      cursor += 1;
+      continue;
+    }
+    const start = cursor;
+    while (cursor < ordered.length && !times.has(ordered[cursor])) cursor += 1;
+    const previous = start > 0 ? times.get(ordered[start - 1]) ?? 0 : 0;
+    const next = cursor < ordered.length ? times.get(ordered[cursor]) ?? null : null;
+    const step = next !== null && next > previous
+      ? (next - previous) / (cursor - start + 1)
+      : 60;
+    for (let offset = 0; offset < cursor - start; offset += 1) {
+      times.set(ordered[start + offset], previous + step * (offset + 1));
+    }
+  }
+  const stageTimes = measurements.flatMap((item, index) => (
+    item.type === "stage" && times.has(index) ? [times.get(index)!] : []
+  ));
+  const effortEnd = stageTimes.length
+    ? Math.max(...stageTimes)
+    : Math.max(0, ...times.values());
+  let recoveryFallback = 0;
+  return measurements.flatMap((item, index) => {
+    const speed = numeric(item.speed);
+    if ((!includeDisabled && item.enabled === false) || speed === null) return [];
+    const isRecovery = item.type === "recovery" || item.type === "rest_after";
+    const delaySeconds = isRecovery ? numeric(item.delay_minutes) : null;
+    if (isRecovery && delaySeconds === null) recoveryFallback += 1;
+    const timeSeconds = isRecovery
+      ? effortEnd + (delaySeconds === null ? recoveryFallback * 60 : delaySeconds * 60)
+      : times.get(index);
+    return timeSeconds === undefined
+      ? []
+      : [{ item, index, label: measurementLabel(item, index), timeSeconds, speed }];
+  }).sort((left, right) => left.timeSeconds - right.timeSeconds || left.index - right.index);
 }
 
-function lactateThresholdShapes(draft: LactateTestDraft, labels: Record<number, string>) {
+function lactateProtocolPoints(
+  analysis: MetaSoftAnalysis,
+  maxTime: number,
+): { x: number[]; y: number[] } {
+  const source = buildSpeedStepLinePoints(analysis);
+  const x = [...source.x];
+  const y = [...source.y];
+  const lastTime = x[x.length - 1];
+  if (lastTime !== undefined && maxTime > lastTime) {
+    x.push(lastTime, maxTime);
+    y.push(0, 0);
+  }
+  return { x, y };
+}
+
+function isLactateChartControlTarget(target: EventTarget | null): boolean {
+  return target instanceof Element
+    && Boolean(target.closest("button, input, select, .modebar, .legend, .marker-popover"));
+}
+
+function rebuildLactateThresholds(
+  thresholds: LactateTestDraft["thresholds"],
+  measurements: LactateMeasurementDraft[],
+): LactateTestDraft["thresholds"] {
+  const stages = buildLactateTimelineItems(measurements, true).filter(({ item, speed }) => (
+    item.type === "stage" && speed > 0
+  ));
+  return Object.fromEntries((["sl1", "sl2"] as const).map((name) => {
+    const threshold = thresholds[name];
+    if (!threshold) return [name, threshold];
+    const center = lactateThresholdTime(threshold, stages);
+    const rebuilt = center === null ? null : buildLactateThresholdAtPosition(
+      center,
+      threshold.mode,
+      lactateThresholdDuration(threshold),
+      stages,
+    );
+    return [name, rebuilt ?? threshold];
+  }));
+}
+
+function lactateThresholdShapes(
+  thresholds: LactateTestDraft["thresholds"],
+  stages: LactateTimelineItem[],
+) {
   return (["sl1", "sl2"] as const).flatMap((name) => {
-    const index = draft.thresholds[name];
-    return typeof index === "number" && labels[index] ? [{
+    const threshold = thresholds[name];
+    if (!threshold) return [];
+    const center = lactateThresholdTime(threshold, stages);
+    if (center === null) return [];
+    const color = name === "sl1" ? "#16e0c2" : "#ff8a00";
+    const shapes: Array<Record<string, unknown>> = [{
       type: "line",
-      x0: labels[index],
-      x1: labels[index],
+      x0: center,
+      x1: center,
       y0: 0,
       y1: 1,
       yref: "paper",
-      line: { color: name === "sl1" ? "#16e0c2" : "#ff8a00", width: 2, dash: "dash" },
+      line: { color, width: 3, dash: "dash" },
+    }];
+    if (
+      threshold.mode === "range"
+      && numeric(threshold.window_start_seconds) !== null
+      && numeric(threshold.window_end_seconds) !== null
+    ) {
+      const rawStart = numeric(threshold.window_start_seconds);
+      const rawEnd = numeric(threshold.window_end_seconds);
+      if (rawStart === null || rawEnd === null || rawStart === rawEnd) return shapes;
+      shapes.unshift({
+        type: "rect",
+        x0: Math.min(rawStart, rawEnd),
+        x1: Math.max(rawStart, rawEnd),
+        y0: 0,
+        y1: 1,
+        yref: "paper",
+        fillcolor: `${color}22`,
+        line: { color: `${color}99`, width: 2 },
+        layer: "below",
+      });
+    }
+    return shapes;
+  });
+}
+
+function lactateThresholdAnnotations(
+  thresholds: LactateTestDraft["thresholds"],
+  stages: LactateTimelineItem[],
+) {
+  return (["sl1", "sl2"] as const).flatMap((name) => {
+    const threshold = thresholds[name];
+    const center = threshold ? lactateThresholdTime(threshold, stages) : null;
+    return center !== null ? [{
+      x: center,
+      y: 1,
+      xref: "x",
+      yref: "paper",
+      text: name.toUpperCase(),
+      showarrow: false,
+      yanchor: "bottom",
+      font: { color: name === "sl1" ? "#16e0c2" : "#ff8a00", size: 14 },
+      bgcolor: "rgba(2,12,25,0.88)",
+      bordercolor: name === "sl1" ? "#16e0c2" : "#ff8a00",
+      borderpad: 4,
     }] : [];
   });
+}
+
+function lactateThresholdFromSaved(
+  value: unknown,
+  measurements: LactateMeasurementDraft[],
+): LactateThresholdDraft | null {
+  if (typeof value === "number") {
+    const speed = numeric(measurements[value]?.speed);
+    const timeSeconds = numeric(measurements[value]?.time_seconds);
+    return speed !== null && speed > 0
+      ? { mode: "point", speed_kmh: speed, ...(timeSeconds === null ? {} : { time_seconds: timeSeconds }) }
+      : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const saved = value as Record<string, unknown>;
+  const indexedSpeed = typeof saved.measurement_index === "number"
+    ? numeric(measurements[saved.measurement_index]?.speed)
+    : null;
+  const speed = numeric(saved.speed_kmh) ?? numeric(saved.speed) ?? indexedSpeed;
+  if (speed === null || speed <= 0) return null;
+  const indexedTime = typeof saved.measurement_index === "number"
+    ? numeric(measurements[saved.measurement_index]?.time_seconds)
+    : null;
+  const timeSeconds = numeric(saved.time_seconds) ?? indexedTime;
+  const timeFields = timeSeconds === null ? {} : { time_seconds: timeSeconds };
+  const mode = saved.mode === "range" ? "range" : "point";
+  if (mode === "point") return { mode, speed_kmh: speed, ...timeFields };
+  const start = numeric(saved.speed_start_kmh) ?? numeric(saved.speed_start);
+  const end = numeric(saved.speed_end_kmh) ?? numeric(saved.speed_end);
+  const windowStart = numeric(saved.window_start_seconds);
+  const windowEnd = numeric(saved.window_end_seconds);
+  if ((windowStart === null || windowEnd === null || windowStart >= windowEnd)
+      && (start === null || end === null || start >= end)) {
+    return { mode: "point", speed_kmh: speed, ...timeFields };
+  }
+  return {
+    mode,
+    speed_kmh: start !== null && end !== null ? clamp(speed, start, end) : speed,
+    ...(start === null ? {} : { speed_start_kmh: start }),
+    ...(end === null ? {} : { speed_end_kmh: end }),
+    ...timeFields,
+    ...(windowStart === null ? {} : { window_start_seconds: windowStart }),
+    ...(windowEnd === null ? {} : { window_end_seconds: windowEnd }),
+  };
+}
+
+function lactateThresholdLabel(threshold?: LactateThresholdDraft | null): string {
+  if (!threshold) return "Non place";
+  const duration = lactateThresholdDuration(threshold);
+  if (threshold.mode === "range" && duration !== null) {
+    return `${formatSpeed(threshold.speed_kmh)} km/h / ${Math.round(duration)} s`;
+  }
+  return `${formatSpeed(threshold.speed_kmh)} km/h`;
+}
+
+function timelineTimeFromClientX(
+  clientX: number,
+  wrapper: HTMLDivElement | null,
+  range: [number, number],
+): number | null {
+  const rect = plotAreaRect(wrapper);
+  if (!rect || rect.width <= 0 || clientX < rect.left || clientX > rect.right) return null;
+  return range[0] + ((clientX - rect.left) / rect.width) * (range[1] - range[0]);
+}
+
+function plotAreaRect(wrapper: HTMLDivElement | null): DOMRect | null {
+  return wrapper?.querySelector<SVGRectElement>(".nsewdrag")?.getBoundingClientRect() ?? null;
+}
+
+function speedAtTimelineTime(timeSeconds: number, stages: LactateTimelineItem[]): number | null {
+  if (!stages.length || timeSeconds < stages[0].timeSeconds || timeSeconds > stages[stages.length - 1].timeSeconds) {
+    return null;
+  }
+  for (let index = 0; index < stages.length - 1; index += 1) {
+    const left = stages[index];
+    const right = stages[index + 1];
+    if (timeSeconds < left.timeSeconds || timeSeconds > right.timeSeconds) continue;
+    if (right.timeSeconds === left.timeSeconds) return left.speed;
+    const ratio = (timeSeconds - left.timeSeconds) / (right.timeSeconds - left.timeSeconds);
+    return left.speed + ratio * (right.speed - left.speed);
+  }
+  return stages[stages.length - 1].speed;
+}
+
+function timelineTimeAtSpeed(
+  speed: number,
+  stages: LactateTimelineItem[],
+  preferredTime?: number,
+): number | null {
+  if (!stages.length) return null;
+  const candidates: number[] = [];
+  for (let index = 0; index < stages.length - 1; index += 1) {
+    const left = stages[index];
+    const right = stages[index + 1];
+    if (speed < Math.min(left.speed, right.speed) || speed > Math.max(left.speed, right.speed)) continue;
+    if (left.speed === right.speed) {
+      if (speed === left.speed) {
+        candidates.push(preferredTime === undefined
+          ? (left.timeSeconds + right.timeSeconds) / 2
+          : clamp(preferredTime, left.timeSeconds, right.timeSeconds));
+      }
+      continue;
+    }
+    const ratio = (speed - left.speed) / (right.speed - left.speed);
+    candidates.push(left.timeSeconds + ratio * (right.timeSeconds - left.timeSeconds));
+  }
+  for (const stage of stages) {
+    if (stage.speed === speed) candidates.push(stage.timeSeconds);
+  }
+  if (!candidates.length) {
+    return stages.reduce((nearest, stage) => (
+      Math.abs(stage.speed - speed) < Math.abs(nearest.speed - speed) ? stage : nearest
+    )).timeSeconds;
+  }
+  return preferredTime === undefined
+    ? candidates[0]
+    : candidates.reduce((nearest, candidate) => (
+      Math.abs(candidate - preferredTime) < Math.abs(nearest - preferredTime) ? candidate : nearest
+    ));
+}
+
+function buildLactateThresholdAtPosition(
+  rawTimeSeconds: number,
+  mode: LactateThresholdMode,
+  rangeDurationSeconds: number | null,
+  stages: LactateTimelineItem[],
+): LactateThresholdDraft | null {
+  if (!stages.length) return null;
+  const minimumTime = stages[0].timeSeconds;
+  const maximumTime = stages[stages.length - 1].timeSeconds;
+  const timeSeconds = clamp(rawTimeSeconds, minimumTime, maximumTime);
+  const speed = speedAtTimelineTime(timeSeconds, stages);
+  if (speed === null || speed <= 0) return null;
+  if (mode === "point") {
+    return { mode, speed_kmh: speed, time_seconds: timeSeconds };
+  }
+  if (
+    rangeDurationSeconds === null
+    || rangeDurationSeconds < 1
+    || timeSeconds - rangeDurationSeconds / 2 < minimumTime
+    || timeSeconds + rangeDurationSeconds / 2 > maximumTime
+  ) return null;
+  const windowStart = timeSeconds - rangeDurationSeconds / 2;
+  const windowEnd = timeSeconds + rangeDurationSeconds / 2;
+  return {
+    mode,
+    speed_kmh: speed,
+    time_seconds: timeSeconds,
+    window_start_seconds: windowStart,
+    window_end_seconds: windowEnd,
+  };
+}
+
+function lactateThresholdTime(
+  threshold: LactateThresholdDraft,
+  stages: LactateTimelineItem[],
+): number | null {
+  if (!stages.length) return null;
+  const minimum = stages[0].timeSeconds;
+  const maximum = stages[stages.length - 1].timeSeconds;
+  const saved = numeric(threshold.time_seconds);
+  if (saved !== null && saved >= minimum && saved <= maximum) return saved;
+  return timelineTimeAtSpeed(threshold.speed_kmh, stages);
+}
+
+function lactateThresholdDuration(threshold: LactateThresholdDraft): number | null {
+  if (
+    threshold.mode !== "range"
+    || typeof threshold.window_start_seconds !== "number"
+    || typeof threshold.window_end_seconds !== "number"
+  ) return null;
+  return threshold.window_end_seconds - threshold.window_start_seconds;
+}
+
+function nearestLactateThresholdName(
+  thresholds: LactateTestDraft["thresholds"],
+  position: number,
+  range: [number, number],
+  wrapper: HTMLDivElement | null,
+  stages: LactateTimelineItem[],
+): LactateThresholdName | null {
+  const rect = plotAreaRect(wrapper);
+  if (!rect || rect.width <= 0) return null;
+  const tolerance = ((range[1] - range[0]) / rect.width) * 18;
+  let best: { name: LactateThresholdName; distance: number } | null = null;
+  for (const name of ["sl1", "sl2"] as const) {
+    const threshold = thresholds[name];
+    if (!threshold) continue;
+    const candidate = lactateThresholdTime(threshold, stages);
+    if (candidate === null) continue;
+    const distance = Math.abs(candidate - position);
+    if (distance <= tolerance && (!best || distance < best.distance)) {
+      best = { name, distance };
+    }
+  }
+  return best?.name ?? null;
+}
+
+function numericInput(value: string): number | null {
+  return numeric(value.replace(",", "."));
+}
+
+function validLactateRangeDuration(
+  value: string,
+  stages: LactateTimelineItem[],
+  center: number | null,
+): boolean {
+  const duration = numericInput(value);
+  if (duration === null || duration < 1 || !stages.length || center === null) return false;
+  return center - duration / 2 >= stages[0].timeSeconds
+    && center + duration / 2 <= stages[stages.length - 1].timeSeconds;
+}
+
+function formatSpeed(value: number): string {
+  return value.toLocaleString("fr-FR", { maximumFractionDigits: 1 });
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
 }
 
 function numberInput(value: string): number | null {

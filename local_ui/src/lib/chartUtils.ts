@@ -64,7 +64,7 @@ export function buildMarkerShapes(markers: DraftMarkers): PlotShape[] {
       x1: marker.t_seconds,
       y0: 0,
       y1: 1,
-      line: { color, width: 1, dash: "dot" },
+      line: { color, width: 2, dash: "dot" },
     }];
     if (marker.mode !== "point" && marker.window_start_seconds !== null && marker.window_end_seconds !== null) {
       shapes.push({
@@ -134,7 +134,10 @@ export function buildMarkerAnnotations(markers: DraftMarkers) {
       text: marker.name === "VO2_max" ? "VO2max" : marker.name,
       showarrow: false,
       yanchor: "bottom",
-      font: { color: MARKER_COLORS[marker.name], size: 10 },
+      font: { color: MARKER_COLORS[marker.name], size: 14 },
+      bgcolor: "rgba(2, 12, 25, 0.82)",
+      bordercolor: `${MARKER_COLORS[marker.name]}70`,
+      borderpad: 4,
     }));
   return markerLabels;
 }

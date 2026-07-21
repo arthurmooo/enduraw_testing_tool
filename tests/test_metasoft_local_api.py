@@ -13,6 +13,7 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -125,6 +126,8 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.match = self.session_manager.create_match(self.profile_name, self.xml_filename)
         self.server = LocalMetaSoftServer(self.session_manager).start()
         self.base_url = f"http://127.0.0.1:{self.server.port}"
+        self.context_tokens = {}
+        self.context_token, self.initial_match_id = self._open_context(self.match.to_dict())
 
     def tearDown(self) -> None:
         self.server.stop()
@@ -160,6 +163,100 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertTrue(payload["warnings"][0]["blocking"])
         self.assertEqual(payload["source_of_truth"]["markers"], "python.metasoft_markers")
 
+    def test_process_token_cannot_resolve_a_match_without_browser_context(self) -> None:
+        status, payload = self._get(
+            f"/api/matches/{self._match_id()}/analysis",
+            token=self.server.token,
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "browser_context_missing")
+
+    def test_tabs_with_same_match_names_remain_isolated_between_sessions(self) -> None:
+        session_a_path = self.session_manager.current_session_path
+        token_a = self.context_token
+        match_id = self._match_id()
+
+        self.session_manager.create_session("2026-07-09", "autre")
+        profile_b = _profile()
+        profile_b["body_composition"]["current_weight"] = 70
+        profile_b_name = self.session_manager.add_profile(profile_b)
+        source_xml = self.base / self.xml_filename
+        source_xml.write_bytes(_metasoft_xml())
+        xml_b_name = self.session_manager.import_xml(str(source_xml))
+        match_b = self.session_manager.create_match(profile_b_name, xml_b_name)
+        token_b, match_b_id = self._open_context(match_b.to_dict())
+
+        self.assertEqual(match_b_id, match_id)
+        status_a, analysis_a = self._get(
+            f"/api/matches/{match_id}/analysis",
+            token=token_a,
+        )
+        status_b, analysis_b = self._get(
+            f"/api/matches/{match_id}/analysis",
+            token=token_b,
+        )
+        self.assertEqual((status_a, status_b), (200, 200))
+        self.assertEqual(analysis_a["analysis"]["computed"]["running_economy"][0]["mass_kg"], 62)
+        self.assertEqual(analysis_b["analysis"]["computed"]["running_economy"][0]["mass_kg"], 70)
+
+        self._post(
+            f"/api/matches/{match_id}/draft",
+            {"marker_selections": [{"name": "SV1", "mode": "point", "t_seconds": 60}]},
+            token=token_a,
+        )
+        self._post(
+            f"/api/matches/{match_id}/draft",
+            {"marker_selections": [{"name": "SV2", "mode": "point", "t_seconds": 90}]},
+            token=token_b,
+        )
+        _, refreshed_a = self._get(f"/api/matches/{match_id}/analysis", token=token_a)
+        _, refreshed_b = self._get(f"/api/matches/{match_id}/analysis", token=token_b)
+        self.assertEqual(refreshed_a["metasoft_draft"]["marker_selections"][0]["name"], "SV1")
+        self.assertEqual(refreshed_b["metasoft_draft"]["marker_selections"][0]["name"], "SV2")
+
+        status, _payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [],
+                "lactate_test": {
+                    "active": True,
+                    "measurements": [
+                        {"type": "rest_before", "speed": 0, "lactate_mmol_l": 1.1},
+                        {"type": "stage", "speed": 10, "lactate_mmol_l": 2.2},
+                    ],
+                    "thresholds": {},
+                },
+            },
+            token=token_a,
+        )
+        self.assertEqual(status, 200)
+        manager_a = SessionManager(str(self.base))
+        manager_a.load_session(str(session_a_path))
+        self.assertTrue(manager_a.get_profile(self.profile_name)["stress_test_results"]["lactate_profile"])
+        self.assertNotIn(
+            "lactate_profile",
+            self.session_manager.get_profile(profile_b_name)["stress_test_results"],
+        )
+        self.assertEqual(self.server.consume_pending_profile_updates(self.session_manager), [])
+        self.session_manager.load_session(str(session_a_path))
+        self.assertEqual(
+            self.server.consume_pending_profile_updates(self.session_manager),
+            [self.profile_name],
+        )
+
+    def test_browser_token_cannot_open_another_match(self) -> None:
+        initial_token = self.context_token
+        other_match_id = self._weighted_match_id()
+
+        status, payload = self._get(
+            f"/api/matches/{other_match_id}/analysis",
+            token=initial_token,
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "browser_context_mismatch")
+
     def test_draft_survives_refresh_and_report_clears_it(self) -> None:
         match_id = self._match_id()
         draft = {
@@ -194,7 +291,7 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIsNone(payload["metasoft_draft"])
 
-    def test_draft_is_ignored_after_xml_source_changes(self) -> None:
+    def test_tab_is_rejected_after_xml_source_changes(self) -> None:
         match_id = self._match_id()
         status, _payload = self._post(
             f"/api/matches/{match_id}/draft",
@@ -206,12 +303,8 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
         status, payload = self._get(f"/api/matches/{match_id}/analysis")
 
-        self.assertEqual(status, 200)
-        self.assertIsNone(payload["metasoft_draft"])
-        self.assertTrue(any(
-            warning["code"] == "metasoft_draft_stale"
-            for warning in payload["warnings"]
-        ))
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "browser_context_stale")
 
     def test_identity_mismatch_blocks_preview_and_report_without_profile_write(self) -> None:
         profile = self.session_manager.get_profile(self.profile_name)
@@ -456,15 +549,202 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(stress["lactate_profile"][0]["type"], "rest_before")
         self.assertEqual(stress["lactate_thresholds"]["sl2"]["speed"], 12)
 
+    def test_report_persists_continuous_lactate_range_without_fake_measurement(self) -> None:
+        match_id = self._match_id()
+        lactate_test = {
+            "active": True,
+            "measurements": [
+                {
+                    "type": "rest_before",
+                    "speed": 0,
+                    "lactate_mmol_l": 1.1,
+                    "time_seconds": 0,
+                },
+                {
+                    "type": "stage",
+                    "speed": 10,
+                    "lactate_mmol_l": 2.0,
+                    "time_seconds": 300,
+                },
+                {
+                    "type": "stage",
+                    "speed": 12,
+                    "lactate_mmol_l": 3.5,
+                    "time_seconds": 600,
+                },
+            ],
+            "thresholds": {
+                "sl1": {
+                    "mode": "point",
+                    "speed_kmh": 10.8,
+                    "time_seconds": 420,
+                },
+                "sl2": {
+                    "mode": "range",
+                    "speed_kmh": 11.6,
+                    "time_seconds": 540,
+                    "window_start_seconds": 510,
+                    "window_end_seconds": 570,
+                },
+            },
+        }
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {"marker_selections": [], "lactate_test": lactate_test},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertNotEqual(payload.get("status"), "conflict")
+        stress = self.session_manager.get_profile(self.profile_name)["stress_test_results"]
+        self.assertEqual(stress["lactate_thresholds"]["sl1"]["speed"], 10.8)
+        self.assertEqual(stress["lactate_thresholds"]["sl1"]["time_seconds"], 420)
+        self.assertNotIn("measurement_index", stress["lactate_thresholds"]["sl1"])
+        self.assertNotIn("speed_start", stress["lactate_thresholds"]["sl2"])
+        self.assertNotIn("speed_end", stress["lactate_thresholds"]["sl2"])
+        self.assertEqual(stress["lactate_thresholds"]["sl2"]["time_seconds"], 540)
+        self.assertEqual(
+            stress["lactate_thresholds"]["sl2"]["window_start_seconds"],
+            510,
+        )
+        self.assertEqual(
+            stress["lactate_thresholds"]["sl2"]["window_end_seconds"],
+            570,
+        )
+        self.assertNotIn("lactate_mmol_l", stress["lactate_thresholds"]["sl2"])
+
+        lactate_test["measurements"][1]["lactate_mmol_l"] = 2.2
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {"marker_selections": [], "lactate_test": lactate_test},
+        )
+        self.assertEqual(status, 200)
+        self.assertNotEqual(payload.get("status"), "conflict")
+
+    def test_report_accepts_legacy_lactate_position_without_persisting_it(self) -> None:
+        status, payload = self._post(
+            f"/api/matches/{self._match_id()}/profile/report",
+            {
+                "marker_selections": [],
+                "lactate_test": {
+                    "active": True,
+                    "measurements": [
+                        {"type": "rest_before", "speed": 0, "lactate_mmol_l": 1.1},
+                        {"type": "stage", "speed": 10, "lactate_mmol_l": 2.0, "time_seconds": 300},
+                    ],
+                    "thresholds": {
+                        "sl1": {
+                            "mode": "point",
+                            "speed_kmh": 10,
+                            "timeline_position": 1,
+                        },
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertNotEqual(payload.get("status"), "conflict")
+        threshold = self.session_manager.get_profile(self.profile_name)[
+            "stress_test_results"
+        ]["lactate_thresholds"]["sl1"]
+        self.assertEqual(threshold["speed"], 10)
+        self.assertNotIn("timeline_position", threshold)
+        self.assertNotIn("time_seconds", threshold)
+
+    def test_lactate_edit_detects_profile_change_since_tab_opened(self) -> None:
+        match_id = self._match_id()
+        profile = self.session_manager.get_profile(self.profile_name)
+        profile["stress_test_results"]["lactate_profile"] = [
+            {"type": "rest_before", "speed": 0, "lactate_mmol_l": 0.8},
+            {"type": "stage", "speed": 11, "lactate_mmol_l": 2.6},
+        ]
+        profile["stress_test_results"]["lactate_thresholds"] = {}
+        self.session_manager.update_profile(self.profile_name, profile)
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [],
+                "lactate_test": {
+                    "active": True,
+                    "measurements": [
+                        {"type": "rest_before", "speed": 0, "lactate_mmol_l": 1.1},
+                        {"type": "stage", "speed": 11, "lactate_mmol_l": 3.2},
+                    ],
+                    "thresholds": {},
+                },
+            },
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "profile_conflict")
+        self.assertEqual(
+            self.session_manager.get_profile(self.profile_name)["stress_test_results"][
+                "lactate_profile"
+            ][0]["lactate_mmol_l"],
+            0.8,
+        )
+
+    def test_report_rejects_lactate_threshold_time_outside_supported_protocol(self) -> None:
+        status, payload = self._post(
+            f"/api/matches/{self._match_id()}/profile/report",
+            {
+                "marker_selections": [],
+                "lactate_test": {
+                    "active": True,
+                    "measurements": [
+                        {"type": "rest_before", "speed": 0, "lactate_mmol_l": 1.1},
+                        {"type": "stage", "speed": 10, "lactate_mmol_l": 2.0, "time_seconds": 300},
+                    ],
+                    "thresholds": {
+                        "sl1": {
+                            "mode": "point",
+                            "speed_kmh": 10,
+                            "time_seconds": 301,
+                        },
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "invalid_lactate_test")
+
+    def test_cross_over_is_officialized_without_historical_profile_field(self) -> None:
+        match_id = self._match_id()
+        original_profile = self.session_manager.get_profile(self.profile_name)
+        browser_context = self.server._request_context(self.context_tokens[match_id], match_id)
+        context = self.server._match_context(match_id, browser_context)
+        point = next(item for item in context["analysis"]["points"] if item["t_seconds"] == 60)
+        point["values"].update({"decho_kcal_h": 400, "defat_kcal_h": 300})
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [{
+                    "name": "Cross-over",
+                    "mode": "point",
+                    "t_seconds": 60,
+                }],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        marker = payload["confirmed_markers"]["Cross-over"]
+        self.assertAlmostEqual(marker["values"]["fat_percent"] + marker["values"]["cho_percent"], 100)
+        self.assertEqual(payload["updated_paths"], [])
+        self.assertEqual(self.session_manager.get_profile(self.profile_name), original_profile)
+
     def test_report_keeps_excluded_lactate_stage_without_requiring_a_value(self) -> None:
         match_id = self._match_id()
         lactate_test = {
             "active": True,
             "measurements": [
                 {"type": "rest_before", "enabled": True, "speed": 0, "lactate_mmol_l": 1.1},
-                {"type": "stage", "enabled": False, "label": "Bandelette ratee", "speed": 10, "lactate_mmol_l": None},
-                {"type": "stage", "enabled": True, "label": "Palier cible", "speed": 12, "lactate_mmol_l": 3.5},
-                {"type": "recovery", "enabled": False, "speed": 0, "lactate_mmol_l": None, "delay_minutes": 3},
+                {"type": "stage", "enabled": False, "label": "Bandelette ratee", "speed": 10, "lactate_mmol_l": None, "time_seconds": 300},
+                {"type": "stage", "enabled": True, "label": "Palier cible", "speed": 12, "lactate_mmol_l": 3.5, "time_seconds": 600},
+                {"type": "recovery", "enabled": False, "inclusion_touched": False, "speed": 0, "lactate_mmol_l": None, "delay_minutes": 3, "time_seconds": 100},
             ],
             "thresholds": {"sl1": 2},
         }
@@ -478,6 +758,8 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         stress = self.session_manager.get_profile(self.profile_name)["stress_test_results"]
         self.assertFalse(stress["lactate_profile"][1]["enabled"])
         self.assertIsNone(stress["lactate_profile"][1]["lactate_mmol_l"])
+        self.assertFalse(stress["lactate_profile"][3]["inclusion_touched"])
+        self.assertEqual(stress["lactate_profile"][3]["time_seconds"], 780)
         self.assertEqual(stress["lactate_thresholds"]["sl1"]["label"], "Palier cible")
 
     def test_manual_running_economy_persists_disabled_stage_adjustments(self) -> None:
@@ -510,17 +792,11 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
         self.assertEqual(status, 200)
         rows = payload["manual_running_economy"]["rows"]
-        self.assertEqual([row["stage_index"] for row in rows], [1, 2])
-        self.assertEqual(rows[0]["start_seconds"], 60)
-        self.assertEqual(rows[0]["end_seconds"], 90)
+        self.assertEqual([row["stage_index"] for row in rows], [2])
+        self.assertEqual(rows[0]["start_seconds"], 180)
+        self.assertEqual(rows[0]["end_seconds"], 210)
         self.assertEqual(
             rows[0]["exclusions"],
-            [{"start_seconds": 70.0, "end_seconds": 80.0}],
-        )
-        self.assertEqual(rows[1]["start_seconds"], 180)
-        self.assertEqual(rows[1]["end_seconds"], 210)
-        self.assertEqual(
-            rows[1]["exclusions"],
             [{"start_seconds": 190.0, "end_seconds": 200.0}],
         )
         self.assertEqual(
@@ -539,6 +815,40 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(
             analysis_payload["manual_running_economy"],
             payload["manual_running_economy"],
+        )
+
+    def test_report_filters_disabled_ec_zone_before_python_validation(self) -> None:
+        match_id = self._weighted_match_id()
+
+        status, payload = self._post(
+            f"/api/matches/{match_id}/profile/report",
+            {
+                "marker_selections": [],
+                "manual_running_economy_selections": [
+                    {
+                        "stage_index": 1,
+                        "start_seconds": 60,
+                        "end_seconds": 120,
+                        "exclusions": [],
+                    },
+                    {
+                        "stage_index": 999,
+                        "start_seconds": 0,
+                        "end_seconds": 1,
+                        "exclusions": [],
+                    },
+                ],
+                "manual_running_economy_stage_selections": [
+                    {"stage_index": 1, "enabled": True},
+                    {"stage_index": 999, "enabled": False},
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [row["stage_index"] for row in payload["manual_running_economy"]["rows"]],
+            [1],
         )
 
     def test_manual_running_economy_rejects_invalid_bounds_without_writing(self) -> None:
@@ -695,6 +1005,11 @@ class MetaSoftLocalApiTest(unittest.TestCase):
                     self.session_manager.update_profile(match.profile_name, profile)
 
                 status, payload = self._get(f"/api/matches/{match_id}/analysis")
+                if change == "xml":
+                    self.assertEqual(status, 409)
+                    self.assertEqual(payload["error"]["code"], "browser_context_stale")
+                    self.session_manager.clear_manual_running_economy(match_id)
+                    continue
                 self.assertEqual(status, 200)
                 warning = next(
                     item for item in payload["warnings"]
@@ -886,7 +1201,11 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
     def test_report_is_atomic_when_one_marker_mapping_is_incomplete(self) -> None:
         match_id = self._match_id()
-        context = self.server._match_context(match_id)
+        browser_context = self.server._request_context(
+            self.context_tokens[match_id],
+            match_id,
+        )
+        context = self.server._match_context(match_id, browser_context)
         point = next(
             item for item in context["analysis"]["points"]
             if item["t_seconds"] == 60
@@ -1131,16 +1450,13 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
         status, payload = self._get(f"/api/matches/{match_id}/analysis")
 
-        self.assertEqual(status, 200)
-        warnings = {warning["code"]: warning for warning in payload["warnings"]}
-        self.assertEqual(warnings["marker_provenance_stale"]["reason"], "source_changed")
-        self.assertTrue(warnings["marker_provenance_stale"]["blocking"])
-        self.assertEqual(payload["confirmed_markers"], {})
-        self.assertEqual(payload["deleted_markers"], [])
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "browser_context_stale")
 
     def test_provenance_write_failure_returns_error_and_keeps_export_blocked(self) -> None:
         match_id = self._match_id()
-        original_save = self.session_manager._save_matches
+        browser_manager = self._browser_manager(match_id)
+        original_save = browser_manager._save_matches
         save_calls = 0
 
         def fail_final_save():
@@ -1151,7 +1467,7 @@ class MetaSoftLocalApiTest(unittest.TestCase):
             original_save()
 
         with patch.object(
-            self.session_manager,
+            browser_manager,
             "_save_matches",
             side_effect=fail_final_save,
         ):
@@ -1184,13 +1500,14 @@ class MetaSoftLocalApiTest(unittest.TestCase):
 
     def test_manual_save_failure_rolls_back_profile_ec_and_pending_update(self) -> None:
         match_id = self._weighted_match_id()
+        browser_manager = self._browser_manager(match_id)
         match = self.session_manager.matches[-1]
         original_profile = self.session_manager.get_profile(match.profile_name)
         original_report = deepcopy(match.metasoft_report)
         sidecar = self.session_manager.current_session_path / "running_economy_manual.json"
 
         with patch.object(
-            self.session_manager,
+            browser_manager,
             "save_manual_running_economy",
             side_effect=OSError("disk full"),
         ):
@@ -1230,11 +1547,12 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.server.consume_pending_profile_updates()
         match = self.session_manager.matches[0]
+        browser_manager = self._browser_manager(match_id)
         original_profile = self.session_manager.get_profile(match.profile_name)
         original_report = deepcopy(match.metasoft_report)
 
         with patch.object(
-            self.session_manager,
+            browser_manager,
             "record_metasoft_report",
             side_effect=OSError("disk full"),
         ):
@@ -1394,9 +1712,7 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertFalse(self.session_manager.matches[0].exported)
 
     def _match_id(self) -> str:
-        status, payload = self._get("/api/matches")
-        self.assertEqual(status, 200)
-        return payload["matches"][0]["match_id"]
+        return self.initial_match_id
 
     def _weighted_match_id(self) -> str:
         profile_name = self.session_manager.add_profile(_profile())
@@ -1404,10 +1720,11 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         source_xml.write_bytes(_metasoft_xml(include_weight=True))
         xml_filename = self.session_manager.import_xml(str(source_xml))
         self.session_manager.create_match(profile_name, xml_filename)
-        return self.server.url_for_match({
+        _token, match_id = self._open_context({
             "profile_name": profile_name,
             "xml_filename": xml_filename,
-        }).split("match_id=", 1)[1].split("&", 1)[0]
+        })
+        return match_id
 
     def _weighted_two_stage_match_id(self) -> str:
         profile_name = self.session_manager.add_profile(_profile())
@@ -1415,10 +1732,23 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         source_xml.write_bytes(_metasoft_xml(include_weight=True, two_stages=True))
         xml_filename = self.session_manager.import_xml(str(source_xml))
         self.session_manager.create_match(profile_name, xml_filename)
-        return self.server.url_for_match({
+        _token, match_id = self._open_context({
             "profile_name": profile_name,
             "xml_filename": xml_filename,
-        }).split("match_id=", 1)[1].split("&", 1)[0]
+        })
+        return match_id
+
+    def _open_context(self, match_info: dict) -> tuple[str, str]:
+        query = parse_qs(urlparse(self.server.url_for_match(match_info)).query)
+        token = query["token"][0]
+        match_id = query["match_id"][0]
+        self.context_tokens[match_id] = token
+        return token, match_id
+
+    def _browser_manager(self, match_id: str) -> SessionManager:
+        context = self.server._request_context(self.context_tokens[match_id], match_id)
+        self.assertTrue(context["ok"])
+        return context["session_manager"]
 
     def _get(self, path: str, token: str | None = None):
         return self._request("GET", path, None, token)
@@ -1427,7 +1757,15 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         return self._request("POST", path, payload, token)
 
     def _request(self, method: str, path: str, payload: dict | None, token: str | None):
-        headers = {"X-Enduraw-Local-Token": self.server.token if token is None else token}
+        parts = path.strip("/").split("/")
+        match_token = (
+            self.context_tokens.get(parts[2])
+            if len(parts) >= 3 and parts[:2] == ["api", "matches"]
+            else None
+        )
+        headers = {
+            "X-Enduraw-Local-Token": token or match_token or self.context_token,
+        }
         data = None
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")

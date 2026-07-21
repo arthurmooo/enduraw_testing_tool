@@ -15,6 +15,8 @@ export interface MarkerReportSummaryItem {
   fc: string;
   vo2kg: string;
   speed: string;
+  fatPercent: string;
+  choPercent: string;
 }
 
 export function AnalysisExportSection({
@@ -83,7 +85,7 @@ export function AnalysisExportSection({
               {conflicts.map((conflict) => (
                 <p key={conflict.path}>
                   <AlertTriangle size={13} />
-                  {conflict.path}: actuel {String(conflict.current)} / entrant {String(conflict.incoming)}
+                  {conflict.path}: actuel {formatConflictValue(conflict.current)} / entrant {formatConflictValue(conflict.incoming)}
                 </p>
               ))}
             </div>
@@ -123,7 +125,9 @@ function ReportSummary({
               </div>
               <div>
                 <span className={statusClass(marker.status)}>{marker.status}</span>
-                <span>FC {marker.fc} / VO2/kg {marker.vo2kg} / {marker.speed} km/h</span>
+                <span>
+                  FC {marker.fc} / VO2/kg {marker.vo2kg} / {marker.speed} km/h / Fat {marker.fatPercent}% / CHO {marker.choPercent}%
+                </span>
               </div>
             </div>
           ))}
@@ -215,4 +219,13 @@ function busyLabel(value: string): string {
   if (value === "Report") return "Report en cours";
   if (value === "Overwrite") return "Ecrasement en cours";
   return value;
+}
+
+function formatConflictValue(value: unknown): string {
+  if (value === null || value === undefined || typeof value !== "object") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch (_error) {
+    return "Valeur structuree non affichable";
+  }
 }

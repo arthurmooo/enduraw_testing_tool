@@ -1473,7 +1473,13 @@ class TabbedInputForm(ctk.CTkFrame):
             if not isinstance(threshold, dict):
                 continue
             index = threshold.get('measurement_index')
-            if not isinstance(index, int) or not 0 <= index < len(measurements):
+            if not isinstance(index, int):
+                # Les seuils React continus sont independants d'un prelevement;
+                # une sauvegarde Tk doit les conserver sans leur inventer d'index.
+                if threshold.get('mode') in {'point', 'range'}:
+                    resolved[name] = dict(threshold)
+                continue
+            if not 0 <= index < len(measurements):
                 continue
             resolved[name] = {
                 'measurement_index': index,
