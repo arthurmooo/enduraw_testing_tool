@@ -8,6 +8,7 @@ export type MetaSoftMetricKey =
   | "vt_l"
   | "bf_per_min"
   | "rer"
+  | "grade_percent"
   | "speed_kmh"
   | "peto2_mmhg"
   | "petco2_mmhg"

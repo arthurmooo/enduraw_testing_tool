@@ -143,6 +143,10 @@ export function buildCursorAnnotations(
   if (typeof speed === "number" && Number.isFinite(speed)) {
     rows.push(`Vitesse ${speed.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} km/h`);
   }
+  const grade = point.values.grade_percent;
+  if (typeof grade === "number" && Number.isFinite(grade)) {
+    rows.push(`Pente ${grade.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} %`);
+  }
   return [{
     x: tSeconds,
     y: 0.98,

@@ -48,6 +48,7 @@ METRIC_LABELS = {
     "VT": "vt_l",
     "BF": "bf_per_min",
     "RER": "rer",
+    "N": "grade_percent",
     "v": "speed_kmh",
     "PetO2": "peto2_mmhg",
     "PetCO2": "petco2_mmhg",

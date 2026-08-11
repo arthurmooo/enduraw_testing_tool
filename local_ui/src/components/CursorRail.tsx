@@ -12,6 +12,7 @@ const CURSOR_VALUES: Array<[MetaSoftMetricKey, string, string, string, number]> 
   ["ve_l_min", "V'E", "L/min", "#c80000", 1],
   ["bf_per_min", "BF", "br/min", "#008000", 1],
   ["rer", "RER", "sans unite", "#111111", 2],
+  ["grade_percent", "Pente", "%", "#d97706", 1],
   ["speed_kmh", "Vitesse", "km/h", "#007c65", 1],
 ];
 

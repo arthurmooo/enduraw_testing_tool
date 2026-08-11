@@ -9,6 +9,13 @@ import type {
 
 type PlotShape = Record<string, unknown>;
 const MIN_SPEED_LABEL_SECONDS = 60;
+const MIN_GRADE_LABEL_SECONDS = 20;
+
+interface GradeSegment {
+  grade_percent: number;
+  start_seconds: number;
+  end_seconds: number;
+}
 
 const PHASE_COLORS: Record<string, string> = {
   Repos: "rgba(0, 132, 255, 0.20)",
@@ -49,7 +56,21 @@ export function buildTimeBandShapes(analysis: MetaSoftAnalysis): PlotShape[] {
     editable: false,
   }));
 
-  return [...speedBands, ...phaseBands];
+  const gradeBands = gradeSegmentsForAnalysis(analysis).map((segment, index) => ({
+    type: "rect",
+    xref: "x",
+    yref: "paper",
+    x0: segment.start_seconds,
+    x1: segment.end_seconds,
+    y0: 0.84,
+    y1: 0.91,
+    fillcolor: index % 2 === 0 ? "rgba(255, 184, 77, 0.30)" : "rgba(255, 128, 66, 0.30)",
+    line: { color: "rgba(255, 211, 145, 0.55)", width: 1 },
+    layer: "below",
+    editable: false,
+  }));
+
+  return [...speedBands, ...phaseBands, ...gradeBands];
 }
 
 export function buildMarkerShapes(markers: DraftMarkers): PlotShape[] {
@@ -108,6 +129,20 @@ export function buildStaticAnnotations(analysis: MetaSoftAnalysis) {
       bordercolor: "rgba(255,255,255,0.05)",
       borderpad: 2,
     }));
+  const gradeLabels = gradeSegmentsForAnalysis(analysis)
+    .filter((segment) => segment.end_seconds - segment.start_seconds >= MIN_GRADE_LABEL_SECONDS)
+    .map((segment) => ({
+      x: (segment.start_seconds + segment.end_seconds) / 2,
+      y: 0.875,
+      xref: "x",
+      yref: "paper",
+      text: `${formatGrade(segment.grade_percent)} %`,
+      showarrow: false,
+      font: { color: "#fff1d6", size: 10 },
+      bgcolor: "rgba(52, 25, 5, 0.72)",
+      bordercolor: "rgba(255, 211, 145, 0.30)",
+      borderpad: 2,
+    }));
   const phaseLabels = analysis.phases.filter(hasBounds).map((phase) => ({
     x: ((phase.start_seconds ?? 0) + (phase.end_seconds ?? 0)) / 2,
     y: 0.04,
@@ -120,7 +155,7 @@ export function buildStaticAnnotations(analysis: MetaSoftAnalysis) {
     bordercolor: "rgba(255,255,255,0.06)",
     borderpad: 3,
   }));
-  return [...speedLabels, ...phaseLabels];
+  return [...speedLabels, ...gradeLabels, ...phaseLabels];
 }
 
 export function buildMarkerAnnotations(markers: DraftMarkers) {
@@ -145,6 +180,32 @@ export function buildMarkerAnnotations(markers: DraftMarkers) {
 export function speedSegmentsForAnalysis(analysis: MetaSoftAnalysis): MetaSoftWarmupStage[] {
   const allSpeedSegments = speedSegmentsFromPoints(analysis.points);
   return allSpeedSegments.length ? allSpeedSegments : analysis.warmup_stages.filter(hasBounds);
+}
+
+export function gradeSegmentsForAnalysis(analysis: MetaSoftAnalysis): GradeSegment[] {
+  const segments: GradeSegment[] = [];
+  let current = null as GradeSegment | null;
+  for (const point of analysis.points) {
+    const grade = point.values.grade_percent;
+    const time = point.t_seconds;
+    if (typeof grade !== "number" || !Number.isFinite(grade) || typeof time !== "number" || !Number.isFinite(time)) {
+      if (current && current.end_seconds > current.start_seconds) segments.push(current);
+      current = null;
+      continue;
+    }
+    const rounded = Math.round(grade * 10) / 10;
+    if (current?.grade_percent === rounded) {
+      current.end_seconds = time;
+      continue;
+    }
+    if (current) {
+      current.end_seconds = time;
+      if (current.end_seconds > current.start_seconds) segments.push(current);
+    }
+    current = { grade_percent: rounded, start_seconds: time, end_seconds: time };
+  }
+  if (current && current.end_seconds > current.start_seconds) segments.push(current);
+  return segments;
 }
 
 export function buildSpeedStepLinePoints(analysis: MetaSoftAnalysis): { x: number[]; y: number[] } {
@@ -184,6 +245,10 @@ export function buildSpeedStepLineShapes(analysis: MetaSoftAnalysis): PlotShape[
 }
 
 function formatSpeed(value: number): string {
+  return value.toLocaleString("fr-FR", { maximumFractionDigits: 1 });
+}
+
+function formatGrade(value: number): string {
   return value.toLocaleString("fr-FR", { maximumFractionDigits: 1 });
 }
 
