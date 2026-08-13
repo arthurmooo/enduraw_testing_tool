@@ -33,9 +33,9 @@ MARKER_PROFILE_PATHS = {
         ("stress_test_results", "thresholds", "sv2", "vo2_ml_kg_min"),
     ),
     "VO2_max": (
-        ("stress_test_results", "max_hr"),
         ("stress_test_results", "measured_vo2max"),
     ),
+    "FC_max": (("stress_test_results", "max_hr"),),
     "VMA": (("stress_test_results", "vma"),),
     # Cross-over reste un marqueur d'audit MetaSoft sans champ profil historique.
     "Cross-over": (),
@@ -68,6 +68,16 @@ def metasoft_unproven_profile_markers(profile: dict, markers: dict) -> list[str]
             for present, value in (_read_path_with_presence(profile, path) for path in paths)
         )
         marker = markers.get(name) if isinstance(markers, dict) else None
+        # Compatibilite des reports <= 1.1.4: VO2_max possedait aussi max_hr.
+        if name == "FC_max" and not isinstance(marker, dict):
+            legacy = markers.get("VO2_max") if isinstance(markers, dict) else None
+            if (
+                isinstance(legacy, dict)
+                and legacy.get("status") == "ok"
+                and _round_bpm(legacy.get("values", {}).get("fc_bpm"))
+                == _round_bpm((profile.get("stress_test_results", {}) or {}).get("max_hr"))
+            ):
+                continue
         if has_value and (
             not isinstance(marker, dict)
             or marker.get("action") == "delete"
@@ -195,10 +205,9 @@ def metasoft_marker_to_stress_patch(marker: dict) -> dict:
         }
         stress["thresholds"] = {name: threshold}
     elif name == "vo2_max":
-        stress.update({
-            "max_hr": _round_bpm(values.get("fc_bpm")),
-            "measured_vo2max": values.get("vo2_ml_kg_min"),
-        })
+        stress["measured_vo2max"] = values.get("vo2_ml_kg_min")
+    elif name == "fc_max":
+        stress["max_hr"] = _round_bpm(values.get("fc_bpm"))
     elif name == "vma":
         stress["vma"] = values.get("speed_kmh")
     else:
@@ -483,6 +492,7 @@ def _canonical_marker_name(name) -> str:
         "sv1": "SV1",
         "sv2": "SV2",
         "vo2_max": "VO2_max",
+        "fc_max": "FC_max",
         "vma": "VMA",
         "cross_over": "Cross-over",
     }.get(_normalise_marker_name(name), "")
@@ -493,10 +503,9 @@ def _marker_delete_paths(name) -> list[list[str]]:
     if normalized in ("sv1", "sv2"):
         return [["stress_test_results", "thresholds", normalized]]
     if normalized == "vo2_max":
-        return [
-            ["stress_test_results", "max_hr"],
-            ["stress_test_results", "measured_vo2max"],
-        ]
+        return [["stress_test_results", "measured_vo2max"]]
+    if normalized == "fc_max":
+        return [["stress_test_results", "max_hr"]]
     if normalized == "vma":
         return [["stress_test_results", "vma"]]
     return []

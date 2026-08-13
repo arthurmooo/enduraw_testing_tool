@@ -120,6 +120,7 @@ export function buildCursorShapes(
     y0: 0,
     y1: 1,
     line: { color: "rgba(248,250,252,0.62)", width: 1, dash: "dash" },
+    editable: false,
   }];
 }
 

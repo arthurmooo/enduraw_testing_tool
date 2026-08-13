@@ -22,6 +22,7 @@ from core.metasoft_markers import (
     apply_metasoft_stress_patch,
     build_metasoft_marker,
     build_metasoft_marker_deletion,
+    metasoft_unproven_profile_markers,
     metasoft_marker_to_stress_patch,
 )
 from utils.xml_parser import TCPXmlParser, add_derived_vco2, parse_metasoft_xml_bytes, parse_spreadsheet_rows
@@ -271,6 +272,7 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         row = manual["rows"][0]
         automatic = analysis["computed"]["running_economy"][0]
         self.assertEqual(row["ec_j_kg_m"], automatic["value_j_kg_m"])
+        self.assertEqual(row["fc_bpm"], 122)
         self.assertEqual(
             row["percent_vo2max"],
             round((row["vo2_l_min"] * 1000 / 60) / 50 * 100, 3),
@@ -339,6 +341,7 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
         row = manual["rows"][0]
         self.assertEqual(row["point_count"], 2)
         self.assertEqual(row["vo2_l_min"], 2.15)
+        self.assertEqual(row["fc_bpm"], 123)
         self.assertIsNotNone(row["ec_j_kg_m"])
 
     def test_manual_running_economy_multiple_exclusions_drop_raw_points(self) -> None:
@@ -712,6 +715,11 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
             "VO2max",
             t_seconds=10,
         )
+        fc_marker = build_metasoft_marker(
+            [_marker_point(10, 180.4, 4.2, 62, 18)],
+            "FC_max",
+            t_seconds=10,
+        )
         vma_marker = build_metasoft_marker(
             [_marker_point(10, 180, 4.2, 62, 18)],
             "VMA",
@@ -720,6 +728,7 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
 
         sv1_patch = metasoft_marker_to_stress_patch(sv1_marker)
         vo2_patch = metasoft_marker_to_stress_patch(vo2_marker)
+        fc_patch = metasoft_marker_to_stress_patch(fc_marker)
         vma_patch = metasoft_marker_to_stress_patch(vma_marker)
 
         self.assertEqual(
@@ -731,8 +740,28 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
             vo2_patch["patch"]["stress_test_results"]["measured_vo2max"],
             62,
         )
-        self.assertEqual(vo2_patch["patch"]["stress_test_results"]["max_hr"], 180)
+        self.assertNotIn("max_hr", vo2_patch["patch"]["stress_test_results"])
+        self.assertEqual(fc_patch["patch"]["stress_test_results"]["max_hr"], 180)
         self.assertEqual(vma_patch["patch"]["stress_test_results"]["vma"], 18)
+
+    def test_legacy_vo2max_marker_still_proves_its_matching_max_hr(self) -> None:
+        profile = _manual_profile()
+        legacy_vo2_marker = build_metasoft_marker(
+            [_marker_point(10, 180, 4.2, 62, 18)],
+            "VO2_max",
+            t_seconds=10,
+        )
+
+        self.assertNotIn(
+            "FC_max",
+            metasoft_unproven_profile_markers(profile, {"VO2_max": legacy_vo2_marker}),
+        )
+
+        profile["stress_test_results"]["max_hr"] = 181
+        self.assertIn(
+            "FC_max",
+            metasoft_unproven_profile_markers(profile, {"VO2_max": legacy_vo2_marker}),
+        )
 
     def test_apply_marker_patch_preserves_existing_stress_results(self) -> None:
         profile = _manual_profile()
@@ -783,13 +812,20 @@ class MetaSoftLocalCoreTest(unittest.TestCase):
 
         updated = apply_metasoft_stress_patch(profile, patch_result)
 
-        self.assertNotIn("max_hr", updated["stress_test_results"])
         self.assertNotIn("measured_vo2max", updated["stress_test_results"])
+        self.assertEqual(updated["stress_test_results"]["max_hr"], 180)
         self.assertEqual(updated["stress_test_results"]["vma"], 16)
         self.assertEqual(
             updated["stress_test_results"]["thresholds"],
             profile["stress_test_results"]["thresholds"],
         )
+
+        fc_updated = apply_metasoft_stress_patch(
+            profile,
+            metasoft_marker_to_stress_patch(build_metasoft_marker_deletion("FC_max")),
+        )
+        self.assertNotIn("max_hr", fc_updated["stress_test_results"])
+        self.assertEqual(fc_updated["stress_test_results"]["measured_vo2max"], 50)
 
     def test_apply_blocked_marker_patch_leaves_profile_unchanged(self) -> None:
         profile = _manual_profile()

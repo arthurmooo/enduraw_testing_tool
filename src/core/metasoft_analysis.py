@@ -335,6 +335,7 @@ def _manual_running_economy_row(
     vo2_l_min = _average_metric(usable_points, "vo2_l_min")
     vo2_ml_kg_min = _average_metric(usable_points, "vo2_ml_kg_min")
     vco2_l_min = _average_metric(usable_points, "vco2_l_min")
+    fc_bpm = _average_metric(usable_points, "fc_bpm")
     row = {
         "stage_index": stage_index,
         "speed_kmh": round(speed_kmh, 3),
@@ -345,6 +346,7 @@ def _manual_running_economy_row(
         "point_count": len(usable_points),
         "vo2_l_min": _round_optional(vo2_l_min, 3),
         "vco2_l_min": _round_optional(vco2_l_min, 3),
+        "fc_bpm": _round_optional(fc_bpm, 1),
         "ec_j_kg_m": None,
         "percent_vo2max": None,
         "sources": {

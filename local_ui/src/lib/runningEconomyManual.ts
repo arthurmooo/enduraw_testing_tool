@@ -132,6 +132,7 @@ export function buildManualEconomyPreviewRow(
     point_count: usablePoints.length,
     vo2_l_min: roundOrNull(vo2, 3),
     vco2_l_min: roundOrNull(vco2, 3),
+    fc_bpm: roundOrNull(average(usablePoints, "fc_bpm"), 1),
     ec_j_kg_m: roundOrNull(ec, 3),
     percent_vo2max: percentVo2 !== null && profileVo2maxMlKgMin
       ? roundOrNull((percentVo2 / profileVo2maxMlKgMin) * 100, 3)

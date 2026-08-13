@@ -155,6 +155,14 @@ export const GRAPH_CONFIGS: MetaSoftGraphConfig[] = [
     ],
   },
   {
+    id: "bf_time",
+    title: "Frequence respiratoire - BF",
+    kind: "time",
+    source: "points",
+    xAxis: { key: "t_seconds", label: "Temps", unit: "s" },
+    series: [series("bf_per_min", "BF", "resp/min", "#9b7bff")],
+  },
+  {
     id: "running_economy",
     title: "Economie de course",
     kind: "bar",
@@ -168,6 +176,7 @@ export const MARKER_COLORS: Record<MetaSoftMarkerName, string> = {
   SV1: "#00d48a",
   SV2: "#ff8a00",
   VO2_max: "#ff405d",
+  FC_max: "#ff2f92",
   VMA: "#18b8ff",
   "Cross-over": "#f5d90a",
 };

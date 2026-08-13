@@ -32,11 +32,13 @@ export type MetaSoftGraphId =
   | "vt_ve_scatter"
   | "rer_time"
   | "pet_time"
+  | "bf_time"
   | "running_economy";
 
-export type MetaSoftMarkerName = "SV1" | "SV2" | "VO2_max" | "VMA" | "Cross-over";
+export type MetaSoftMarkerName = "SV1" | "SV2" | "VO2_max" | "FC_max" | "VMA" | "Cross-over";
 export type MarkerMode = "point" | "range" | "previous";
 export type ChartProcessingMode = "raw" | "blocks" | "smooth";
+export type ChartRenderMode = "lines" | "markers";
 
 export interface MetaSoftMetricSpec {
   key: MetaSoftMetricKey;
@@ -103,6 +105,7 @@ export interface ManualRunningEconomyRow {
   point_count: number;
   vo2_l_min: number | null;
   vco2_l_min: number | null;
+  fc_bpm?: number | null;
   ec_j_kg_m: number | null;
   percent_vo2max: number | null;
   de_kcal_h?: number | null;
@@ -232,6 +235,12 @@ export interface MetaSoftMarker {
 
 export interface DraftMarker extends MetaSoftMarker {
   mode: MarkerMode;
+  proposal?: {
+    source: "auto_fc_max";
+    raw_peak_bpm: number;
+    average_5s_bpm: number;
+    isolated: boolean;
+  };
 }
 
 export type DraftMarkers = Record<MetaSoftMarkerName, DraftMarker>;

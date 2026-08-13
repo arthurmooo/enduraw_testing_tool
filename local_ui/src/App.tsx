@@ -26,6 +26,7 @@ import {
   serializeMarkerSelections,
 } from "./lib/markerUtils";
 import { centeredWindowBounds, previousWindowBounds } from "./lib/metasoftChartHelpers";
+import type { ReadingLine, SharedReadingLine } from "./lib/readingLines";
 import type {
   ConfirmedMarkers,
   DraftMarkers,
@@ -38,6 +39,7 @@ import type {
   ProfileConflict,
   ReportResponse,
   ChartProcessingMode,
+  ChartRenderMode,
 } from "./types/metasoft";
 
 const NAV_ITEMS = [
@@ -63,6 +65,7 @@ export default function App() {
   const [dirtyMarkers, setDirtyMarkers] = useState<Set<MetaSoftMarkerName>>(new Set());
   const [phaseFilter, setPhaseFilter] = useState("Tout");
   const [processingMode, setProcessingMode] = useState<ChartProcessingMode>("blocks");
+  const [renderMode, setRenderMode] = useState<ChartRenderMode>("lines");
   const [smoothingSeconds, setSmoothingSeconds] = useState(20);
   const [showSpeedBands, setShowSpeedBands] = useState(true);
   const [timeXRange, setTimeXRange] = useState<[number, number] | null>(null);
@@ -71,6 +74,7 @@ export default function App() {
   const [cursorPoint, setCursorPoint] = useState<MetaSoftPoint | null>(null);
   const [selectedReadingGraphId, setSelectedReadingGraphId] = useState(DEFAULT_READING_GRAPH_ID);
   const [readingViewMode, setReadingViewMode] = useState<ReadingViewMode>("all");
+  const [readingLinesByGraph, setReadingLinesByGraph] = useState<Record<string, ReadingLine[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ReportResponse | null>(null);
@@ -138,6 +142,7 @@ export default function App() {
         setFullscreenGraphId(null);
         setTimeXRange(null);
         setReadingViewMode("all");
+        setReadingLinesByGraph({});
         setManualEconomyReportSummary(null);
       } catch (err) {
         if (!cancelled) setError(errorMessage(err));
@@ -289,6 +294,11 @@ export default function App() {
     markDirty(marker);
   }, [markDirty, payload]);
 
+  const confirmMarkerProposal = useCallback((marker: MetaSoftMarkerName) => {
+    if (!draftMarkers?.[marker]?.proposal) return;
+    markDirty(marker);
+  }, [draftMarkers, markDirty]);
+
   const resizeMarkerWindow = useCallback((marker: MetaSoftMarkerName, durationSeconds: number) => {
     if (!payload || !Number.isFinite(durationSeconds) || durationSeconds < 1) return;
     setDraftMarkers((current) => {
@@ -318,6 +328,10 @@ export default function App() {
 
   const handleFullscreenChange = useCallback((graphId: string, open: boolean) => {
     setFullscreenGraphId(open ? graphId : null);
+  }, []);
+
+  const handleReadingLinesChange = useCallback((graphId: string, lines: ReadingLine[]) => {
+    setReadingLinesByGraph((current) => current[graphId] === lines ? current : { ...current, [graphId]: lines });
   }, []);
 
   if (error && !payload) {
@@ -357,6 +371,11 @@ export default function App() {
     dirtyMarkers,
     deletedMarkers,
   );
+  const sharedReadingLines: SharedReadingLine[] = Object.entries(readingLinesByGraph).flatMap(
+    ([sourceGraphId, lines]) => lines
+      .filter((line) => line.timeAxis)
+      .map((line) => ({ ...line, sourceGraphId })),
+  );
 
   const renderReadingChart = (graph: (typeof READING_GRAPH_CONFIGS)[number], height?: number) => (
     <MetaSoftChart
@@ -367,6 +386,7 @@ export default function App() {
       phaseFilter={phaseFilter}
       smoothingSeconds={graph.kind === "time" ? smoothingSeconds : 0}
       processingMode={processingMode}
+      renderMode={renderMode}
       showSpeedBands={graph.kind === "time" ? showSpeedBands : false}
       timeXRange={graph.kind === "time" ? timeXRange : null}
       timeZoomResetRevision={graph.kind === "time" ? timeZoomResetRevision : 0}
@@ -379,6 +399,9 @@ export default function App() {
       onPlaceMarker={placeMarker}
       onDeleteMarker={deleteMarker}
       onChangeMarkerWindowSeconds={resizeMarkerWindow}
+      readingLines={readingLinesByGraph[graph.id] ?? []}
+      sharedReadingLines={sharedReadingLines}
+      onReadingLinesChange={handleReadingLinesChange}
     />
   );
 
@@ -490,6 +513,19 @@ export default function App() {
             </button>
           ))}
         </div>
+        <div className="processing-control" aria-label="Representation visuelle des donnees">
+          {(["lines", "markers"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={renderMode === mode ? "active" : ""}
+              onClick={() => setRenderMode(mode)}
+              aria-pressed={renderMode === mode}
+            >
+              {mode === "lines" ? "Courbes" : "Points"}
+            </button>
+          ))}
+        </div>
         {processingMode === "smooth" && (
           <label className="range-control">
             <SlidersHorizontal size={15} />
@@ -593,6 +629,7 @@ export default function App() {
           deletedMarkers={deletedMarkers}
           profileVo2maxMlKgMin={profileVo2maxMlKgMin}
           onChangeWindowSeconds={resizeMarkerWindow}
+          onConfirmProposal={confirmMarkerProposal}
           draftSaveStatus={draftSaveStatus}
         />
       </section>
@@ -717,7 +754,7 @@ function buildMarkerReportSummary(
     const row = official ?? draft;
     const status = dirty ? "A reporter" : official ? "Officiel" : deleted ? "Supprimé" : "Brouillon";
     return {
-      name: name === "VO2_max" ? "VO2max" : name,
+      name: name === "VO2_max" ? "VO2max" : name === "FC_max" ? "FC max" : name,
       status,
       time: secondsToClock(row.t_seconds),
       window: row.window_start_seconds === null || row.window_end_seconds === null

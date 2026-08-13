@@ -13,6 +13,7 @@ export const MARKER_NAMES: MetaSoftMarkerName[] = [
   "SV1",
   "SV2",
   "VO2_max",
+  "FC_max",
   "VMA",
   "Cross-over",
 ];
@@ -20,12 +21,60 @@ const DEFAULT_WINDOW_SECONDS = 120;
 const DEFAULT_PREVIOUS_SECONDS = 10;
 
 export function createInitialMarkers(analysis: MetaSoftAnalysis): DraftMarkers {
-  return Object.fromEntries(
+  const markers = Object.fromEntries(
     MARKER_NAMES.map((name) => {
       const point = analysis.points.find((item) => normaliseMarker(item.marker) === name);
       return [name, buildDraftMarker(name, analysis.points, point?.t_seconds ?? null, "point")];
     }),
   ) as DraftMarkers;
+  if (markers.FC_max.t_seconds === null) {
+    const proposal = detectFcMaxProposal(analysis.points);
+    if (proposal) {
+      markers.FC_max = {
+        ...buildDraftMarker("FC_max", analysis.points, proposal.t_seconds, "point"),
+        proposal: {
+          source: "auto_fc_max",
+          raw_peak_bpm: proposal.raw_peak_bpm,
+          average_5s_bpm: proposal.average_5s_bpm,
+          isolated: proposal.isolated,
+        },
+      };
+    }
+  }
+  return markers;
+}
+
+export function detectFcMaxProposal(points: MetaSoftPoint[]): {
+  t_seconds: number;
+  raw_peak_bpm: number;
+  average_5s_bpm: number;
+  isolated: boolean;
+} | null {
+  const numeric = points.filter((point) => (
+    typeof point.t_seconds === "number"
+    && Number.isFinite(point.t_seconds)
+    && typeof point.values.fc_bpm === "number"
+    && Number.isFinite(point.values.fc_bpm)
+  ));
+  const exercise = numeric.filter((point) => normalisePhase(point.phase) === "exercice");
+  const candidates = exercise.length ? exercise : numeric;
+  if (!candidates.length) return null;
+  const peak = candidates.reduce((best, point) => (
+    (point.values.fc_bpm as number) > (best.values.fc_bpm as number) ? point : best
+  ));
+  const peakTime = peak.t_seconds as number;
+  const windowValues = candidates
+    .filter((point) => Math.abs((point.t_seconds as number) - peakTime) <= 2.5)
+    .map((point) => point.values.fc_bpm as number);
+  const average5s = windowValues.reduce((sum, value) => sum + value, 0) / windowValues.length;
+  const rawPeak = peak.values.fc_bpm as number;
+  return {
+    t_seconds: peakTime,
+    raw_peak_bpm: Number(rawPeak.toFixed(1)),
+    average_5s_bpm: Number(average5s.toFixed(1)),
+    // ponytail: seuil visuel simple; passer a une qualification capteur si les coachs fournissent des artefacts etiquetes.
+    isolated: rawPeak - average5s > 5,
+  };
 }
 
 export function buildDraftMarker(
@@ -221,4 +270,8 @@ function normaliseMarker(marker?: string | null): MetaSoftMarkerName | null {
   const clean = marker.toUpperCase().replace(/\s+/g, "_");
   if (clean === "VO2MAX" || clean === "VO2_MAX") return "VO2_max";
   return MARKER_NAMES.find((name) => name.toUpperCase() === clean) ?? null;
+}
+
+function normalisePhase(phase?: string | null): string {
+  return String(phase ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
 }

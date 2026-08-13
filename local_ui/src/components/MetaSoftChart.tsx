@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import Plot from "react-plotly.js";
-import { Maximize2, X } from "lucide-react";
+import { Maximize2, Ruler, Trash2, X } from "lucide-react";
 import {
   ChartActionPopover,
   ChartPlacementPopover,
@@ -50,8 +50,18 @@ import {
   type MarkerDragTarget,
 } from "../lib/metasoftChartHelpers";
 import { MARKER_NAMES, nearestPoint, secondsToClock } from "../lib/markerUtils";
+import {
+  readingLineAnnotation,
+  readingLineMetrics,
+  plotCoordinatesFromClient,
+  sharedReadingLineShapes,
+  updateReadingLinesFromRelayout,
+  type ReadingLine,
+  type SharedReadingLine,
+} from "../lib/readingLines";
 import type {
   ChartProcessingMode,
+  ChartRenderMode,
   DraftMarkers,
   MarkerMode,
   MetaSoftMarkerName,
@@ -69,6 +79,7 @@ interface Props {
   phaseFilter: string;
   smoothingSeconds: number;
   processingMode: ChartProcessingMode;
+  renderMode: ChartRenderMode;
   showSpeedBands: boolean;
   timeXRange: [number, number] | null;
   timeZoomResetRevision: number;
@@ -89,6 +100,9 @@ interface Props {
   ) => void;
   onDeleteMarker: (marker: MetaSoftMarkerName) => void;
   onChangeMarkerWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
+  readingLines: ReadingLine[];
+  sharedReadingLines: SharedReadingLine[];
+  onReadingLinesChange: (graphId: string, lines: ReadingLine[]) => void;
 }
 
 function MetaSoftChartComponent({
@@ -98,6 +112,7 @@ function MetaSoftChartComponent({
   phaseFilter,
   smoothingSeconds,
   processingMode,
+  renderMode,
   showSpeedBands,
   timeXRange,
   timeZoomResetRevision,
@@ -110,6 +125,9 @@ function MetaSoftChartComponent({
   onPlaceMarker,
   onDeleteMarker,
   onChangeMarkerWindowSeconds,
+  readingLines,
+  sharedReadingLines,
+  onReadingLinesChange,
 }: Props) {
   const [localXRange, setLocalXRange] = useState<[number, number] | null>(null);
   const [plotRevision, setPlotRevision] = useState(0);
@@ -118,6 +136,9 @@ function MetaSoftChartComponent({
   const [seriesScaleFactors, setSeriesScaleFactors] = useState<Record<string, number>>({});
   const [selectedScaleSeriesKey, setSelectedScaleSeriesKey] = useState<string>(graph.series[0]?.key ?? "");
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
+  const [drawingReadingLine, setDrawingReadingLine] = useState(false);
+  const [readingLineColor, setReadingLineColor] = useState("#f8e36a");
+  const [showReadingLineInfo, setShowReadingLineInfo] = useState(true);
   const modalTitleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const availableSeries = useMemo(
@@ -145,6 +166,9 @@ function MetaSoftChartComponent({
     if (graph.kind === "time" && timeZoomResetRevision > 0) setPlotRevision((revision) => revision + 1);
   }, [graph.kind, timeZoomResetRevision]);
   useEffect(() => setHiddenSeries(new Set()), [analysis.file.filename, graph.id]);
+  useEffect(() => {
+    setDrawingReadingLine(false);
+  }, [analysis.file.filename, graph.id]);
   useEffect(() => {
     setYScaleFactor(1);
     setSeriesScaleFactors({});
@@ -211,6 +235,14 @@ function MetaSoftChartComponent({
     });
   }, [availableSeries.length]);
 
+  const addReadingLine = useCallback((line: Omit<ReadingLine, "id">) => {
+    onReadingLinesChange(graph.id, [...readingLines, { ...line, id: `${graph.id}-${crypto.randomUUID()}` }]);
+  }, [graph.id, onReadingLinesChange, readingLines]);
+
+  const removeReadingLine = useCallback((id: string) => {
+    onReadingLinesChange(graph.id, readingLines.filter((line) => line.id !== id));
+  }, [graph.id, onReadingLinesChange, readingLines]);
+
   if (!availableSeries.length) {
     return (
       <section className="chart-card chart-card-empty">
@@ -246,6 +278,7 @@ function MetaSoftChartComponent({
       plotResetKey={String(timeZoomResetRevision)}
       smoothingSeconds={smoothingSeconds}
       processingMode={processingMode}
+      renderMode={renderMode}
       phaseFilter={phaseFilter}
       yScaleFactor={yScaleFactor}
       scaleMode={scaleMode}
@@ -259,7 +292,47 @@ function MetaSoftChartComponent({
       onPlaceMarker={onPlaceMarker}
       onDeleteMarker={onDeleteMarker}
       onChangeMarkerWindowSeconds={onChangeMarkerWindowSeconds}
+      readingLines={readingLines}
+      sharedReadingLines={sharedReadingLines.filter((line) => line.sourceGraphId !== graph.id)}
+      drawingReadingLine={drawingReadingLine}
+      readingLineColor={readingLineColor}
+      onAddReadingLine={addReadingLine}
+      onFinishReadingLine={() => setDrawingReadingLine(false)}
+      onReadingLinesChange={(lines) => onReadingLinesChange(graph.id, lines)}
     />
+  );
+
+  const readingLineControls = graph.source === "points" && (
+    <div className="reading-line-controls">
+      <button
+        type="button"
+        className={drawingReadingLine ? "active" : ""}
+        onClick={() => setDrawingReadingLine((current) => !current)}
+        aria-pressed={drawingReadingLine}
+        title="Selectionner deux points d'une meme courbe"
+      >
+        <Ruler size={14} /> {drawingReadingLine ? "Traçage actif" : "Tracer"}
+      </button>
+      <label className="reading-line-color" title="Couleur de la prochaine droite">
+        <span>Couleur</span>
+        <input
+          type="color"
+          value={readingLineColor}
+          onChange={(event) => setReadingLineColor(event.target.value)}
+          aria-label="Couleur de la prochaine droite"
+        />
+      </label>
+      {!!readingLines.length && (
+        <>
+          <button type="button" onClick={() => setShowReadingLineInfo((current) => !current)}>
+            {showReadingLineInfo ? "Masquer infos" : "Afficher infos"}
+          </button>
+          <button type="button" onClick={() => onReadingLinesChange(graph.id, [])}>
+            <Trash2 size={13} /> Effacer
+          </button>
+        </>
+      )}
+    </div>
   );
 
   return (
@@ -279,6 +352,7 @@ function MetaSoftChartComponent({
           onResetZoom={() => handleXRangeChange(null)}
           showResetZoom={xRange !== null}
         />
+        {readingLineControls}
         <button
           type="button"
           onClick={() => onFullscreenChange(graph.id, true)}
@@ -289,7 +363,12 @@ function MetaSoftChartComponent({
           <Maximize2 size={16} />
         </button>
       </div>
-      {fullscreen ? <div className="chart-body" style={{ height }} /> : body(height)}
+      {fullscreen ? <div className="chart-body" style={{ height }} /> : (
+        <>
+          {body(height)}
+          <ReadingLineList lines={readingLines} visible={showReadingLineInfo} onDelete={removeReadingLine} />
+        </>
+      )}
       {missingSeries.length > 0 && (
         <p className="missing-series">Absent XML : {missingSeries.map((series) => series.label).join(", ")}</p>
       )}
@@ -311,6 +390,7 @@ function MetaSoftChartComponent({
                 onResetZoom={() => handleXRangeChange(null)}
                 showResetZoom={xRange !== null}
               />
+              {readingLineControls}
               <button
                 type="button"
                 ref={closeButtonRef}
@@ -322,7 +402,8 @@ function MetaSoftChartComponent({
                 <X size={18} />
               </button>
             </div>
-            {body(Math.min(760, Math.max(420, window.innerHeight - 170)))}
+            {body(Math.min(760, Math.max(420, window.innerHeight - 220)))}
+            <ReadingLineList lines={readingLines} visible={showReadingLineInfo} onDelete={removeReadingLine} />
           </div>
         </div>
       )}
@@ -421,6 +502,7 @@ function PointChartBody({
   plotResetKey,
   smoothingSeconds,
   processingMode,
+  renderMode,
   phaseFilter,
   yScaleFactor,
   scaleMode,
@@ -434,6 +516,13 @@ function PointChartBody({
   onPlaceMarker,
   onDeleteMarker,
   onChangeMarkerWindowSeconds,
+  readingLines,
+  sharedReadingLines,
+  drawingReadingLine,
+  readingLineColor,
+  onAddReadingLine,
+  onFinishReadingLine,
+  onReadingLinesChange,
 }: {
   analysis: import("../types/metasoft").MetaSoftAnalysis;
   graph: MetaSoftGraphConfig;
@@ -445,6 +534,7 @@ function PointChartBody({
   plotResetKey: string;
   smoothingSeconds: number;
   processingMode: ChartProcessingMode;
+  renderMode: ChartRenderMode;
   phaseFilter: string;
   yScaleFactor: number;
   scaleMode: ChartScaleMode;
@@ -466,12 +556,21 @@ function PointChartBody({
   ) => void;
   onDeleteMarker: (marker: MetaSoftMarkerName) => void;
   onChangeMarkerWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
+  readingLines: ReadingLine[];
+  sharedReadingLines: SharedReadingLine[];
+  drawingReadingLine: boolean;
+  readingLineColor: string;
+  onAddReadingLine: (line: Omit<ReadingLine, "id">) => void;
+  onFinishReadingLine: () => void;
+  onReadingLinesChange: (lines: ReadingLine[]) => void;
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const suppressClickRef = useRef(false);
   const dragFrameRef = useRef<number | null>(null);
   const dragPreviewRef = useRef<MarkerDragPreview | null>(null);
   const pendingDragPreviewRef = useRef<MarkerDragPreview | null>(null);
+  const readingPreviewFrameRef = useRef<number | null>(null);
+  const pendingReadingPreviewRef = useRef<ReadingLine | null>(null);
   const markerHoverRef = useRef<MarkerDragTarget | null>(null);
   const [proposal, setProposal] = useState<{
     left: number;
@@ -491,6 +590,8 @@ function PointChartBody({
   } | null>(null);
   const [markerHover, setMarkerHover] = useState<MarkerDragTarget | null>(null);
   const [dragPreview, setDragPreview] = useState<MarkerDragPreview | null>(null);
+  const [readingLineStart, setReadingLineStart] = useState<Omit<ReadingLine, "id" | "x1" | "y1"> | null>(null);
+  const [readingLinePreview, setReadingLinePreview] = useState<ReadingLine | null>(null);
   const {
     block: blockChartClicks,
     cancel: cancelChartClick,
@@ -553,13 +654,56 @@ function PointChartBody({
     () => graph.kind === "time" && showSpeedBands ? buildSpeedStepLineShapes(analysis) : [],
     [analysis, graph.kind, showSpeedBands],
   );
-  const shapes = useMemo(
-    () => canEditTimeMarkers ? [...staticShapes, ...speedLineShapes, ...markerShapes, ...cursorShapes] : [],
-    [canEditTimeMarkers, cursorShapes, markerShapes, speedLineShapes, staticShapes],
+  const baseShapes = useMemo(
+    () => {
+      const sharedShapes = graph.kind === "time" ? sharedReadingLineShapes(sharedReadingLines) : [];
+      return canEditTimeMarkers
+        ? [...staticShapes, ...speedLineShapes, ...markerShapes, ...cursorShapes, ...sharedShapes]
+        : [...cursorShapes];
+    },
+    [canEditTimeMarkers, cursorShapes, graph.kind, markerShapes, sharedReadingLines, speedLineShapes, staticShapes],
   );
+  const readingShapes = useMemo(() => [...readingLines, ...(readingLinePreview ? [readingLinePreview] : [])].flatMap((line) => {
+    const itemIndex = series.findIndex((item) => item.key === line.seriesKey);
+    if (itemIndex < 0) return [];
+    const item = series[itemIndex];
+    const yref = scaleMode === "series" ? plotlyAxisId(itemIndex) : item.axis ?? "y";
+    return [{
+      type: "line",
+      name: `reading-line:${line.id}`,
+      xref: "x",
+      yref,
+      x0: line.x0,
+      x1: line.x1,
+      y0: line.y0,
+      y1: line.y1,
+      line: { color: line.color || "#f8e36a", width: line.id === "reading-preview" ? 1.8 : 2.2, dash: "dash" },
+      editable: line.id !== "reading-preview",
+    }];
+  }), [readingLinePreview, readingLines, scaleMode, series]);
+  const readingPreviewAnnotations = useMemo(() => {
+    if (!readingLinePreview) return [];
+    const itemIndex = series.findIndex((item) => item.key === readingLinePreview.seriesKey);
+    if (itemIndex < 0) return [];
+    const item = series[itemIndex];
+    const yref = scaleMode === "series" ? plotlyAxisId(itemIndex) : item.axis ?? "y";
+    return [readingLinePreview.x0, readingLinePreview.x1].map((xValue, index) => ({
+      x: xValue,
+      y: index === 0 ? readingLinePreview.y0 : readingLinePreview.y1,
+      xref: "x",
+      yref,
+      text: "●",
+      showarrow: false,
+      font: { color: readingLinePreview.color || "#f8e36a", size: 15 },
+    }));
+  }, [readingLinePreview, scaleMode, series]);
+  const shapes = useMemo(() => [...baseShapes, ...readingShapes], [baseShapes, readingShapes]);
   const annotations = useMemo(
-    () => canEditTimeMarkers ? [...staticAnnotations, ...markerAnnotations, ...cursorAnnotations] : [],
-    [canEditTimeMarkers, cursorAnnotations, markerAnnotations, staticAnnotations],
+    () => [
+      ...(canEditTimeMarkers ? [...staticAnnotations, ...markerAnnotations, ...cursorAnnotations] : []),
+      ...readingPreviewAnnotations,
+    ],
+    [canEditTimeMarkers, cursorAnnotations, markerAnnotations, readingPreviewAnnotations, staticAnnotations],
   );
   const speedHoverText = useMemo(
     () => chartPoints.map((point) => (
@@ -574,10 +718,11 @@ function PointChartBody({
     const shouldSmooth = processingMode === "smooth" && graph.kind === "time" && seriesItem.smoothable;
     return [seriesItem.key, shouldSmooth ? smoothSeries(x, rawY, smoothingSeconds) : rawY];
   })), [chartPoints, graph.kind, processingMode, series, smoothingSeconds, x]);
-  const data = useMemo(() => series.map((seriesItem, seriesIndex) => {
+  const data = useMemo(() => [
+    ...series.map((seriesItem, seriesIndex) => {
     return {
       type: "scatter",
-      mode: graph.kind === "scatter" ? "markers" : "lines",
+      mode: graph.kind === "scatter" || renderMode === "markers" ? "markers" : "lines",
       name: seriesItem.label,
       x,
       y: renderedValues[seriesItem.key],
@@ -585,14 +730,32 @@ function PointChartBody({
       customdata: chartPoints.map((point) => point.index),
       text: speedHoverText,
       line: { color: seriesItem.color, width: 0.8 },
-      marker: { color: seriesItem.color, size: graph.kind === "scatter" ? 5 : 4 },
+      marker: { color: seriesItem.color, size: graph.kind === "scatter" ? 5 : 4.5 },
       hoverinfo: graph.kind === "time" ? "none" : undefined,
       hovertemplate: graph.kind === "time"
         ? undefined
         : `${seriesItem.unit === "bpm" ? "%{y:.0f}" : "%{y}"}<br>Vitesse %{text}<extra>${seriesItem.label}</extra>`,
       connectgaps: false,
     };
-  }), [chartPoints, graph.kind, renderedValues, scaleMode, series, speedHoverText, x]);
+    }),
+    ...readingLines.flatMap((line, lineIndex) => {
+      const itemIndex = series.findIndex((item) => item.key === line.seriesKey);
+      if (itemIndex < 0) return [];
+      const item = series[itemIndex];
+      return [{
+        type: "scatter",
+        mode: "lines",
+        name: `Droite ${lineIndex + 1}`,
+        x: [line.x0, line.x1],
+        y: [line.y0, line.y1],
+        yaxis: scaleMode === "series" ? plotlyAxisId(itemIndex) : item.axis,
+        line: { color: line.color || "#f8e36a", width: 10 },
+        opacity: 0.01,
+        hovertemplate: `${readingLineAnnotation(line)}<extra>Droite ${lineIndex + 1}</extra>`,
+        showlegend: false,
+      }];
+    }),
+  ], [chartPoints, graph.kind, readingLines, renderMode, renderedValues, scaleMode, series, speedHoverText, x]);
   const visibleXRange = effectiveRange ?? defaultRange;
   const axisRange = useCallback((axis: "y" | "y2") => scaledAxisRange(
     series
@@ -633,8 +796,9 @@ function PointChartBody({
     plot_bgcolor: "rgba(0,0,0,0)",
     margin: plotMargins,
     font: { color: "rgba(226,232,240,0.78)", size: 10 },
-    hovermode: graph.kind === "time" ? "x unified" : "closest",
-    dragmode: "zoom",
+    hovermode: readingLines.length ? "closest" : graph.kind === "time" ? "x unified" : "closest",
+    hoverdistance: 12,
+    dragmode: drawingReadingLine ? false : "zoom",
     showlegend: false,
     shapes,
     annotations,
@@ -664,22 +828,32 @@ function PointChartBody({
       linecolor: "rgba(255,255,255,0.18)",
       zerolinecolor: "rgba(255,255,255,0.08)",
     } }),
-  }), [annotations, defaultRange, effectiveRange, graph.kind, graph.xAxis, plotMargins, scaleMode, separateAxes, series, shapes, tickText, tickVals, y2Range, yRange]);
+  }), [annotations, defaultRange, drawingReadingLine, effectiveRange, graph.kind, graph.xAxis, plotMargins, readingLines.length, scaleMode, separateAxes, series, shapes, tickText, tickVals, y2Range, yRange]);
   const config = useMemo(() => ({
     responsive: true,
     displayModeBar: false,
     scrollZoom: false,
     doubleClick: false,
+    // Les seules shapes editables le declarent individuellement. Activer
+    // shapePosition ici rendrait aussi les bandes de protocole deplacables.
     editable: false,
   }), []);
 
   useEffect(() => () => {
     if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
+    if (readingPreviewFrameRef.current !== null) window.cancelAnimationFrame(readingPreviewFrameRef.current);
   }, []);
 
   useEffect(() => {
     dragPreviewRef.current = dragPreview;
   }, [dragPreview]);
+
+  useEffect(() => {
+    if (!drawingReadingLine) {
+      setReadingLineStart(null);
+      setReadingLinePreview(null);
+    }
+  }, [drawingReadingLine]);
 
   const updateMarkerHover = useCallback((target: MarkerDragTarget | null) => {
     if (sameMarkerTarget(markerHoverRef.current, target)) return;
@@ -742,8 +916,105 @@ function PointChartBody({
     });
   }, [blockChartClicks, canEditTimeMarkers, cancelChartClick, chartClicksBlocked, defaultRange, effectiveRange, maxTime, plotMargins, processingMode, scheduleChartClick]);
 
+  const readingSeriesRange = useCallback((item: MetaSoftSeriesConfig, itemIndex: number): [number, number] => {
+    if (scaleMode !== "series") return ((item.axis ?? "y") === "y2" ? y2Range : yRange) ?? [0, 1];
+    return scaledAxisRange(
+      (renderedValues[item.key] ?? []).filter((_value, index) => {
+        const xValue = x[index];
+        return typeof xValue === "number" && xValue >= visibleXRange[0] && xValue <= visibleXRange[1];
+      }),
+      seriesScaleFactors[item.key] ?? 1,
+    ) ?? [0, 1];
+  }, [renderedValues, scaleMode, seriesScaleFactors, visibleXRange, x, y2Range, yRange]);
+
+  const readingPointerCoordinates = useCallback((
+    event: ReactMouseEvent<HTMLDivElement>,
+    lockedSeriesKey?: string,
+  ): { item: MetaSoftSeriesConfig; x: number; y: number; yRange: [number, number] } | null => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return null;
+    const bounds = wrapper.getBoundingClientRect();
+    const activeXRange = effectiveRange ?? defaultRange;
+    const pointerX = timeFromClientX(event.clientX, wrapper, activeXRange, plotMargins);
+    if (pointerX === null) return null;
+    let itemIndex = lockedSeriesKey ? series.findIndex((item) => item.key === lockedSeriesKey) : -1;
+    if (itemIndex < 0) {
+      const nearestIndex = x.reduce<number>((best, value, index) => (
+        typeof value === "number" && (best < 0 || Math.abs(value - pointerX) < Math.abs((x[best] as number) - pointerX))
+          ? index
+          : best
+      ), -1);
+      const plotTop = bounds.top + plotMargins.t;
+      const plotBottom = bounds.bottom - plotMargins.b;
+      itemIndex = series.reduce((best, item, index) => {
+        const value = nearestIndex >= 0 ? renderedValues[item.key]?.[nearestIndex] : null;
+        if (typeof value !== "number" || !Number.isFinite(value)) return best;
+        const range = readingSeriesRange(item, index);
+        const pixelY = plotBottom - ((value - range[0]) / (range[1] - range[0])) * (plotBottom - plotTop);
+        if (best.index < 0 || Math.abs(pixelY - event.clientY) < best.distance) {
+          return { index, distance: Math.abs(pixelY - event.clientY) };
+        }
+        return best;
+      }, { index: -1, distance: Number.POSITIVE_INFINITY }).index;
+      if (itemIndex < 0) itemIndex = 0;
+    }
+    const item = series[itemIndex];
+    if (!item) return null;
+    const selectedYRange = readingSeriesRange(item, itemIndex);
+    const coordinates = plotCoordinatesFromClient(
+      event.clientX,
+      event.clientY,
+      bounds,
+      plotMargins,
+      activeXRange,
+      selectedYRange,
+    );
+    return coordinates ? { item, ...coordinates, yRange: selectedYRange } : null;
+  }, [defaultRange, effectiveRange, plotMargins, readingSeriesRange, renderedValues, series, x]);
+
+  const scheduleReadingPreview = useCallback((preview: ReadingLine) => {
+    pendingReadingPreviewRef.current = preview;
+    if (readingPreviewFrameRef.current !== null) return;
+    readingPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      readingPreviewFrameRef.current = null;
+      const pending = pendingReadingPreviewRef.current;
+      pendingReadingPreviewRef.current = null;
+      if (pending) setReadingLinePreview(pending);
+    });
+  }, []);
+
+  const handleReadingLineClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!drawingReadingLine) return;
+    const target = readingPointerCoordinates(event, readingLineStart?.seriesKey);
+    if (!target) return;
+    event.preventDefault();
+    const nextStart = {
+      seriesKey: target.item.key,
+      seriesLabel: target.item.label,
+      x0: target.x,
+      y0: target.y,
+      xUnit: graph.xAxis.unit,
+      yUnit: target.item.unit,
+      timeAxis: graph.kind === "time",
+      color: readingLineColor,
+      sourceYRange: target.yRange,
+    };
+    if (!readingLineStart) {
+      setReadingLineStart(nextStart);
+      setReadingLinePreview({ ...nextStart, id: "reading-preview", x1: target.x, y1: target.y });
+      return;
+    }
+    if (readingPreviewFrameRef.current !== null) window.cancelAnimationFrame(readingPreviewFrameRef.current);
+    readingPreviewFrameRef.current = null;
+    pendingReadingPreviewRef.current = null;
+    onAddReadingLine({ ...readingLineStart, x1: target.x, y1: target.y });
+    setReadingLineStart(null);
+    setReadingLinePreview(null);
+    onFinishReadingLine();
+  }, [drawingReadingLine, graph.kind, graph.xAxis.unit, onAddReadingLine, onFinishReadingLine, readingLineColor, readingLineStart, readingPointerCoordinates]);
+
   const handleContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!canEditTimeMarkers) return;
+    if (!canEditTimeMarkers || drawingReadingLine) return;
     blockChartClicks();
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
     if (!target) return;
@@ -764,10 +1035,10 @@ function PointChartBody({
       top: opensBelow ? event.clientY + 10 : event.clientY - 10,
       opensBelow,
     });
-  }, [blockChartClicks, canEditTimeMarkers, defaultRange, effectiveRange, markers, plotMargins]);
+  }, [blockChartClicks, canEditTimeMarkers, defaultRange, drawingReadingLine, effectiveRange, markers, plotMargins]);
 
   const handleMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!canEditTimeMarkers) return;
+    if (!canEditTimeMarkers || drawingReadingLine) return;
     if (event.button !== 0 || event.detail > 1) return;
     setMarkerMenu(null);
     const target = nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins);
@@ -783,9 +1054,21 @@ function PointChartBody({
     const nextDrag = { ...target, xSeconds: clamp(xSeconds, 0, maxTime) };
     dragPreviewRef.current = nextDrag;
     setDragPreview(nextDrag);
-  }, [canEditTimeMarkers, cancelChartClick, clearPendingDragFrame, defaultRange, effectiveRange, markers, maxTime, plotMargins]);
+  }, [canEditTimeMarkers, cancelChartClick, clearPendingDragFrame, defaultRange, drawingReadingLine, effectiveRange, markers, maxTime, plotMargins]);
 
   const handleMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (drawingReadingLine) {
+      if (readingLineStart) {
+        const target = readingPointerCoordinates(event, readingLineStart.seriesKey);
+        if (target) scheduleReadingPreview({
+          ...readingLineStart,
+          id: "reading-preview",
+          x1: target.x,
+          y1: target.y,
+        });
+      }
+      return;
+    }
     if (!canEditTimeMarkers) return;
     const currentDrag = dragPreviewRef.current;
     if (currentDrag) {
@@ -796,7 +1079,7 @@ function PointChartBody({
     updateMarkerHover(
       nearestMarkerTargetFromMouse(event, wrapperRef.current, markers, effectiveRange ?? defaultRange, plotMargins),
     );
-  }, [canEditTimeMarkers, defaultRange, effectiveRange, markers, maxTime, plotMargins, scheduleDragPreview, updateMarkerHover]);
+  }, [canEditTimeMarkers, defaultRange, drawingReadingLine, effectiveRange, markers, maxTime, plotMargins, readingLineStart, readingPointerCoordinates, scheduleDragPreview, scheduleReadingPreview, updateMarkerHover]);
 
   const handleMouseUp = useCallback((event?: ReactMouseEvent<HTMLDivElement>) => {
     if (!canEditTimeMarkers) return;
@@ -859,6 +1142,8 @@ function PointChartBody({
   }, [chartPoints, graph, onCursorPoint]);
   const handleUnhover = useCallback(() => onCursorPoint(graph.id, null), [graph.id, onCursorPoint]);
   const handleRelayout = useCallback((event: Readonly<Record<string, unknown>>) => {
+    const updatedLines = updateReadingLinesFromRelayout(readingLines, event, baseShapes.length);
+    if (updatedLines !== readingLines) onReadingLinesChange(updatedLines);
     const nextRange = xRangeFromRelayout(event);
     debugZoom("plot relayout", {
       graphId: graph.id,
@@ -868,15 +1153,21 @@ function PointChartBody({
       event,
     });
     if (nextRange !== undefined) onXRangeChange(nextRange);
-  }, [effectiveRange, graph.id, onXRangeChange, xRange]);
+  }, [baseShapes.length, effectiveRange, graph.id, onReadingLinesChange, onXRangeChange, readingLines, xRange]);
 
   return (
     <div
       ref={wrapperRef}
       className="chart-body"
-      style={{ height, cursor: cursorForMarkerDrag(dragPreview?.part ?? markerHover?.part ?? null, Boolean(dragPreview)) }}
+      style={{
+        height,
+        cursor: drawingReadingLine
+          ? "crosshair"
+          : cursorForMarkerDrag(dragPreview?.part ?? markerHover?.part ?? null, Boolean(dragPreview)),
+      }}
       onContextMenu={handleContextMenu}
       onDoubleClick={handleContextMenu}
+      onClick={drawingReadingLine ? handleReadingLineClick : undefined}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -894,11 +1185,16 @@ function PointChartBody({
         revision={plotRevision}
         style={{ width: "100%", height }}
         useResizeHandler
-        onClick={canEditTimeMarkers ? openMarkerProposal : undefined}
+        onClick={drawingReadingLine ? undefined : canEditTimeMarkers ? openMarkerProposal : undefined}
         onRelayout={handleRelayout}
         onHover={handleHover}
         onUnhover={handleUnhover}
       />
+      {drawingReadingLine && (
+        <div className="reading-line-hint">
+          {readingLineStart ? `Point 1 choisi sur ${readingLineStart.seriesLabel} · choisissez le point 2` : "Choisissez deux points sur une meme courbe"}
+        </div>
+      )}
       {proposal && (
         <ChartPlacementPopover
           position={proposal}
@@ -942,7 +1238,7 @@ function PointChartBody({
                 ) === null}
                 style={{ borderColor: `${MARKER_COLORS[marker]}70`, color: MARKER_COLORS[marker] }}
               >
-                {marker === "VO2_max" ? "VO2max" : marker}
+                {markerDisplayName(marker)}
               </button>
             ))}
           </div>
@@ -1028,8 +1324,59 @@ function nearestMarkerTargetFromMouse(
   }, null)?.target ?? null;
 }
 
+function ReadingLineList({
+  lines,
+  visible,
+  onDelete,
+}: {
+  lines: ReadingLine[];
+  visible: boolean;
+  onDelete: (id: string) => void;
+}) {
+  if (!visible || !lines.length) return null;
+  return (
+    <div className="reading-line-list" aria-label="Informations des droites de lecture">
+      {lines.map((line, index) => {
+        const metrics = readingLineMetrics(line);
+        return (
+          <div className="reading-line-card" key={line.id}>
+            <span className="reading-line-swatch" style={{ borderTopColor: line.color || "#f8e36a" }} />
+            <strong>Droite {index + 1} · {line.seriesLabel}</strong>
+            <span>
+              {line.timeAxis ? secondsToClock(line.x0) : formatLineNumber(line.x0)} → {line.timeAxis ? secondsToClock(line.x1) : formatLineNumber(line.x1)}
+            </span>
+            <span>{formatLineNumber(line.y0)} → {formatLineNumber(line.y1)} {line.yUnit}</span>
+            <span>
+              {line.timeAxis
+                ? `Δt ${secondsToDuration(Math.abs(metrics.deltaX))}`
+                : `ΔX ${signedLineNumber(metrics.deltaX)} ${line.xUnit || ""}`}
+            </span>
+            <span>ΔY {signedLineNumber(metrics.deltaY)} {line.yUnit}</span>
+            <span>
+              Pente {metrics.slope === null ? "verticale" : `${signedLineNumber(metrics.slope)} ${metrics.slopeUnit}`}
+            </span>
+            <button type="button" onClick={() => onDelete(line.id)} aria-label={`Supprimer la droite ${index + 1}`}>
+              <Trash2 size={13} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function formatLineNumber(value: number): string {
+  return value.toLocaleString("fr-FR", { maximumFractionDigits: 2 });
+}
+
+function signedLineNumber(value: number): string {
+  return `${value > 0 ? "+" : value < 0 ? "−" : ""}${formatLineNumber(Math.abs(value))}`;
+}
+
 function markerDisplayName(marker: MetaSoftMarkerName): string {
-  return marker === "VO2_max" ? "VO2max" : marker;
+  if (marker === "VO2_max") return "VO2max";
+  if (marker === "FC_max") return "FC max";
+  return marker;
 }
 
 function markerModeHelp(mode: MarkerMode): string {

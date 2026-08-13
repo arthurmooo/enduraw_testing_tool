@@ -1275,6 +1275,11 @@ class MetaSoftLocalApiTest(unittest.TestCase):
                     "t_seconds": 75,
                     "window_start_seconds": 60,
                     "window_end_seconds": 90,
+                }, {
+                    "name": "FC_max",
+                    "action": "upsert",
+                    "mode": "point",
+                    "t_seconds": 120,
                 }],
                 "conflict_policy": "overwrite",
             },
@@ -1288,8 +1293,9 @@ class MetaSoftLocalApiTest(unittest.TestCase):
         self.assertEqual(marker["window_start_seconds"], 60)
         self.assertEqual(marker["window_end_seconds"], 90)
         self.assertEqual(marker["values"]["fc_bpm"], 122)
+        fc_marker = payload["confirmed_markers"]["FC_max"]
         updated = self.session_manager.get_profile(self.profile_name)
-        self.assertEqual(updated["stress_test_results"]["max_hr"], 122)
+        self.assertEqual(updated["stress_test_results"]["max_hr"], fc_marker["values"]["fc_bpm"])
         self.assertEqual(
             updated["stress_test_results"]["measured_vo2max"],
             marker["values"]["vo2_ml_kg_min"],

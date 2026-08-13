@@ -35,7 +35,7 @@ from core.session_manager import (
 from utils.xml_parser import TCPXmlParser
 
 
-VALID_MARKERS = {"SV1", "SV2", "VO2_max", "VMA", "Cross-over"}
+VALID_MARKERS = {"SV1", "SV2", "VO2_max", "FC_max", "VMA", "Cross-over"}
 _PROCESS_TOKEN = secrets.token_urlsafe(32)
 
 

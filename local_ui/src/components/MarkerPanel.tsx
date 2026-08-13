@@ -9,6 +9,7 @@ export function MarkerPanel({
   deletedMarkers,
   profileVo2maxMlKgMin,
   onChangeWindowSeconds,
+  onConfirmProposal,
   draftSaveStatus,
 }: {
   draftMarkers: DraftMarkers;
@@ -17,6 +18,7 @@ export function MarkerPanel({
   deletedMarkers: Set<MetaSoftMarkerName>;
   profileVo2maxMlKgMin: number | null;
   onChangeWindowSeconds: (marker: MetaSoftMarkerName, durationSeconds: number) => void;
+  onConfirmProposal: (marker: MetaSoftMarkerName) => void;
   draftSaveStatus?: string | null;
 }) {
   const displayedVo2maxMlKgMin = currentVo2maxMlKgMin(
@@ -78,8 +80,14 @@ export function MarkerPanel({
                 <tr key={name} className={rowClass}>
                   <td>
                     <span className="marker-name" style={{ color: MARKER_COLORS[name] }}>
-                      {name === "VO2_max" ? "VO2max" : name}
+                      {markerDisplayName(name)}
                     </span>
+                    {draft.proposal?.source === "auto_fc_max" && !official && !dirty && !deleted && (
+                      <small className="marker-proposal-detail">
+                        Proposition auto : pic {formatNumber(draft.proposal.raw_peak_bpm, 0)} bpm · moyenne 5 s {formatNumber(draft.proposal.average_5s_bpm, 1)} bpm
+                        {draft.proposal.isolated ? " · pic isole a verifier" : ""}
+                      </small>
+                    )}
                   </td>
                   <td>{markerModeLabel(row.mode)}</td>
                   <td>{secondsToClock(row.t_seconds)}</td>
@@ -118,6 +126,10 @@ export function MarkerPanel({
                       <span className="status-ok">Officiel</span>
                     ) : deleted ? (
                       <span className="status-muted">Supprimé</span>
+                    ) : draft.proposal?.source === "auto_fc_max" ? (
+                      <button type="button" className="table-icon-button status-button" onClick={() => onConfirmProposal(name)}>
+                        Valider la proposition
+                      </button>
                     ) : (
                       <span className="status-muted">Brouillon</span>
                     )}
@@ -134,6 +146,12 @@ export function MarkerPanel({
       {draftSaveStatus && <p className="draft-save-status">{draftSaveStatus}</p>}
     </section>
   );
+}
+
+function markerDisplayName(marker: MetaSoftMarkerName): string {
+  if (marker === "VO2_max") return "VO2max";
+  if (marker === "FC_max") return "FC max";
+  return marker;
 }
 
 function markerModeLabel(mode: DraftMarkers[MetaSoftMarkerName]["mode"]): string {

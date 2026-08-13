@@ -86,6 +86,7 @@ export function buildMarkerShapes(markers: DraftMarkers): PlotShape[] {
       y0: 0,
       y1: 1,
       line: { color, width: 2, dash: "dot" },
+      editable: false,
     }];
     if (marker.mode !== "point" && marker.window_start_seconds !== null && marker.window_end_seconds !== null) {
       shapes.push({
@@ -166,7 +167,7 @@ export function buildMarkerAnnotations(markers: DraftMarkers) {
       y: 1,
       xref: "x",
       yref: "paper",
-      text: marker.name === "VO2_max" ? "VO2max" : marker.name,
+      text: marker.name === "VO2_max" ? "VO2max" : marker.name === "FC_max" ? "FC max" : marker.name,
       showarrow: false,
       yanchor: "bottom",
       font: { color: MARKER_COLORS[marker.name], size: 14 },

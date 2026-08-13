@@ -638,6 +638,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
                   <th>Bornes</th>
                   <th>N pts</th>
                   <th>VO2</th>
+                  <th>FC moy.</th>
                   <th>%VO2max</th>
                   <th>EC</th>
                   <th>DE</th>
@@ -684,6 +685,7 @@ export const RunningEconomyManualSection = memo(forwardRef<RunningEconomyManualH
                       <td>{secondsToClock(row.start_seconds)} - {secondsToClock(row.end_seconds)}</td>
                       <td>{row.point_count}</td>
                       <td>{formatNumber(row.vo2_l_min, 2)}</td>
+                      <td>{row.fc_bpm == null ? "-" : `${formatNumber(row.fc_bpm, 0)} bpm`}</td>
                       <td>{formatNumber(row.percent_vo2max, 1)}</td>
                       <td className="accent-cell">{formatNumber(row.ec_j_kg_m, 2)}</td>
                       <td>{formatNumber(row.de_kcal_h, 0)}</td>
@@ -780,18 +782,21 @@ const ManualEconomyPlot = memo(function ManualEconomyPlot({
     trace("VCO2 hors artefacts", times, vco2Corrected, "#16e0c2"),
     { ...trace("VE hors artefacts", times, veCorrected, "#ff8a00"), yaxis: "y2" },
   ], [times, vco2Corrected, veCorrected, vo2Corrected, vo2Raw]);
-  const annotations = useMemo(() => row?.ec_j_kg_m ? [{
+  const annotations = useMemo(() => row?.ec_j_kg_m || row?.fc_bpm ? [{
     x: draft.endSeconds,
     y: 1,
     xref: "x",
     yref: "paper",
-    text: `EC ${formatNumber(row.ec_j_kg_m, 2)}`,
+    text: [
+      row.ec_j_kg_m ? `EC ${formatNumber(row.ec_j_kg_m, 2)}` : null,
+      row.fc_bpm ? `FC ${formatNumber(row.fc_bpm, 0)} bpm` : null,
+    ].filter(Boolean).join(" · "),
     showarrow: false,
     font: { color: "#76f4b7", size: 11 },
     bgcolor: "rgba(6,20,36,0.82)",
     bordercolor: "rgba(16,211,143,0.32)",
     borderpad: 4,
-  }] : [], [draft.endSeconds, row?.ec_j_kg_m]);
+  }] : [], [draft.endSeconds, row?.ec_j_kg_m, row?.fc_bpm]);
   const tickText = useMemo(() => tickVals.map(secondsToClock), [tickVals]);
   const layout = useMemo(() => ({
     autosize: true,
